@@ -63,7 +63,12 @@ class RedisManager:
         
         try:
             json_value = json.dumps(value)
-            await self.redis_client.set(key, json_value, ex=expire)
+            if expire is None:
+                # No expiration (permanent)
+                await self.redis_client.set(key, json_value)
+            else:
+                # With expiration
+                await self.redis_client.set(key, json_value, ex=expire)
             return True
         except Exception as e:
             logger.error(f"Redis SET error for key {key}: {e}")
@@ -120,7 +125,7 @@ CACHE_KEYS = {
 
 # Cache TTL (Time To Live) in seconds
 CACHE_TTL = {
-    "MODEL_MAPPINGS": 3600,  # 1 hour
+    "MODEL_MAPPINGS": None,  # No expiration (permanent)
     "USER_MODELS": 1800,      # 30 minutes
     "USER_HAS_ALL_MODELS": 1800  # 30 minutes
 }

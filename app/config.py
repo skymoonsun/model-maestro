@@ -69,15 +69,19 @@ class ModelMappingManager:
             # Use global redis_manager
             if redis_manager is None:
                 return
+            
+            # Get TTL for model mappings (None means no expiration)
+            ttl = CACHE_TTL["MODEL_MAPPINGS"]
+            
             await redis_manager.set(
                 CACHE_KEYS["MODEL_MAPPINGS"], 
                 self._mappings, 
-                CACHE_TTL["MODEL_MAPPINGS"]
+                ttl
             )
             await redis_manager.set(
                 CACHE_KEYS["MODEL_MAPPINGS_REVERSE"], 
                 self._reverse_mappings, 
-                CACHE_TTL["MODEL_MAPPINGS"]
+                ttl
             )
         except Exception as e:
             print(f"Error saving model mappings to Redis: {e}")
