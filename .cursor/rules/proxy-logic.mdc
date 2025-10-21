@@ -1,0 +1,225 @@
+---
+description: Proxy mantığı ve model name mapping için kurallar
+globs: app/proxy.py
+alwaysApply: false
+---
+
+# Proxy Logic ve Model Mapping Kuralları
+
+`app/proxy.py` dosyası Ollama ile iletişimi ve model isimlerinin manipülasyonunu yönetir.
+
+## Core Responsibility
+
+Bu dosyanın temel görevi:
+1. Client'tan gelen istekleri Ollama'ya iletmek
+2. Model isimlerini iki yönlü çevirmek (client ↔ ollama)
+3. Streaming response'ları düzgün handle etmek
+4. Cloud modellerin "local gibi" görünmesini sağlamak
+
+## Model Mapping Functions
+
+### 1. `_map_model_to_ollama(data: Dict) -> Dict`
+
+**Amaç**: Client'tan gelen model isimlerini Ollama formatına çevirir (REQUEST)
+
+**İşleyiş**:
+```python
+# Client: "gpt-oss:120b" -> Ollama: "gpt-oss:120b-cloud"
+data_copy = data.copy()
+if 'model' in data_copy:
+    data_copy['model'] = model_mapper.get_real_model_name(data_copy['model'])
+```
+
+**Handle Edilmesi Gereken Field'lar**:
+- `model`: Chat/generate request'lerinde
+- `name`: show, delete, pull, push request'lerinde
+- `source`, `destination`: copy request'lerinde
+
+**Debug Logging**:
+```python
+if original_data.get('model') != data.get('model'):
+    print(f"Model mapped: {original_data.get('model')} -> {data.get('model')}")
+```
+
+### 2. `_map_model_from_ollama(data: Any) -> Any`
+
+**Amaç**: Ollama'dan gelen model isimlerini client formatına çevirir (RESPONSE)
+
+**İşleyiş**:
+```python
+# Ollama: "gpt-oss:120b-cloud" -> Client: "gpt-oss:120b"
+if isinstance(data, dict):
+    data_copy = data.copy()
+    if 'model' in data_copy:
+        data_copy['model'] = model_mapper.get_display_model_name(data_copy['model'])
+```
+
+**Handle Edilmesi Gereken Field'lar**:
+- `model`: Response'larda model adı
+- `name`: Model bilgilerinde
+- `parent_model`: Model detaylarında
+- `details.parent_model`: Nested model bilgisi
+
+**Cloud Model Field'larını Kaldırma**:
+```python
+# Bu field'lar cloud modelleri ele verir, kaldırılmalı
+if 'remote_model' in data_copy:
+    del data_copy['remote_model']
+if 'remote_host' in data_copy:
+    del data_copy['remote_host']
+```
+
+### 3. `_map_models_list(data: Dict) -> Dict`
+
+**Amaç**: `/api/tags` endpoint response'unu map eder
+
+**Özel İşlem**:
+- `models` array'indeki her model için mapping yapar
+- `remote_model` ve `remote_host` field'larını kaldırır
+- Hem `model` hem de `name` field'larını map eder
+
+```python
+for model in data.get('models', []):
+    model_copy = model.copy()
+    if 'name' in model_copy:
+        model_copy['name'] = model_mapper.get_display_model_name(model_copy['name'])
+    if 'model' in model_copy:
+        model_copy['model'] = model_mapper.get_display_model_name(model_copy['model'])
+    # remote field'ları kaldır
+    del model_copy['remote_model']
+    del model_copy['remote_host']
+```
+
+### 4. `_map_openai_models_list(data: Dict) -> Dict`
+
+**Amaç**: `/v1/models` endpoint response'unu map eder (OpenAI format)
+
+**OpenAI Format Farkı**:
+- Model listesi `data` field'ında (Ollama'da `models`)
+- Model adı `id` field'ında (Ollama'da `name`)
+
+```python
+for model in data.get('data', []):
+    model_copy = model.copy()
+    if 'id' in model_copy:
+        model_copy['id'] = model_mapper.get_display_model_name(model_copy['id'])
+```
+
+## Proxy Request Method
+
+### `proxy_request(method, endpoint, data, stream)`
+
+**Timeout**: 600 saniye (cloud modeller için)
+
+**Request Flow**:
+1. Model mapping yap: `data = self._map_model_to_ollama(data)`
+2. HTTP request gönder
+3. Response al
+4. Response'u map et ve dön
+
+**Endpoint-Specific Response Mapping**:
+```python
+if endpoint == "/api/tags":
+    response_data = self._map_models_list(response_data)
+elif endpoint == "/v1/models":
+    response_data = self._map_openai_models_list(response_data)
+else:
+    response_data = self._map_model_from_ollama(response_data)
+```
+
+## Streaming Response Handling
+
+**KRİTİK**: Streaming için özel kurallar `streaming-response.mdc`'de detaylı açıklanmıştır.
+
+**Temel Prensipler**:
+
+1. **AsyncClient Lifecycle**:
+```python
+async def stream_generator():
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        async with client.stream("POST", url, json=data) as resp:
+            # Stream işlemleri burada
+```
+
+2. **Buffer Mekanizması**:
+```python
+buffer = b""
+async for chunk in resp.aiter_raw():  # aiter_raw() kullan!
+    buffer += chunk
+    while b'\n' in buffer:
+        line, buffer = buffer.split(b'\n', 1)
+        # Line'ı işle
+```
+
+3. **Format Detection**:
+```python
+if line.startswith(b'data: '):
+    # SSE format (OpenAI endpoints)
+    json_str = line[6:].decode('utf-8').strip()
+    if json_str and json_str != '[DONE]':
+        json_data = json.loads(json_str)
+        mapped_data = self._map_model_from_ollama(json_data)
+        yield b'data: ' + json.dumps(mapped_data).encode('utf-8') + b'\n\n'
+else:
+    # NDJSON format (Ollama native)
+    json_data = json.loads(line.decode('utf-8'))
+    mapped_data = self._map_model_from_ollama(json_data)
+    yield json.dumps(mapped_data).encode('utf-8') + b'\n'
+```
+
+4. **Anti-Buffering Headers**:
+```python
+return StreamingResponse(
+    stream_generator(),
+    media_type="application/json",
+    headers={
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no"
+    }
+)
+```
+
+## Error Handling
+
+**Upstream Errors**:
+```python
+if resp.status_code != 200:
+    error_text = await resp.aread()
+    error_msg = error_text.decode()
+    print(f"Ollama upstream error ({resp.status_code}): {error_msg}")
+    raise HTTPException(
+        status_code=resp.status_code,
+        detail=f"Ollama upstream error: {error_msg}"
+    )
+```
+
+**Connection Errors**:
+```python
+except httpx.RequestError as e:
+    raise HTTPException(
+        status_code=503,
+        detail=f"Failed to connect to Ollama: {str(e)}"
+    )
+```
+
+## Model Mapper Usage
+
+`model_mapper` global instance'ı `app/config.py`'den import edilir:
+
+```python
+from app.config import model_mapper
+
+# Client -> Ollama
+real_name = model_mapper.get_real_model_name("gpt-oss:120b")
+# Returns: "gpt-oss:120b-cloud"
+
+# Ollama -> Client
+display_name = model_mapper.get_display_model_name("gpt-oss:120b-cloud")
+# Returns: "gpt-oss:120b"
+```
+
+## Debug ve Logging
+
+- Model mapping değişikliklerini `print()` ile logla
+- Upstream error'ları logla
+- StreamingResponse oluştururken log ekleme (performans için)

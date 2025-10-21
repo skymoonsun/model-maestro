@@ -1,0 +1,117 @@
+---
+description: FastAPI endpoint'lerinin oluşturulması ve yönetimi için kurallar
+globs: app/main.py
+alwaysApply: false
+---
+
+# FastAPI Endpoint Kuralları
+
+Bu proje bir Ollama proxy servisidir ve tüm endpoint'ler JWT authentication gerektirir.
+
+## Temel Prensipler
+
+1. **JWT Authentication Zorunlu**
+   - Her endpoint `Depends(get_current_user)` kullanmalı
+   - Bu dependency username döner, kullanıcı doğrulanmışsa
+   - Örnek: `async def endpoint(username: str = Depends(get_current_user))`
+
+2. **Model Mapping Endpoint'lerde Yapılmaz**
+   - Model isimlerinin manipülasyonu `proxy.py`'de yapılır
+   - Endpoint'ler sadece request'i `ollama_proxy.proxy_request()`'e iletir
+   - Endpoint'lerde model isimleriyle oynamayın
+
+3. **Streaming Desteği**
+   - Stream parametresi request body'den alınır: `request.stream or False`
+   - `proxy_request(stream=...)` parametresine iletilir
+   - Pydantic model'de `stream: Optional[bool] = None` olmalı
+
+4. **Logging**
+   - Her endpoint kullanıcı ve model bilgisini loglamalı
+   - Format: `logger.info(f"User {username} requesting {action} with model {request.model}")`
+   - Örnekler:
+     - `"User john requesting chat with model gpt-oss:120b"`
+     - `"User jane requesting model list"`
+
+5. **Pydantic Modelleri**
+   - Tüm request modelleri `app/models.py`'den import edilir
+   - `from app.models import OllamaChatRequest, OllamaGenerateRequest, ...`
+   - Response validation için Pydantic kullanmayın, proxy response'u doğrudan dönün
+
+## Endpoint Yapısı
+
+```python
+@app.post("/api/chat")
+async def chat(
+    request: OllamaChatRequest,
+    username: str = Depends(get_current_user)
+):
+    """
+    Generate chat completion
+    
+    Requires JWT authentication
+    """
+    logger.info(f"User {username} requesting chat with model {request.model}")
+    
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/api/chat",
+        data=request.model_dump(exclude_none=True),
+        stream=request.stream or False
+    )
+```
+
+## OpenAI Compatible Endpoints
+
+`/v1/{path:path}` endpoint'i özeldir:
+
+1. Tüm `/v1/*` isteklerini yakalar (catch-all route)
+2. Request body'yi parse eder
+3. Bazı modeller için `tools` ve `tool_choice` parametrelerini kaldırır (örn: deepseek-v3.1)
+4. Diğer tüm işlemler `proxy.py`'de yapılır
+
+```python
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def openai_v1_proxy(
+    path: str,
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    # Request body parse
+    data = None
+    if method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        if body:
+            data = json.loads(body.decode('utf-8'))
+    
+    # Model-specific parameter cleaning
+    model_name = data.get('model', '')
+    if 'deepseek-v3.1' in model_name:
+        # Remove unsupported parameters
+        data = {k: v for k, v in data.items() if k not in ['tools', 'tool_choice']}
+    
+    # Proxy request
+    return await ollama_proxy.proxy_request(...)
+```
+
+## Hata Yönetimi
+
+- HTTPException'lar otomatik olarak handle edilir
+- Proxy hatalarını yakalamaya çalışmayın, `ollama_proxy.proxy_request()` kendi hatalarını fırlatır
+- Custom hata mesajları Türkçe olmalı
+
+## Endpoint Listesi
+
+Tüm Ollama API endpoint'leri desteklenmelidir:
+
+- `/api/generate` - Text generation
+- `/api/chat` - Chat completion
+- `/api/embeddings` - Embeddings
+- `/api/tags` - Model listesi
+- `/api/show` - Model bilgisi
+- `/api/copy` - Model kopyalama
+- `/api/delete` - Model silme
+- `/api/pull` - Model çekme
+- `/api/push` - Model gönderme
+- `/api/create` - Model oluşturma
+- `/v1/chat/completions` - OpenAI compatible chat
+- `/v1/models` - OpenAI compatible model listesi

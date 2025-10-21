@@ -1,0 +1,353 @@
+---
+description: CLI kullanıcı yönetimi araçları için kurallar
+globs: cli.py
+alwaysApply: false
+---
+
+# CLI Tools Kuralları
+
+`cli.py` dosyası kullanıcı yönetimi için command-line interface sağlar.
+
+## Framework: Typer
+
+Typer framework kullanılır:
+
+```python
+import typer
+from rich.console import Console
+from rich.table import Table
+
+app = typer.Typer(help="Ollama Proxy API - User Management CLI")
+console = Console()
+```
+
+## Rich Library
+
+Output için Rich library kullanılır:
+
+**Colored Output**:
+```python
+console.print("[green]✓[/green] Success message")
+console.print("[red]✗[/red] Error message")
+console.print("[yellow]⚠[/yellow] Warning message")
+```
+
+**Tables**:
+```python
+table = Table(title="Users", show_header=True, header_style="bold magenta")
+table.add_column("Username", style="cyan")
+table.add_column("Token", style="green")
+console.print(table)
+```
+
+## Commands
+
+### create-user
+
+```python
+@app.command("create-user")
+def create_user(username: str):
+    """
+    Create a new user and generate JWT token
+    
+    Args:
+        username: Username for the new user
+    """
+    user = user_manager.create_user(username)
+    
+    if user:
+        console.print(f"[green]✓[/green] User created successfully!")
+        console.print(f"\n[bold]Username:[/bold] {user.username}")
+        console.print(f"[bold]Token:[/bold] {user.token}")
+        console.print(f"[bold]Created:[/bold] {user.created_at}")
+        console.print(f"\n[yellow]⚠ Save this token securely. You can refresh it later if needed.[/yellow]")
+    else:
+        console.print(f"[red]✗[/red] User '{username}' already exists!")
+        sys.exit(1)
+```
+
+**Usage**:
+```bash
+docker exec ollama-proxy create-user john
+# or
+docker exec ollama-proxy python cli.py create-user john
+```
+
+**Output**:
+```
+✓ User created successfully!
+
+Username: john
+Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Created: 2024-01-20T10:30:00.000000
+
+⚠ Save this token securely. You can refresh it later if needed.
+```
+
+### delete-user
+
+```python
+@app.command("delete-user")
+def delete_user(username: str):
+    """
+    Delete a user
+    
+    Args:
+        username: Username to delete
+    """
+    if user_manager.delete_user(username):
+        console.print(f"[green]✓[/green] User '{username}' deleted successfully!")
+    else:
+        console.print(f"[red]✗[/red] User '{username}' not found!")
+        sys.exit(1)
+```
+
+**Exit Code**: 1 if user not found, 0 if successful
+
+### refresh-token
+
+```python
+@app.command("refresh-token")
+def refresh_token(username: str):
+    """
+    Refresh JWT token for a user
+    
+    Args:
+        username: Username to refresh token for
+    """
+    user = user_manager.refresh_token(username)
+    
+    if user:
+        console.print(f"[green]✓[/green] Token refreshed successfully!")
+        console.print(f"\n[bold]Username:[/bold] {user.username}")
+        console.print(f"[bold]New Token:[/bold] {user.token}")
+        console.print(f"[bold]Updated:[/bold] {user.updated_at}")
+        console.print(f"\n[yellow]⚠ Update your applications with the new token.[/yellow]")
+    else:
+        console.print(f"[red]✗[/red] User '{username}' not found!")
+        sys.exit(1)
+```
+
+**Security Warning**: Eski token artık geçersizdir uyarısı göster
+
+### show-user
+
+```python
+@app.command("show-user")
+def show_user(username: str):
+    """
+    Show user information
+    
+    Args:
+        username: Username to show
+    """
+    user = user_manager.get_user(username)
+    
+    if user:
+        console.print(f"\n[bold cyan]User Information[/bold cyan]")
+        console.print(f"[bold]Username:[/bold] {user.username}")
+        console.print(f"[bold]Token:[/bold] {user.token}")
+        console.print(f"[bold]Created:[/bold] {user.created_at}")
+        if user.updated_at:
+            console.print(f"[bold]Updated:[/bold] {user.updated_at}")
+    else:
+        console.print(f"[red]✗[/red] User '{username}' not found!")
+        sys.exit(1)
+```
+
+### list-users
+
+```python
+@app.command("list-users")
+def list_users():
+    """
+    List all users
+    """
+    users = user_manager.list_users()
+    
+    if not users:
+        console.print("[yellow]No users found.[/yellow]")
+        return
+    
+    table = Table(title="Users", show_header=True, header_style="bold magenta")
+    table.add_column("Username", style="cyan")
+    table.add_column("Token", style="green", overflow="fold")
+    table.add_column("Created", style="yellow")
+    table.add_column("Updated", style="yellow")
+    
+    for user in users:
+        table.add_row(
+            user.username,
+            user.token[:20] + "..." if len(user.token) > 20 else user.token,
+            user.created_at,
+            user.updated_at or "-"
+        )
+    
+    console.print(table)
+    console.print(f"\n[bold]Total users:[/bold] {len(users)}")
+```
+
+**Token Display**: Uzun token'ları kısaltır (20 char + "...")
+
+## Docker Integration
+
+### Dockerfile Entry Points
+
+`Dockerfile`'da CLI komutları için shortcut'lar:
+
+```dockerfile
+# Create symlinks for easier command execution
+RUN ln -s /app/cli.py /usr/local/bin/create-user && \
+    ln -s /app/cli.py /usr/local/bin/delete-user && \
+    ln -s /app/cli.py /usr/local/bin/refresh-token && \
+    ln -s /app/cli.py /usr/local/bin/show-user && \
+    ln -s /app/cli.py /usr/local/bin/list-users
+```
+
+### Usage Examples
+
+**Short form** (preferred):
+```bash
+docker exec ollama-proxy create-user john
+docker exec ollama-proxy list-users
+docker exec ollama-proxy refresh-token john
+```
+
+**Long form**:
+```bash
+docker exec ollama-proxy python cli.py create-user john
+docker exec ollama-proxy python cli.py list-users
+```
+
+## Error Handling
+
+### User-Friendly Messages
+
+Tüm mesajlar Türkçe ve kullanıcı dostu olmalı:
+
+```python
+# ✅ DOĞRU
+console.print(f"[red]✗[/red] Kullanıcı '{username}' bulunamadı!")
+
+# ❌ YANLIŞ
+print(f"Error: User {username} not found")
+```
+
+### Exit Codes
+
+```python
+sys.exit(0)  # Success
+sys.exit(1)  # Error (user not found, already exists, etc.)
+```
+
+**Kullanım**:
+```bash
+docker exec ollama-proxy create-user john
+if [ $? -eq 0 ]; then
+    echo "Success!"
+else
+    echo "Failed!"
+fi
+```
+
+## Security Warnings
+
+### Token Security
+
+Her token gösterildiğinde güvenlik uyarısı:
+
+```python
+console.print(f"\n[yellow]⚠ Save this token securely. You can refresh it later if needed.[/yellow]")
+console.print(f"\n[yellow]⚠ Update your applications with the new token.[/yellow]")
+```
+
+### Token Refresh Warning
+
+Token refresh edildiğinde eski token'ın geçersiz olduğu belirtilmeli:
+
+```python
+console.print(f"\n[yellow]⚠ Old token is now invalid. Update your applications with the new token.[/yellow]")
+```
+
+## Main Entry Point
+
+```python
+if __name__ == "__main__":
+    app()
+```
+
+**Shebang** (Linux/macOS için):
+```python
+#!/usr/bin/env python3
+```
+
+## Import Structure
+
+```python
+import sys
+import typer
+from typing import Optional
+from rich.console import Console
+from rich.table import Table
+
+from app.user_manager import user_manager
+```
+
+**Not**: `app/` modüllerini import edebilmek için script root dizinden çalıştırılmalı.
+
+## Formatting Guidelines
+
+### Color Scheme
+
+- **Success**: `[green]✓[/green]`
+- **Error**: `[red]✗[/red]`
+- **Warning**: `[yellow]⚠[/yellow]`
+- **Info**: `[cyan]ℹ[/cyan]`
+- **Bold**: `[bold]Text[/bold]`
+
+### Output Style
+
+```python
+# Title
+console.print(f"\n[bold cyan]User Information[/bold cyan]")
+
+# Key-Value pairs
+console.print(f"[bold]Key:[/bold] value")
+
+# Messages
+console.print(f"[green]✓[/green] Success message")
+```
+
+### Table Style
+
+```python
+table = Table(
+    title="Table Title",
+    show_header=True,
+    header_style="bold magenta"
+)
+table.add_column("Column 1", style="cyan")
+table.add_column("Column 2", style="green", overflow="fold")
+```
+
+## Documentation
+
+Her komut docstring içermeli:
+
+```python
+@app.command("command-name")
+def command_name(arg: str):
+    """
+    Brief description of what this command does
+    
+    Args:
+        arg: Description of the argument
+    """
+    pass
+```
+
+**Help Output**:
+```bash
+docker exec ollama-proxy python cli.py --help
+docker exec ollama-proxy python cli.py create-user --help
+```

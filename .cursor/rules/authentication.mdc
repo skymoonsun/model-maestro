@@ -1,0 +1,285 @@
+---
+description: JWT authentication ve kullanıcı yönetimi kuralları
+globs: app/auth.py, app/user_manager.py
+alwaysApply: false
+---
+
+# JWT Authentication ve Kullanıcı Yönetimi
+
+Bu proje JWT token tabanlı authentication kullanır. Token'lar süresizdir ve kullanıcı bazlı yönetilir.
+
+## JWT Token Yapısı
+
+### Token Format
+
+```json
+{
+  "username": "john",
+  "iat": 1234567890
+}
+```
+
+**ÖNEMLİ**: Token'larda `exp` (expiration) field'ı YOK! Token'lar süresizdir.
+
+### Token Oluşturma
+
+```python
+payload = {
+    "username": username,
+    "iat": int(datetime.utcnow().timestamp())
+}
+token = jwt.encode(payload, self.settings.jwt_secret_key, algorithm="HS256")
+```
+
+**Kullanım**:
+- Yeni kullanıcı oluşturulurken
+- Token refresh edilirken
+
+### Token Verification
+
+İki aşamalı doğrulama:
+
+1. **JWT Decode**:
+```python
+payload = jwt.decode(token, self.settings.jwt_secret_key, algorithms=["HS256"])
+username = payload.get("username")
+```
+
+2. **Database Validation**:
+```python
+# User DB'de username var mı ve token eşleşiyor mu?
+for user in db.users:
+    if user.username == username and user.token == token:
+        return username
+```
+
+**Neden İki Aşama?**
+- JWT'nin valid olması yeterli değil
+- Token refresh edildiğinde eski token geçersiz olmalı
+- User silindiğinde token geçersiz olmalı
+
+## Authentication Middleware (`app/auth.py`)
+
+### `get_current_user()` Dependency
+
+```python
+async def get_current_user(
+    authorization: Optional[str] = Header(None)
+) -> str:
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authorization header",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    # Parse "Bearer <token>"
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header format. Use: Bearer <token>",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    token = parts[1]
+    username = user_manager.verify_token(token)
+    
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    return username
+```
+
+### Header Format
+
+```
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+**YANLIŞ FORMATLAR**:
+- `Authorization: eyJhbG...` (Bearer eksik)
+- `Token: eyJhbG...` (Yanlış header adı)
+- `Bearer eyJhbG...` (Authorization eksik)
+
+## User Manager (`app/user_manager.py`)
+
+### User Data Storage
+
+**Dosya**: `/app/data/users.json`
+
+**Format**:
+```json
+{
+  "users": [
+    {
+      "username": "john",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "created_at": "2024-01-20T10:30:00.000000",
+      "updated_at": "2024-01-21T15:45:00.000000"
+    }
+  ]
+}
+```
+
+### CRUD Operations
+
+#### Create User
+
+```python
+def create_user(self, username: str) -> Optional[User]:
+    db = self._load_db()
+    
+    # Check duplicate
+    if any(u.username == username for u in db.users):
+        return None
+    
+    # Generate token
+    token = self._generate_token(username)
+    
+    # Create user
+    user = User(
+        username=username,
+        token=token,
+        created_at=datetime.utcnow().isoformat()
+    )
+    
+    db.users.append(user)
+    self._save_db(db)
+    
+    return user
+```
+
+**Return**: User object veya None (duplicate username)
+
+#### Delete User
+
+```python
+def delete_user(self, username: str) -> bool:
+    db = self._load_db()
+    db.users = [u for u in db.users if u.username != username]
+    self._save_db(db)
+    return True  # or False if user not found
+```
+
+**Return**: Boolean (deleted or not)
+
+#### Refresh Token
+
+```python
+def refresh_token(self, username: str) -> Optional[User]:
+    db = self._load_db()
+    
+    # Find user
+    user = find_user_by_username(username)
+    if not user:
+        return None
+    
+    # Generate new token
+    new_token = self._generate_token(username)
+    
+    # Update user
+    user.token = new_token
+    user.updated_at = datetime.utcnow().isoformat()
+    
+    self._save_db(db)
+    return user
+```
+
+**ÖNEMLİ**: Eski token artık geçersizdir!
+
+#### Get User
+
+```python
+def get_user(self, username: str) -> Optional[User]:
+    db = self._load_db()
+    return next((u for u in db.users if u.username == username), None)
+```
+
+#### List Users
+
+```python
+def list_users(self) -> List[User]:
+    db = self._load_db()
+    return db.users
+```
+
+## Configuration
+
+### Secret Key
+
+`.env` dosyasından:
+```env
+JWT_SECRET_KEY=super-secret-key-change-this-immediately
+```
+
+**Settings**:
+```python
+from app.config import get_settings
+
+settings = get_settings()
+secret_key = settings.jwt_secret_key
+```
+
+### Security Best Practices
+
+1. **Secret Key**:
+   - Production'da güçlü, random bir key kullan
+   - Asla git'e commit etme
+   - Minimum 32 karakter
+
+2. **Token Storage**:
+   - Client-side: Secure storage (environment variable, keychain)
+   - Server-side: JSON file (data/users.json)
+
+3. **Token Refresh**:
+   - Compromised token durumunda hızlıca refresh et
+   - Eski token otomatik olarak geçersiz olur
+
+## Error Messages
+
+Tüm error mesajları Türkçe olmalı:
+
+```python
+# ✅ DOĞRU
+detail="Yetkilendirme başlığı eksik"
+
+# ❌ YANLIŞ
+detail="Missing authorization header"
+```
+
+**Exception**: HTTP status detail'ları İngilizce kalabilir (standart)
+
+## Global Instance
+
+```python
+# app/user_manager.py
+user_manager = UserManager()
+
+# Kullanım
+from app.user_manager import user_manager
+
+user = user_manager.create_user("john")
+```
+
+## Pydantic Models
+
+User modelleri `app/models.py`'de tanımlı:
+
+```python
+from pydantic import BaseModel
+from typing import List, Optional
+
+class User(BaseModel):
+    username: str
+    token: str
+    created_at: str
+    updated_at: Optional[str] = None
+
+class UserInDB(BaseModel):
+    users: List[User] = []
+```

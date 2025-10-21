@@ -1,0 +1,478 @@
+---
+description: Docker deployment ve container yapılandırma kuralları
+globs: Dockerfile, docker-compose.yml, .env, .env.example, docker-entrypoint.sh
+alwaysApply: false
+---
+
+# Docker Deployment Kuralları
+
+Bu proje Docker ile containerize edilmiştir ve production deployment için optimize edilmiştir.
+
+## Dockerfile
+
+### Base Image
+
+```dockerfile
+FROM python:3.11-slim
+```
+
+**Neden 3.11-slim?**
+- Python 3.11: Modern, performanslı
+- slim: Küçük image size (security & performance)
+
+### Working Directory
+
+```dockerfile
+WORKDIR /app
+```
+
+**Tüm path'ler `/app` relative'dir**:
+- `/app/data/users.json`
+- `/app/config/model_mappings.json`
+- `/app/app/main.py`
+
+### Dependencies Installation
+
+```dockerfile
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+```
+
+**`--no-cache-dir`**: Image size'ı küçültür
+
+### Application Code
+
+```dockerfile
+COPY . .
+```
+
+**Son adımda kopyalanır**: Layer caching için (requirements değişmezse cache kullanılır)
+
+### CLI Shortcuts (Optional)
+
+```dockerfile
+RUN ln -s /app/cli.py /usr/local/bin/create-user && \
+    ln -s /app/cli.py /usr/local/bin/delete-user && \
+    ln -s /app/cli.py /usr/local/bin/refresh-token && \
+    ln -s /app/cli.py /usr/local/bin/show-user && \
+    ln -s /app/cli.py /usr/local/bin/list-users
+```
+
+### Entrypoint & CMD
+
+```dockerfile
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--timeout-keep-alive", "600", "--limit-concurrency", "1000"]
+```
+
+**Uvicorn Parameters**:
+- `--timeout-keep-alive 600`: Long-running streaming requests için
+- `--limit-concurrency 1000`: Concurrent connection limit
+
+**Alternative CMD** (development):
+```dockerfile
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+```
+
+## docker-compose.yml
+
+### Service Definition
+
+```yaml
+version: '3.8'
+
+services:
+  ollama-proxy:
+    build: .
+    container_name: ollama-proxy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    env_file:
+      - .env
+    restart: unless-stopped
+```
+
+### Network Configuration
+
+**Linux** (host network):
+```yaml
+services:
+  ollama-proxy:
+    network_mode: "host"
+    # ports: directive not needed with host network
+```
+
+**macOS/Windows** (bridge network):
+```yaml
+services:
+  ollama-proxy:
+    ports:
+      - "8000:8000"
+    # network_mode: bridge (default)
+```
+
+**Neden farklı?**
+- Linux: `host.docker.internal` yok, `localhost` kullanılır
+- macOS/Windows: Docker Desktop `host.docker.internal` sağlar
+
+### Volumes
+
+```yaml
+volumes:
+  - ./data:/app/data           # User database
+  - ./config:/app/config       # Model mappings
+```
+
+**Persistence**:
+- User data container yeniden başlatılsa bile korunur
+- Config değişiklikleri host'tan yapılabilir
+
+**Permissions**:
+```bash
+# Ensure write permissions
+chmod -R 755 data/
+chmod -R 755 config/
+```
+
+### Environment Variables
+
+```yaml
+env_file:
+  - .env
+```
+
+**Alternative** (inline):
+```yaml
+environment:
+  - OLLAMA_BASE_URL=http://host.docker.internal:11434
+  - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+  - LOG_LEVEL=INFO
+```
+
+### Restart Policy
+
+```yaml
+restart: unless-stopped
+```
+
+**Options**:
+- `no`: Default, restart etme
+- `always`: Her zaman restart et
+- `unless-stopped`: Manuel stop edilmedikçe restart et (ÖNERİLEN)
+- `on-failure`: Sadece hata durumunda restart et
+
+## Environment Configuration
+
+### .env File
+
+```env
+# Ollama server URL
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+
+# JWT secret key
+JWT_SECRET_KEY=super-secret-key-change-this-immediately
+
+# Logging level
+LOG_LEVEL=INFO
+```
+
+### Platform-Specific URLs
+
+**Docker on macOS/Windows**:
+```env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+**Docker on Linux**:
+```env
+OLLAMA_BASE_URL=http://localhost:11434
+# or
+OLLAMA_BASE_URL=http://172.17.0.1:11434
+```
+
+**Local Development** (no Docker):
+```env
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+**Remote Server**:
+```env
+OLLAMA_BASE_URL=http://192.168.1.100:11434
+```
+
+### .env.example
+
+Production için template:
+
+```env
+# Ollama server URL
+# Docker (macOS/Windows): http://host.docker.internal:11434
+# Docker (Linux): http://localhost:11434 or http://172.17.0.1:11434
+# Local: http://localhost:11434
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+
+# JWT secret key - CHANGE THIS IN PRODUCTION!
+JWT_SECRET_KEY=your-secret-key-here-change-this-to-a-random-string
+
+# Logging level
+LOG_LEVEL=INFO
+```
+
+## Docker Commands
+
+### Build
+
+```bash
+docker-compose build
+```
+
+**Force rebuild**:
+```bash
+docker-compose build --no-cache
+```
+
+### Start
+
+```bash
+docker-compose up -d
+```
+
+**Flags**:
+- `-d`: Detached mode (background)
+- `--build`: Build before starting
+
+### Stop
+
+```bash
+docker-compose stop
+```
+
+### Restart
+
+```bash
+docker-compose restart
+```
+
+**After config changes**:
+```bash
+docker-compose restart
+```
+
+### Logs
+
+```bash
+docker-compose logs -f
+```
+
+**Flags**:
+- `-f`: Follow (tail)
+- `--tail 100`: Last 100 lines
+
+### CLI Commands
+
+```bash
+docker exec ollama-proxy create-user john
+docker exec ollama-proxy list-users
+docker exec ollama-proxy refresh-token john
+```
+
+### Shell Access
+
+```bash
+docker exec -it ollama-proxy /bin/bash
+```
+
+## Volume Management
+
+### Data Persistence
+
+User data ve config dosyaları volume'lerde saklanır:
+
+```
+project/
+  data/
+    users.json          → /app/data/users.json
+  config/
+    model_mappings.json → /app/config/model_mappings.json
+```
+
+### Backup
+
+```bash
+# Backup user data
+cp data/users.json data/users.json.backup
+
+# Backup config
+cp config/model_mappings.json config/model_mappings.json.backup
+```
+
+### Restore
+
+```bash
+# Restore user data
+cp data/users.json.backup data/users.json
+
+# Restart container
+docker-compose restart
+```
+
+## Health Check (Optional)
+
+```yaml
+services:
+  ollama-proxy:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+```
+
+**Health endpoint**: `GET /health` returns `{"status": "healthy"}`
+
+## Security
+
+### Production Checklist
+
+1. **Secret Key**:
+   ```env
+   JWT_SECRET_KEY=$(openssl rand -hex 32)
+   ```
+
+2. **File Permissions**:
+   ```bash
+   chmod 600 .env
+   chmod 755 data/
+   chmod 644 data/users.json
+   ```
+
+3. **Network**:
+   - Firewall: Only 8000 port exposed
+   - HTTPS: Use reverse proxy (nginx/traefik)
+
+4. **Logs**:
+   ```yaml
+   logging:
+     driver: "json-file"
+     options:
+       max-size: "10m"
+       max-file: "3"
+   ```
+
+## Multi-Stage Build (Advanced)
+
+```dockerfile
+# Build stage
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# Runtime stage
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY --from=builder /root/.local /root/.local
+COPY . .
+
+ENV PATH=/root/.local/bin:$PATH
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**Avantaj**: Daha küçük final image
+
+## Troubleshooting
+
+### Connection Refused
+
+```bash
+# Check Ollama is running
+curl http://localhost:11434/api/tags
+
+# Check Docker network
+docker inspect ollama-proxy | grep IPAddress
+```
+
+### Permission Denied
+
+```bash
+# Fix data directory permissions
+sudo chown -R $(id -u):$(id -g) data/
+chmod -R 755 data/
+```
+
+### Port Already in Use
+
+```bash
+# Change port in docker-compose.yml
+ports:
+  - "8001:8000"
+```
+
+## Production Deployment
+
+### With Nginx
+
+```nginx
+server {
+    listen 80;
+    server_name ollama.example.com;
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        
+        # Streaming support
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header X-Accel-Buffering no;
+    }
+}
+```
+
+### With Docker Swarm
+
+```yaml
+version: '3.8'
+
+services:
+  ollama-proxy:
+    image: ollama-proxy:latest
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+```
+
+### With Kubernetes
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-proxy
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: ollama-proxy
+        image: ollama-proxy:latest
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: ollama-proxy-config
+```

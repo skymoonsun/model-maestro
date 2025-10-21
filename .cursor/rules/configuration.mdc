@@ -1,0 +1,291 @@
+---
+description: Configuration yönetimi ve model mapping kuralları
+globs: app/config.py, config/model_mappings.json
+alwaysApply: false
+---
+
+# Configuration Yönetimi
+
+Bu proje environment variables ve JSON config dosyaları kullanarak yapılandırılır.
+
+## Environment Variables (`.env`)
+
+### Settings Class
+
+`pydantic-settings` kullanılır:
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    ollama_base_url: str = "http://localhost:11434"
+    jwt_secret_key: str
+    log_level: str = "INFO"
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+```
+
+### Kullanım
+
+```python
+from app.config import get_settings
+
+settings = get_settings()
+print(settings.ollama_base_url)
+```
+
+**LRU Cache**: Settings `@lru_cache()` ile cache'lenir, her seferinde dosyadan okunmaz.
+
+### Environment Variables
+
+**Required**:
+- `JWT_SECRET_KEY`: JWT token signing için secret key (ZORUNLU)
+
+**Optional**:
+- `OLLAMA_BASE_URL`: Ollama server URL'i (default: `http://localhost:11434`)
+- `LOG_LEVEL`: Logging seviyesi (default: `INFO`)
+
+### Platform-Specific OLLAMA_BASE_URL
+
+**Docker içinde**:
+- **macOS/Windows**: `http://host.docker.internal:11434`
+- **Linux**: `http://localhost:11434` (veya `http://172.17.0.1:11434`)
+
+**Local development**:
+- `http://localhost:11434`
+
+**Remote server**:
+- `http://server-ip:11434`
+
+## Model Mappings (`config/model_mappings.json`)
+
+### Dosya Yapısı
+
+```json
+{
+  "mappings": {
+    "gpt-oss:120b": "gpt-oss:120b-cloud",
+    "gpt-oss:20b": "gpt-oss:20b-cloud",
+    "deepseek-v3.1:671b": "deepseek-v3.1:671b-cloud",
+    "kimi-k2:1t": "kimi-k2:1t-cloud",
+    "qwen3-coder:480b": "qwen3-coder:480b-cloud",
+    "glm-4.6": "glm-4.6:cloud"
+  }
+}
+```
+
+**Format**:
+- Key: Display name (client'a gösterilen)
+- Value: Real name (Ollama'da gerçek olan)
+
+### ModelMappingManager Class
+
+```python
+class ModelMappingManager:
+    def __init__(self, config_path: str = "/app/config/model_mappings.json"):
+        self.config_path = config_path
+        self._mappings: Dict[str, str] = {}
+        self._reverse_mappings: Dict[str, str] = {}
+        self.load_mappings()
+    
+    def load_mappings(self):
+        with open(self.config_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            self._mappings = data.get("mappings", {})
+            # Create reverse mapping
+            self._reverse_mappings = {v: k for k, v in self._mappings.items()}
+```
+
+**Reverse Mapping**: Ollama -> Client dönüşümü için otomatik oluşturulur.
+
+### Mapping Methods
+
+#### `get_real_model_name(display_name: str) -> str`
+
+Client'tan Ollama'ya:
+
+```python
+real_name = model_mapper.get_real_model_name("gpt-oss:120b")
+# Returns: "gpt-oss:120b-cloud"
+```
+
+**Davranış**:
+- Mapping varsa: Mapped değer döner
+- Mapping yoksa: Aynı değer döner (passthrough)
+
+#### `get_display_model_name(real_name: str) -> str`
+
+Ollama'dan Client'a:
+
+```python
+display_name = model_mapper.get_display_model_name("gpt-oss:120b-cloud")
+# Returns: "gpt-oss:120b"
+```
+
+**Davranış**:
+- Reverse mapping varsa: Display değer döner
+- Reverse mapping yoksa: Aynı değer döner (passthrough)
+
+#### `get_all_mappings() -> Dict[str, str]`
+
+Tüm mapping'leri döner:
+
+```python
+mappings = model_mapper.get_all_mappings()
+# Returns: {"gpt-oss:120b": "gpt-oss:120b-cloud", ...}
+```
+
+#### `reload()`
+
+Config dosyasını yeniden yükler:
+
+```python
+model_mapper.reload()
+```
+
+**Not**: Normal kullanımda gerekli değil, config değişirse container restart edilir.
+
+## Global Instances
+
+```python
+# app/config.py
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+model_mapper = ModelMappingManager()
+```
+
+**Kullanım**:
+
+```python
+from app.config import get_settings, model_mapper
+
+# Settings
+settings = get_settings()
+print(settings.ollama_base_url)
+
+# Model mapping
+real_name = model_mapper.get_real_model_name("gpt-oss:120b")
+```
+
+## File Paths
+
+### Docker Environment
+
+**Config files**:
+- Model mappings: `/app/config/model_mappings.json`
+- User data: `/app/data/users.json`
+- Environment: `.env` (root'ta)
+
+**Volume mounts** (`docker-compose.yml`):
+```yaml
+volumes:
+  - ./data:/app/data
+  - ./config:/app/config
+```
+
+### Development Environment
+
+**Config files**:
+- Model mappings: `config/model_mappings.json`
+- User data: `data/users.json`
+- Environment: `.env`
+
+## Configuration Changes
+
+### Değişiklik Sonrası Reload
+
+1. **Environment Variables** (`.env`):
+   - Container restart gerekir
+   - `docker-compose restart`
+
+2. **Model Mappings** (`config/model_mappings.json`):
+   - Container restart gerekir
+   - `docker-compose restart`
+
+3. **User Data** (`data/users.json`):
+   - Hot reload (restart gerekmez)
+   - Her request'te dosyadan okunur
+
+### .env.example
+
+Production için `.env.example` dosyası:
+
+```env
+# Ollama server URL
+# Docker (macOS/Windows): http://host.docker.internal:11434
+# Docker (Linux): http://localhost:11434 or http://172.17.0.1:11434
+# Local: http://localhost:11434
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+
+# JWT secret key - CHANGE THIS IN PRODUCTION!
+JWT_SECRET_KEY=your-secret-key-here-change-this-to-a-random-string
+
+# Logging level
+LOG_LEVEL=INFO
+```
+
+## Error Handling
+
+### Missing Config Files
+
+**Model mappings yoksa**:
+```python
+try:
+    if os.path.exists(self.config_path):
+        with open(self.config_path, 'r') as f:
+            data = json.load(f)
+            self._mappings = data.get("mappings", {})
+except Exception as e:
+    print(f"Error loading model mappings: {e}")
+    self._mappings = {}
+```
+
+**User data yoksa**:
+```python
+def _ensure_file_exists(self):
+    if not os.path.exists(self.users_file):
+        os.makedirs(os.path.dirname(self.users_file), exist_ok=True)
+        self._save_db(UserInDB(users=[]))
+```
+
+### Invalid JSON
+
+JSON parse error'ları handle edilmeli:
+
+```python
+try:
+    data = json.load(f)
+except json.JSONDecodeError as e:
+    print(f"Invalid JSON in config file: {e}")
+    # Use defaults
+```
+
+## Validation
+
+### Environment Validation
+
+`pydantic-settings` otomatik validation yapar:
+
+```python
+class Settings(BaseSettings):
+    jwt_secret_key: str  # Required, ValueError if missing
+    log_level: str = "INFO"  # Optional, default value
+```
+
+### Model Mapping Validation
+
+Mapping format'ı validate edilmeli:
+
+```python
+if not isinstance(self._mappings, dict):
+    raise ValueError("Model mappings must be a dictionary")
+
+for key, value in self._mappings.items():
+    if not isinstance(key, str) or not isinstance(value, str):
+        raise ValueError(f"Invalid mapping: {key} -> {value}")
+```

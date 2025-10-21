@@ -46,6 +46,6 @@ data/users.json
 Thumbs.db
 
 # Cursor
-.cursor/
+.cursor/plans/
 .specstory/
 .cursorindexingignore

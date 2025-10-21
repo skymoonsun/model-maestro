@@ -1,0 +1,331 @@
+---
+description: Streaming response handling için kritik kurallar (tüm proje için)
+alwaysApply: true
+---
+
+# Streaming Response Kuralları
+
+Bu kurallar streaming response'ları düzgün çalıştırmak için **KRİTİKTİR**. Yanlış implementation buffering, timeout ve connection error'larına yol açar.
+
+## Neden Bu Kadar Önemli?
+
+Streaming response'lar:
+- Real-time LLM output için gerekli
+- Chat completion'larda kullanıcı deneyimini iyileştirir
+- Büyük response'ları parça parça gönderir
+- Memory efficient'tir
+
+**Yanlış implementation**: Response buffer edilir, kullanıcı tüm yanıtı bekler (streaming faydası yok)
+
+## Rule 1: AsyncClient Lifecycle
+
+### ❌ YANLIŞ
+
+```python
+async def proxy_request(self, stream: bool = False):
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        if stream:
+            async def stream_generator():
+                # CLIENT BURADA KAPANMIŞ!
+                async with client.stream("POST", url, json=data) as resp:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+            
+            return StreamingResponse(stream_generator())
+```
+
+**Sorun**: `stream_generator()` çalıştığında `client` zaten kapanmış. `RuntimeError: Cannot send a request, as the client has been closed.`
+
+### ✅ DOĞRU
+
+```python
+async def proxy_request(self, stream: bool = False):
+    if stream:
+        async def stream_generator():
+            # CLIENT GENERATOR İÇİNDE OLUŞTURULUYOR
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                async with client.stream("POST", url, json=data) as resp:
+                    async for chunk in resp.aiter_raw():
+                        yield chunk
+        
+        return StreamingResponse(stream_generator())
+```
+
+**Çözüm**: `AsyncClient` generator içinde oluşturulur, stream tamamlanana kadar açık kalır.
+
+## Rule 2: Buffer Mekanizması
+
+### ❌ YANLIŞ
+
+```python
+async for chunk in resp.aiter_bytes():
+    # Chunk her zaman complete JSON değil!
+    json_data = json.loads(chunk.decode('utf-8'))  # JSONDecodeError!
+    yield json.dumps(json_data).encode('utf-8') + b'\n'
+```
+
+**Sorun**: HTTP chunk'ları JSON boundary'lerine uymuyor. Bir JSON obje birden fazla chunk'a bölünebilir.
+
+### ✅ DOĞRU
+
+```python
+buffer = b""
+async for chunk in resp.aiter_raw():
+    buffer += chunk
+    
+    # Complete line'ları işle
+    while b'\n' in buffer:
+        line, buffer = buffer.split(b'\n', 1)
+        if line:
+            try:
+                json_data = json.loads(line.decode('utf-8'))
+                yield json.dumps(json_data).encode('utf-8') + b'\n'
+            except json.JSONDecodeError:
+                yield line + b'\n'
+
+# Kalan buffer'ı işle
+if buffer:
+    try:
+        json_data = json.loads(buffer.decode('utf-8'))
+        yield json.dumps(json_data).encode('utf-8') + b'\n'
+    except json.JSONDecodeError:
+        yield buffer
+```
+
+**Çözüm**: 
+1. Buffer'a chunk ekle
+2. Complete line'ları (`\n` ile biten) parse et
+3. Parse edilemeyen kısmı buffer'da tut
+
+## Rule 3: aiter_raw() vs aiter_bytes()
+
+### aiter_bytes()
+
+```python
+async for chunk in resp.aiter_bytes(chunk_size=1024):
+    # chunk_size kadar bekler, buffer edilir
+```
+
+**Sorun**: Belirli bir size'a ulaşana kadar bekler → latency artar
+
+### aiter_raw()
+
+```python
+async for chunk in resp.aiter_raw():
+    # Her raw chunk anında yield edilir
+```
+
+**Çözüm**: Raw chunk'lar anında işlenir → minimum latency
+
+## Rule 4: SSE vs NDJSON Format Detection
+
+### SSE Format (OpenAI Compatible)
+
+```
+data: {"id":"123","choices":[...]}\n\n
+data: {"id":"124","choices":[...]}\n\n
+data: [DONE]\n\n
+```
+
+### NDJSON Format (Ollama Native)
+
+```
+{"model":"gpt-4","message":{"content":"Hello"}}\n
+{"model":"gpt-4","message":{"content":" world"}}\n
+{"done":true}\n
+```
+
+### Format Detection ve İşleme
+
+```python
+if line.startswith(b'data: '):
+    # SSE format
+    json_str = line[6:].decode('utf-8').strip()
+    if json_str and json_str != '[DONE]':
+        json_data = json.loads(json_str)
+        mapped_data = self._map_model_from_ollama(json_data)
+        yield b'data: ' + json.dumps(mapped_data).encode('utf-8') + b'\n\n'
+    else:
+        # [DONE] marker'ı olduğu gibi ilet
+        yield line + b'\n'
+else:
+    # NDJSON format
+    json_data = json.loads(line.decode('utf-8'))
+    mapped_data = self._map_model_from_ollama(json_data)
+    yield json.dumps(mapped_data).encode('utf-8') + b'\n'
+```
+
+## Rule 5: Anti-Buffering Headers
+
+### Response Headers
+
+```python
+return StreamingResponse(
+    stream_generator(),
+    media_type="application/json",
+    headers={
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no"
+    }
+)
+```
+
+**Her header'ın önemi**:
+- `Cache-Control: no-cache`: Proxy/CDN cache'lemesin
+- `Cache-Control: no-transform`: Content değiştirilmesin
+- `X-Accel-Buffering: no`: Nginx buffering'i kapat
+
+## Rule 6: Nginx Reverse Proxy
+
+### Nginx Config
+
+```nginx
+location / {
+    proxy_pass http://localhost:8000;
+    
+    # Streaming için ZORUNLU
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_set_header X-Accel-Buffering no;
+    
+    # Connection settings
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    
+    # Timeouts
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+}
+```
+
+**Açıklama**:
+- `proxy_buffering off`: Response buffer edilmez
+- `proxy_cache off`: Cache kullanılmaz
+- `proxy_read_timeout`: Uzun stream'ler için timeout arttırılır
+
+## Rule 7: Cloudflare ile Kullanım
+
+Cloudflare kullanıyorsanız:
+
+1. **Stream Settings**:
+   - Dashboard → Speed → Optimization
+   - "Rocket Loader" → OFF
+   - "Auto Minify" → OFF for HTML/CSS/JS
+
+2. **Page Rules**:
+   ```
+   URL: api.example.com/api/*
+   Settings:
+     - Cache Level: Bypass
+     - Disable Performance
+   ```
+
+3. **Alternative**: Cloudflare bypass
+   ```
+   direct-ip.example.com → Direkt server IP
+   ```
+
+## Rule 8: Model Mapping Her Chunk'ta
+
+### ❌ YANLIŞ
+
+```python
+# İlk chunk'ta map et, sonrakileri olduğu gibi gönder
+first_chunk = True
+async for chunk in stream:
+    if first_chunk:
+        chunk = map_model(chunk)
+        first_chunk = False
+    yield chunk
+```
+
+**Sorun**: Her chunk'ta model field olabilir, hepsini map etmek gerek.
+
+### ✅ DOĞRU
+
+```python
+async for chunk in stream:
+    try:
+        json_data = json.loads(chunk)
+        mapped_data = self._map_model_from_ollama(json_data)
+        yield json.dumps(mapped_data).encode('utf-8') + b'\n'
+    except json.JSONDecodeError:
+        yield chunk
+```
+
+**Çözüm**: Her chunk'ı parse et ve map et.
+
+## Rule 9: Error Handling
+
+### Upstream Errors
+
+```python
+if resp.status_code != 200:
+    error_text = await resp.aread()
+    error_msg = error_text.decode()
+    print(f"Ollama upstream error ({resp.status_code}): {error_msg}")
+    raise HTTPException(
+        status_code=resp.status_code,
+        detail=f"Ollama upstream error: {error_msg}"
+    )
+```
+
+**Stream başlamadan error check et**: Stream başladıktan sonra HTTPException raise edemezsin.
+
+### JSON Parse Errors
+
+```python
+try:
+    json_data = json.loads(line.decode('utf-8'))
+    mapped_data = self._map_model_from_ollama(json_data)
+    yield json.dumps(mapped_data).encode('utf-8') + b'\n'
+except (json.JSONDecodeError, UnicodeDecodeError):
+    # Parse edilemeyen chunk'ları olduğu gibi ilet
+    yield line + b'\n'
+```
+
+**Fallback**: Parse edilemeyen chunk'lar olduğu gibi iletilir (corrupt data kaybedilmez).
+
+## Rule 10: Testing Streaming
+
+### cURL ile Test
+
+```bash
+curl -N -X POST http://localhost:8000/api/chat \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"Test"}],"stream":true}'
+```
+
+**`-N` flag**: Buffering'i kapat, stream'i göster.
+
+### Python ile Test
+
+```python
+import httpx
+
+async with httpx.AsyncClient() as client:
+    async with client.stream(
+        "POST",
+        "http://localhost:8000/api/chat",
+        headers={"Authorization": "Bearer TOKEN"},
+        json={"model": "gpt-4", "messages": [...], "stream": True}
+    ) as resp:
+        async for line in resp.aiter_lines():
+            print(line)
+```
+
+## Checklist
+
+Stream implementation yaparken:
+
+- [ ] `AsyncClient` generator içinde mi?
+- [ ] `aiter_raw()` kullanılıyor mu?
+- [ ] Buffer mekanizması var mı?
+- [ ] SSE ve NDJSON formatları detect ediliyor mu?
+- [ ] Anti-buffering headers eklendi mi?
+- [ ] Model mapping her chunk'ta yapılıyor mu?
+- [ ] Error handling uygun mu?
+- [ ] Nginx config'de buffering kapatıldı mı?
+- [ ] Timeout 600s olarak ayarlandı mı?
+- [ ] cURL ile test edildi mi?
