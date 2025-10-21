@@ -199,11 +199,12 @@ class OllamaProxy:
                 
                 return StreamingResponse(
                     stream_generator(),
-                    media_type="application/x-ndjson",
+                    media_type="text/event-stream",  # SSE format - Cloudflare daha iyi destekler
                     headers={
-                        "Cache-Control": "no-cache",
+                        "Cache-Control": "no-cache, no-transform",
                         "X-Accel-Buffering": "no",  # Nginx buffering'i kapat
-                        "Connection": "keep-alive"
+                        "Connection": "keep-alive",
+                        "Transfer-Encoding": "chunked"
                     }
                 )
             
