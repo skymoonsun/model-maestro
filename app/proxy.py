@@ -176,34 +176,46 @@ class OllamaProxy:
                                     status_code=resp.status_code,
                                     detail=f"Ollama error: {error_text.decode()}"
                                 )
-                            async for chunk in resp.aiter_bytes():
+                            
+                            # Buffer to accumulate partial lines
+                            buffer = b""
+                            
+                            async for chunk in resp.aiter_raw():
                                 if not chunk:
                                     continue
-                                # Parse and map model names in streaming chunks
-                                try:
-                                    # Decode chunk and process each line
-                                    text = chunk.decode('utf-8')
-                                    lines = text.strip().split('\n')
-                                    for line in lines:
-                                        if line.strip():
-                                            json_data = json.loads(line)
+                                
+                                # Add to buffer
+                                buffer += chunk
+                                
+                                # Process complete lines
+                                while b'\n' in buffer:
+                                    line, buffer = buffer.split(b'\n', 1)
+                                    if line:
+                                        try:
+                                            # Parse and map model names
+                                            json_data = json.loads(line.decode('utf-8'))
                                             mapped_data = self._map_model_from_ollama(json_data)
                                             yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                except json.JSONDecodeError:
-                                    # If not valid JSON, pass through as-is
-                                    yield chunk
-                                except Exception as e:
-                                    # Log error but continue streaming
-                                    print(f"Stream processing error: {e}")
-                                    yield chunk
+                                        except (json.JSONDecodeError, UnicodeDecodeError):
+                                            # If not valid JSON, pass through as-is
+                                            yield line + b'\n'
+                            
+                            # Process any remaining data in buffer
+                            if buffer:
+                                try:
+                                    json_data = json.loads(buffer.decode('utf-8'))
+                                    mapped_data = self._map_model_from_ollama(json_data)
+                                    yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                except (json.JSONDecodeError, UnicodeDecodeError):
+                                    yield buffer
                 
                 return StreamingResponse(
                     stream_generator(),
-                    media_type="application/x-ndjson",
+                    media_type="application/json",
                     headers={
-                        "Cache-Control": "no-cache",
-                        "X-Accel-Buffering": "no",  # Nginx buffering'i kapat
-                        "Connection": "keep-alive"
+                        "Cache-Control": "no-cache, no-transform",
+                        "X-Accel-Buffering": "no",
+                        "Transfer-Encoding": "chunked"
                     }
                 )
             
