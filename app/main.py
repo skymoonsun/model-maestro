@@ -274,24 +274,24 @@ async def openai_v1_proxy(
     # Determine if streaming
     stream = data.get("stream", False) if data else False
     
-    # Log request details (but not full content for privacy/size)
+    # Log request details
     if data:
         msg_count = len(data.get('messages', [])) if 'messages' in data else 0
-        logger.info(f"User {username} proxy {method} {endpoint} - keys: {list(data.keys())}, messages: {msg_count}")
+        model_name = data.get('model', '')
+        logger.info(f"User {username} proxy {method} {endpoint} - model: {model_name}, messages: {msg_count}")
         
-        # DEBUG: Save failed requests for analysis
-        import os
-        debug_dir = "/tmp/ollama_debug"
-        os.makedirs(debug_dir, exist_ok=True)
-        import time
-        debug_file = f"{debug_dir}/request_{int(time.time())}.json"
-        with open(debug_file, 'w') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info(f"Request saved to {debug_file}")
+        # Some models don't support tools parameter (e.g., deepseek-v3.1)
+        # Remove tools for models that don't support them
+        models_without_tool_support = ['deepseek-v3.1:671b', 'deepseek-v3.1']
+        
+        if any(unsupported in model_name for unsupported in models_without_tool_support):
+            if 'tools' in data or 'tool_choice' in data:
+                data = {k: v for k, v in data.items() if k not in ['tools', 'tool_choice']}
+                logger.info(f"Removed tools/tool_choice for model {model_name} (not supported)")
     else:
         logger.info(f"User {username} proxy {method} {endpoint}")
     
-    # Direct proxy - no modifications
+    # Direct proxy with cleaned data
     return await ollama_proxy.proxy_request(
         method=method,
         endpoint=endpoint,
