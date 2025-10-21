@@ -139,6 +139,35 @@ class OllamaProxy:
         data_copy['models'] = models
         return data_copy
     
+    def _map_openai_models_list(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Map model names in /v1/models response (OpenAI compatible format)
+        
+        Args:
+            data: Response from /v1/models
+        
+        Returns:
+            Modified data with display model names
+        """
+        if not isinstance(data, dict) or 'data' not in data:
+            return data
+        
+        data_copy = data.copy()
+        models = []
+        
+        for model in data_copy.get('data', []):
+            model_copy = model.copy() if isinstance(model, dict) else model
+            
+            if isinstance(model_copy, dict):
+                # Map id field (model name in OpenAI format)
+                if 'id' in model_copy:
+                    model_copy['id'] = model_mapper.get_display_model_name(model_copy['id'])
+            
+            models.append(model_copy)
+        
+        data_copy['data'] = models
+        return data_copy
+    
     async def proxy_request(
         self,
         method: str,
@@ -266,6 +295,8 @@ class OllamaProxy:
                 # Map model names in response
                 if endpoint == "/api/tags":
                     response_data = self._map_models_list(response_data)
+                elif endpoint == "/v1/models":
+                    response_data = self._map_openai_models_list(response_data)
                 else:
                     response_data = self._map_model_from_ollama(response_data)
                 
