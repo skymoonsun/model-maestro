@@ -2,10 +2,9 @@
 
 from typing import Any, Dict
 from fastapi import FastAPI, Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 import logging
 import json
-import time
 
 from app.auth import get_current_user
 from app.proxy import ollama_proxy
@@ -20,13 +19,6 @@ from app.models import (
     OllamaPullRequest,
     OllamaPushRequest,
     OllamaCreateRequest,
-)
-from app.openai_adapter import (
-    OpenAIChatRequest,
-    OpenAIChatResponse,
-    openai_to_ollama_messages,
-    ollama_to_openai_response,
-    ollama_stream_to_openai_stream,
 )
 
 # Setup logging
@@ -257,129 +249,31 @@ async def create_model(
 
 
 # OpenAI Compatible Endpoints for Cursor
+# Directly proxy to Ollama's native OpenAI compatible endpoints
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(
-    request: OpenAIChatRequest,
+    request: Request,
     username: str = Depends(get_current_user)
 ):
     """
     OpenAI compatible chat completions endpoint
     
-    This allows using the API with Cursor and other OpenAI-compatible clients
+    Directly proxies to Ollama's native /v1/chat/completions endpoint
     Requires JWT authentication
     """
-    logger.info(f"User {username} requesting OpenAI chat completion with model {request.model}")
+    # Get request body
+    body = await request.body()
+    request_data = json.loads(body.decode('utf-8'))
     
-    # Convert OpenAI request to Ollama format
-    ollama_messages = openai_to_ollama_messages(request.messages)
+    logger.info(f"User {username} requesting OpenAI chat completion with model {request_data.get('model', 'unknown')}")
     
-    # Build Ollama request
-    ollama_request = OllamaChatRequest(
-        model=request.model,
-        messages=ollama_messages,
-        stream=request.stream or False
+    # Proxy directly to Ollama's OpenAI compatible endpoint
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/v1/chat/completions",
+        data=request_data,
+        stream=request_data.get("stream", False)
     )
-    
-    # Add optional parameters if provided
-    options = {}
-    if request.temperature is not None:
-        options["temperature"] = request.temperature
-    if request.max_tokens is not None:
-        options["num_predict"] = request.max_tokens
-    if request.top_p is not None:
-        options["top_p"] = request.top_p
-    
-    if request.stream:
-        # Handle streaming response
-        async def openai_stream_generator():
-            try:
-                # Call Ollama chat endpoint directly
-                ollama_data = {
-                    "model": ollama_request.model,
-                    "messages": ollama_request.messages,
-                    "stream": True
-                }
-                if options:
-                    ollama_data["options"] = options
-                
-                # Get streaming response from proxy
-                response = await ollama_proxy.proxy_request(
-                    method="POST",
-                    endpoint="/api/chat",
-                    data=ollama_data,
-                    stream=True
-                )
-                
-                # response is a StreamingResponse, iterate its body
-                async for chunk in response.body_iterator:
-                    if not chunk:
-                        continue
-                    try:
-                        # Decode and parse JSON
-                        line = chunk.decode('utf-8').strip()
-                        if not line:
-                            continue
-                        
-                        ollama_chunk = json.loads(line)
-                        
-                        # Convert to OpenAI format
-                        openai_chunk = ollama_stream_to_openai_stream(ollama_chunk)
-                        if openai_chunk:
-                            yield f"data: {openai_chunk.model_dump_json()}\n\n".encode('utf-8')
-                        
-                        # Send [DONE] at the end
-                        if ollama_chunk.get("done", False):
-                            yield b"data: [DONE]\n\n"
-                    except json.JSONDecodeError:
-                        continue
-                    except Exception as e:
-                        logger.error(f"Stream chunk error: {e}")
-                        continue
-            except Exception as e:
-                logger.error(f"Streaming error: {e}")
-                # Send error in OpenAI format
-                error_chunk = {
-                    "id": "chatcmpl-error",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": request.model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": f"Error: {str(e)}"},
-                        "finish_reason": "stop"
-                    }]
-                }
-                yield f"data: {json.dumps(error_chunk)}\n\n".encode('utf-8')
-                yield b"data: [DONE]\n\n"
-        
-        return StreamingResponse(
-            openai_stream_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no"
-            }
-        )
-    else:
-        # Non-streaming response
-        ollama_data = {
-            "model": ollama_request.model,
-            "messages": ollama_request.messages,
-            "stream": False
-        }
-        if options:
-            ollama_data["options"] = options
-        
-        ollama_response = await ollama_proxy.proxy_request(
-            method="POST",
-            endpoint="/api/chat",
-            data=ollama_data,
-            stream=False
-        )
-        
-        # Convert Ollama response to OpenAI format
-        openai_response = ollama_to_openai_response(ollama_response)
-        return openai_response
 
 
 @app.get("/v1/models")
@@ -389,34 +283,16 @@ async def openai_list_models(
     """
     OpenAI compatible models list endpoint
     
-    Returns available models in OpenAI format
+    Directly proxies to Ollama's native /v1/models endpoint
     Requires JWT authentication
     """
     logger.info(f"User {username} requesting OpenAI models list")
     
-    # Get models from Ollama
-    ollama_response = await ollama_proxy.proxy_request(
+    # Proxy directly to Ollama's OpenAI compatible endpoint
+    return await ollama_proxy.proxy_request(
         method="GET",
-        endpoint="/api/tags"
+        endpoint="/v1/models"
     )
-    
-    # Convert to OpenAI format
-    models_list = []
-    for model in ollama_response.get("models", []):
-        models_list.append({
-            "id": model.get("name"),
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "ollama",
-            "permission": [],
-            "root": model.get("name"),
-            "parent": None
-        })
-    
-    return {
-        "object": "list",
-        "data": models_list
-    }
 
 
 if __name__ == "__main__":
