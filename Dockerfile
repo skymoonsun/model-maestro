@@ -12,6 +12,10 @@ COPY app/ ./app/
 COPY cli.py .
 COPY docker-entrypoint.sh .
 
+# Copy Alembic files for database migrations
+COPY alembic.ini .
+COPY alembic/ ./alembic/
+
 # Create directories for data and config
 RUN mkdir -p /app/data /app/config
 

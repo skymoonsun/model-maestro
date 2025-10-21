@@ -15,6 +15,13 @@ class OllamaProxy:
     def __init__(self):
         self.settings = get_settings()
         self.base_url = self.settings.ollama_base_url
+        self._mappings_loaded = False
+    
+    async def _ensure_mappings_loaded(self):
+        """Ensure model mappings are loaded from database"""
+        # Always reload from Redis to get fresh data (no caching)
+        await model_mapper.ensure_loaded()
+        self._mappings_loaded = True
     
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -113,11 +120,17 @@ class OllamaProxy:
             if isinstance(model_copy, dict):
                 # Map name field
                 if 'name' in model_copy:
+                    original_name = model_copy['name']
                     model_copy['name'] = model_mapper.get_display_model_name(model_copy['name'])
+                    if original_name != model_copy['name']:
+                        print(f"Model name mapped: {original_name} -> {model_copy['name']}")
                 
                 # Map model field if exists
                 if 'model' in model_copy:
+                    original_model = model_copy['model']
                     model_copy['model'] = model_mapper.get_display_model_name(model_copy['model'])
+                    if original_model != model_copy['model']:
+                        print(f"Model field mapped: {original_model} -> {model_copy['model']}")
                 
                 # Remove remote_model field to make cloud models look like local models
                 if 'remote_model' in model_copy:
@@ -187,6 +200,10 @@ class OllamaProxy:
         Returns:
             Response from Ollama (mapped model names)
         """
+        print(f"proxy_request called: {method} {endpoint}")
+        # Ensure model mappings are loaded from database
+        await self._ensure_mappings_loaded()
+        
         url = f"{self.base_url}{endpoint}"
         
         # Map model names in request

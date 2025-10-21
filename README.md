@@ -19,7 +19,40 @@ git clone <repository-url>
 cd ollama-proxy-api
 ```
 
-### 2. Environment Dosyasını Oluşturun
+### 2. PostgreSQL Kurulumu
+
+Bu proje kullanıcı bilgileri ve model mapping'leri için PostgreSQL kullanır.
+
+#### Yerel PostgreSQL Kurulumu
+
+**macOS:**
+```bash
+brew install postgresql@15
+brew services start postgresql@15
+createdb ollama_proxy
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo systemctl start postgresql
+sudo -u postgres createdb ollama_proxy
+sudo -u postgres createuser -P ollama_user
+```
+
+**Docker ile PostgreSQL (Opsiyonel):**
+```bash
+docker run -d \
+  --name ollama-postgres \
+  -e POSTGRES_DB=ollama_proxy \
+  -e POSTGRES_USER=ollama_user \
+  -e POSTGRES_PASSWORD=changeme \
+  -p 5432:5432 \
+  postgres:15-alpine
+```
+
+### 3. Environment Dosyasını Oluşturun
 
 ```bash
 cp .env.example .env
@@ -28,12 +61,19 @@ cp .env.example .env
 `.env` dosyasını düzenleyin:
 
 ```env
+# Ollama Configuration
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 JWT_SECRET_KEY=super-secret-key-change-this-immediately
 LOG_LEVEL=INFO
+
+# PostgreSQL Configuration
+DATABASE_URL=postgresql+asyncpg://ollama_user:changeme@localhost:5432/ollama_proxy
+
+# Admin Token (admin endpoint'leri için)
+ADMIN_TOKEN=admin-super-secret-token-change-this-in-production
 ```
 
-### 3. Model Mapping'i Yapılandırın
+### 4. Model Mapping'i Yapılandırın
 
 `config/model_mappings.json` dosyasını ihtiyacınıza göre düzenleyin:
 
@@ -50,13 +90,39 @@ LOG_LEVEL=INFO
 }
 ```
 
-### 4. Docker ile Çalıştırın
+### 5. Database Migration'ları Çalıştırın
+
+Docker container'ı başlatmadan önce veya başlattıktan sonra migration'ları çalıştırın:
+
+```bash
+# Container içinde migration çalıştırma
+docker-compose up -d
+docker exec ollama-proxy alembic upgrade head
+```
+
+### 6. Docker ile Çalıştırın
 
 ```bash
 docker-compose up -d
 ```
 
 Servis `http://localhost:8000` adresinde çalışacaktır.
+
+### 7. İlk Model Mapping'leri Oluşturun (Opsiyonel)
+
+Admin API kullanarak model mapping'leri oluşturabilirsiniz:
+
+```bash
+curl -X POST http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "gpt-oss:120b",
+    "real_name": "gpt-oss:120b-cloud"
+  }'
+```
+
+Veya JSON dosyasından import etmek için migration script yazabilirsiniz.
 
 ## Kullanıcı Yönetimi
 
@@ -104,6 +170,239 @@ docker exec ollama-proxy refresh-token john
 ```bash
 docker exec ollama-proxy delete-user john
 ```
+
+## Admin API
+
+Admin endpoint'leri ile kullanıcı ve model yönetimi yapabilirsiniz. Tüm admin endpoint'leri `ADMIN_TOKEN` gerektirir.
+
+### Authentication
+
+Admin endpoint'leri için `.env` dosyasında tanımlı `ADMIN_TOKEN` kullanılır:
+
+```bash
+Authorization: Bearer YOUR_ADMIN_TOKEN
+```
+
+### Kullanıcı Yönetimi Endpoint'leri
+
+#### Kullanıcı Oluşturma
+
+```bash
+curl -X POST http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "john"}'
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "created_at": "2024-01-20T10:30:00.000000",
+  "updated_at": null,
+  "is_active": true
+}
+```
+
+#### Kullanıcı Listesini Görüntüleme
+
+```bash
+curl -X GET http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+[
+  {
+    "username": "john",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "created_at": "2024-01-20T10:30:00.000000",
+    "updated_at": null,
+    "is_active": true,
+    "has_all_models": false,
+    "models": ["gpt-oss:120b", "deepseek-v3.1:671b"]
+  }
+]
+```
+
+#### Kullanıcı Bilgilerini Görüntüleme
+
+```bash
+curl -X GET http://localhost:8000/admin/users/john \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+#### Token Yenileme
+
+```bash
+curl -X PUT http://localhost:8000/admin/users/john/token \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "created_at": "2024-01-20T10:30:00.000000",
+  "updated_at": "2024-01-20T11:00:00.000000",
+  "is_active": true
+}
+```
+
+#### Kullanıcı Silme
+
+```bash
+curl -X DELETE http://localhost:8000/admin/users/john \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Model Atama Endpoint'leri
+
+#### Belirli Modelleri Kullanıcıya Atama
+
+```bash
+curl -X POST http://localhost:8000/admin/users/john/models \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "models": ["gpt-oss:120b", "deepseek-v3.1:671b", "qwen3-coder:480b"]
+  }'
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "has_all_models": false,
+  "models": ["gpt-oss:120b", "deepseek-v3.1:671b", "qwen3-coder:480b"]
+}
+```
+
+#### Tüm Modellere Erişim Verme
+
+```bash
+curl -X POST http://localhost:8000/admin/users/john/models/all \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "has_all_models": true,
+  "models": []
+}
+```
+
+#### Kullanıcının Modellerini Görüntüleme
+
+```bash
+curl -X GET http://localhost:8000/admin/users/john/models \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "has_all_models": false,
+  "models": ["gpt-oss:120b", "deepseek-v3.1:671b"]
+}
+```
+
+#### Model Erişimini Kaldırma
+
+**Belirli bir modeli kaldırma:**
+```bash
+curl -X DELETE http://localhost:8000/admin/users/john/models/gpt-oss:120b \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Tüm model erişimini kaldırma:**
+```bash
+# "all" kullanarak tüm modelleri kaldır (has_all_models dahil)
+curl -X DELETE http://localhost:8000/admin/users/john/models/all \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Not**: `model_name="all"` kullanıldığında:
+- `has_all_models=True` ise → Tüm modellere erişim kaldırılır
+- Belirli modeller atanmışsa → Tüm atanmış modeller kaldırılır
+- Kullanıcı hiçbir modele erişemez hale gelir
+
+### Model Mapping Yönetimi
+
+#### Model Mapping Oluşturma
+
+```bash
+curl -X POST http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "gpt-oss:120b",
+    "real_name": "gpt-oss:120b-cloud"
+  }'
+```
+
+**Response:**
+```json
+{
+  "display_name": "gpt-oss:120b",
+  "real_name": "gpt-oss:120b-cloud",
+  "created_at": "2024-01-20T10:30:00.000000"
+}
+```
+
+#### Model Mapping Listesini Görüntüleme
+
+```bash
+curl -X GET http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+[
+  {
+    "display_name": "gpt-oss:120b",
+    "real_name": "gpt-oss:120b-cloud",
+    "created_at": "2024-01-20T10:30:00.000000"
+  },
+  {
+    "display_name": "deepseek-v3.1:671b",
+    "real_name": "deepseek-v3.1:671b-cloud",
+    "created_at": "2024-01-20T10:30:00.000000"
+  }
+]
+```
+
+#### Model Mapping Silme
+
+```bash
+curl -X DELETE http://localhost:8000/admin/model-mappings/gpt-oss:120b \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Not**: Model mapping ekleme/silme işlemlerinde cache otomatik olarak yenilenir.
+
+### Model Erişim Kontrolü
+
+Kullanıcılar yalnızca kendilerine atanmış modellere erişebilir:
+
+- **has_all_models=true**: Kullanıcı tüm modellere erişebilir
+- **has_all_models=false**: Kullanıcı sadece `models` listesindeki modellere erişebilir
+
+Model erişim kontrolü şu endpoint'lerde çalışır:
+- `/api/generate`
+- `/api/chat`
+- `/api/embeddings`
+- `/api/show`
+- `/v1/chat/completions`
+
+Model listeleme endpoint'leri (`/api/tags`, `/v1/models`) kullanıcının erişebildiği modelleri döner.
 
 ## API Kullanımı
 

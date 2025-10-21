@@ -1,60 +1,22 @@
-"""User management and JWT token operations"""
+"""User management and JWT token operations (PostgreSQL-based)"""
 
-import json
-import os
-import secrets
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List
 import jwt
-from pathlib import Path
 
-from app.models import User, UserInDB
 from app.config import get_settings
+from app.database import async_session_maker
+from app.repositories import UserRepository, UserModelRepository
 
 
 class UserManager:
-    """Manage users and JWT tokens"""
+    """Manage users and JWT tokens with PostgreSQL"""
     
-    def __init__(self, users_file: str = "/app/data/users.json"):
-        self.users_file = users_file
+    def __init__(self):
         self.settings = get_settings()
-        self._ensure_file_exists()
-    
-    def _ensure_file_exists(self):
-        """Ensure users file exists"""
-        if not os.path.exists(self.users_file):
-            os.makedirs(os.path.dirname(self.users_file), exist_ok=True)
-            self._save_db(UserInDB(users=[]))
-    
-    def _load_db(self) -> UserInDB:
-        """Load users database from JSON file"""
-        try:
-            with open(self.users_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return UserInDB(**data)
-        except Exception as e:
-            print(f"Error loading users database: {e}")
-            return UserInDB(users=[])
-    
-    def _save_db(self, db: UserInDB):
-        """Save users database to JSON file"""
-        try:
-            with open(self.users_file, 'w', encoding='utf-8') as f:
-                json.dump(db.model_dump(), f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving users database: {e}")
-            raise
     
     def _generate_token(self, username: str) -> str:
-        """
-        Generate JWT token for user (no expiration)
-        
-        Args:
-            username: Username
-        
-        Returns:
-            JWT token string
-        """
+        """Generate JWT token for user (no expiration)"""
         payload = {
             "username": username,
             "iat": int(datetime.utcnow().timestamp())
@@ -62,128 +24,128 @@ class UserManager:
         token = jwt.encode(payload, self.settings.jwt_secret_key, algorithm="HS256")
         return token
     
-    def create_user(self, username: str) -> Optional[User]:
+    async def create_user(self, username: str) -> Optional[dict]:
         """
         Create a new user with JWT token
         
-        Args:
-            username: Username
-        
-        Returns:
-            User object or None if user already exists
+        If user exists but is inactive (soft deleted), reactivate with new token
         """
-        db = self._load_db()
-        
-        # Check if user already exists
-        if any(u.username == username for u in db.users):
-            return None
-        
-        # Generate token
-        token = self._generate_token(username)
-        
-        # Create user
-        user = User(
-            username=username,
-            token=token,
-            created_at=datetime.utcnow().isoformat()
-        )
-        
-        db.users.append(user)
-        self._save_db(db)
-        
-        return user
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            
+            # Check if active user already exists
+            if await user_repo.exists(username):
+                raise ValueError(f"Kullanıcı zaten mevcut: {username}")
+            
+            # Check if inactive user exists (soft deleted)
+            inactive_user = await user_repo.get_by_username_any(username)
+            if inactive_user and not inactive_user.is_active:
+                # Reactivate user with new token
+                new_token = self._generate_token(username)
+                user = await user_repo.reactivate(username, new_token)
+                
+                return {
+                    "username": user.username,
+                    "token": user.token,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                    "reactivated": True
+                }
+            
+            # Generate token
+            token = self._generate_token(username)
+            
+            # Create new user
+            user = await user_repo.create(username, token)
+            
+            return {
+                "username": user.username,
+                "token": user.token,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                "reactivated": False
+            }
     
-    def delete_user(self, username: str) -> bool:
+    async def delete_user(self, username: str) -> bool:
         """
-        Delete a user
+        Delete a user (soft delete)
         
-        Args:
-            username: Username
-        
-        Returns:
-            True if user was deleted, False if user not found
+        Also deletes all user_models entries (hard delete)
         """
-        db = self._load_db()
-        original_count = len(db.users)
-        
-        db.users = [u for u in db.users if u.username != username]
-        
-        if len(db.users) < original_count:
-            self._save_db(db)
-            return True
-        
-        return False
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user_model_repo = UserModelRepository(session)
+            
+            # Get user first
+            user = await user_repo.get_by_username(username)
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+            
+            # Hard delete all user_models entries
+            await user_model_repo.delete_all_for_user(user.id)
+            
+            # Soft delete user
+            result = await user_repo.soft_delete(username)
+            
+            return result
     
-    def refresh_token(self, username: str) -> Optional[User]:
-        """
-        Refresh user's JWT token
-        
-        Args:
-            username: Username
-        
-        Returns:
-            Updated User object or None if user not found
-        """
-        db = self._load_db()
-        
-        user_index = None
-        for i, u in enumerate(db.users):
-            if u.username == username:
-                user_index = i
-                break
-        
-        if user_index is None:
-            return None
-        
-        # Generate new token
-        new_token = self._generate_token(username)
-        
-        # Update user
-        db.users[user_index].token = new_token
-        db.users[user_index].updated_at = datetime.utcnow().isoformat()
-        
-        self._save_db(db)
-        
-        return db.users[user_index]
+    async def refresh_token(self, username: str) -> Optional[dict]:
+        """Refresh user's JWT token"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            
+            # Generate new token
+            new_token = self._generate_token(username)
+            
+            # Update user
+            user = await user_repo.update_token(username, new_token)
+            
+            if not user:
+                return None
+            
+            return {
+                "username": user.username,
+                "token": user.token,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None
+            }
     
-    def get_user(self, username: str) -> Optional[User]:
-        """
-        Get user by username
-        
-        Args:
-            username: Username
-        
-        Returns:
-            User object or None if not found
-        """
-        db = self._load_db()
-        
-        for user in db.users:
-            if user.username == username:
-                return user
-        
-        return None
+    async def get_user(self, username: str) -> Optional[dict]:
+        """Get user by username"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            return {
+                "username": user.username,
+                "token": user.token,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                "is_active": user.is_active
+            }
     
-    def list_users(self) -> List[User]:
-        """
-        List all users
-        
-        Returns:
-            List of User objects
-        """
-        db = self._load_db()
-        return db.users
+    async def list_users(self) -> List[dict]:
+        """List all users"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            users = await user_repo.list_all()
+            
+            return [
+                {
+                    "username": user.username,
+                    "token": user.token,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                    "is_active": user.is_active
+                }
+                for user in users
+            ]
     
-    def verify_token(self, token: str) -> Optional[str]:
-        """
-        Verify JWT token and return username
-        
-        Args:
-            token: JWT token string
-        
-        Returns:
-            Username if token is valid, None otherwise
-        """
+    async def verify_token(self, token: str) -> Optional[str]:
+        """Verify JWT token and return username"""
         try:
             payload = jwt.decode(token, self.settings.jwt_secret_key, algorithms=["HS256"])
             username = payload.get("username")
@@ -191,10 +153,12 @@ class UserManager:
             if not username:
                 return None
             
-            # Check if user exists and token matches
-            db = self._load_db()
-            for user in db.users:
-                if user.username == username and user.token == token:
+            # Check if user exists and token matches in DB
+            async with async_session_maker() as session:
+                user_repo = UserRepository(session)
+                user = await user_repo.get_by_token(token)
+                
+                if user and user.username == username:
                     return username
             
             return None
@@ -203,6 +167,94 @@ class UserManager:
         except Exception as e:
             print(f"Error verifying token: {e}")
             return None
+    
+    async def assign_models_to_user(self, username: str, models: List[str]) -> bool:
+        """Assign specific models to user"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return False
+            
+            user_model_repo = UserModelRepository(session)
+            await user_model_repo.assign_multiple_models(user.id, models)
+            
+            return True
+    
+    async def grant_all_models(self, username: str) -> bool:
+        """Grant access to all models"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return False
+            
+            user_model_repo = UserModelRepository(session)
+            await user_model_repo.grant_all_models(user.id)
+            
+            return True
+    
+    async def get_user_models(self, username: str) -> Optional[dict]:
+        """Get user's assigned models"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            user_model_repo = UserModelRepository(session)
+            has_all = await user_model_repo.has_all_models(user.id)
+            models = await user_model_repo.get_user_models(user.id)
+            
+            return {
+                "username": username,
+                "has_all_models": has_all,
+                "models": models if not has_all else []
+            }
+    
+    async def check_model_access(self, username: str, model_name: str) -> bool:
+        """Check if user has access to specific model"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return False
+            
+            user_model_repo = UserModelRepository(session)
+            return await user_model_repo.has_model_access(user.id, model_name)
+    
+    async def revoke_model(self, username: str, model_name: str) -> bool:
+        """Revoke access to specific model"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+            
+            user_model_repo = UserModelRepository(session)
+            result = await user_model_repo.revoke_model(user.id, model_name)
+            
+            if not result:
+                raise ValueError(f"Model bulunamadı veya zaten yetkilendirilmemiş: {model_name}")
+            
+            return result
+    
+    async def revoke_all_models(self, username: str) -> bool:
+        """Revoke all model access (including has_all_models)"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+            
+            user_model_repo = UserModelRepository(session)
+            return await user_model_repo.revoke_all_models(user.id)
 
 
 # Global user manager instance

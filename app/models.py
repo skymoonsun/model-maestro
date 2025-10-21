@@ -92,3 +92,55 @@ class OllamaCreateRequest(BaseModel):
     stream: Optional[bool] = False
     path: Optional[str] = None
 
+
+# Admin API Models
+
+class CreateUserRequest(BaseModel):
+    """Create user request"""
+    username: str
+
+
+class AssignModelsRequest(BaseModel):
+    """Assign models to user request"""
+    models: List[str]
+
+
+class CreateMappingRequest(BaseModel):
+    """Create model mapping request"""
+    display_name: str
+    real_name: str
+
+
+class UserResponse(BaseModel):
+    """User response"""
+    username: str
+    token: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    is_active: bool = True
+
+
+class UserWithModelsResponse(BaseModel):
+    """User with models response"""
+    username: str
+    token: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    is_active: bool = True
+    has_all_models: bool = False
+    models: List[str] = []
+
+
+class UserModelsResponse(BaseModel):
+    """User models response"""
+    username: str
+    has_all_models: bool
+    models: List[str]
+
+
+class ModelMappingResponse(BaseModel):
+    """Model mapping response"""
+    display_name: str
+    real_name: str
+    created_at: Optional[str] = None
+
