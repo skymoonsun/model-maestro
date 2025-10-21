@@ -278,6 +278,10 @@ async def openai_v1_proxy(
     if data:
         msg_count = len(data.get('messages', [])) if 'messages' in data else 0
         logger.info(f"User {username} proxy {method} {endpoint} - keys: {list(data.keys())}, messages: {msg_count}")
+        
+        # Warn about large requests that might timeout
+        if msg_count > 200:
+            logger.warning(f"Large request with {msg_count} messages - may timeout on cloud models")
     else:
         logger.info(f"User {username} proxy {method} {endpoint}")
     

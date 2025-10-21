@@ -172,7 +172,7 @@ class OllamaProxy:
             if method.upper() == "POST" and stream:
                 # Handle streaming response - client must stay open during streaming
                 async def stream_generator():
-                    async with httpx.AsyncClient(timeout=300.0) as client:
+                    async with httpx.AsyncClient(timeout=600.0) as client:
                         async with client.stream("POST", url, json=data) as resp:
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
@@ -240,7 +240,7 @@ class OllamaProxy:
                 return response
             
             # Non-streaming requests
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            async with httpx.AsyncClient(timeout=600.0) as client:
                 if method.upper() == "GET":
                     response = await client.get(url)
                 elif method.upper() == "POST":
