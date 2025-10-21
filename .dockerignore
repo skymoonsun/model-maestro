@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+
+# Virtual Environment
+venv
+env
+ENV
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Cursor
+.cursor
+
+# Documentation (not needed in container)
+README.md
+QUICKSTART.md
+.specstory
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Environment (will be mounted or configured separately)
+.env
+
+# Data files (will be mounted as volumes)
+data/users.json
+
