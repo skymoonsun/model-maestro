@@ -32,6 +32,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Disable response buffering for streaming
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting Ollama Proxy API with streaming support")
+
 
 @app.get("/")
 async def root():

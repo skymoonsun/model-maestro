@@ -209,15 +209,17 @@ class OllamaProxy:
                                 except (json.JSONDecodeError, UnicodeDecodeError):
                                     yield buffer
                 
-                return StreamingResponse(
+                # Return streaming response immediately without buffering
+                response = StreamingResponse(
                     stream_generator(),
                     media_type="application/json",
                     headers={
                         "Cache-Control": "no-cache, no-transform",
-                        "X-Accel-Buffering": "no",
-                        "Transfer-Encoding": "chunked"
+                        "X-Accel-Buffering": "no"
                     }
                 )
+                # Remove Transfer-Encoding header to let framework handle it
+                return response
             
             # Non-streaming requests
             async with httpx.AsyncClient(timeout=300.0) as client:

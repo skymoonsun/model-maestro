@@ -25,5 +25,7 @@ EXPOSE 8000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Default command to run the FastAPI server
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --timeout-keep-alive 300: Keep connection alive for streaming
+# --limit-concurrency 1000: Allow many concurrent connections
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "300", "--limit-concurrency", "1000"]
 
