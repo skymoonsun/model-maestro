@@ -258,22 +258,36 @@ async def openai_chat_completions(
     """
     OpenAI compatible chat completions endpoint
     
-    Directly proxies to Ollama's native /v1/chat/completions endpoint
+    Proxies to Ollama's native /v1/chat/completions endpoint with model mapping
     Requires JWT authentication
     """
     # Get request body
     body = await request.body()
     request_data = json.loads(body.decode('utf-8'))
     
-    logger.info(f"User {username} requesting OpenAI chat completion with model {request_data.get('model', 'unknown')}")
+    original_model = request_data.get('model', 'unknown')
+    logger.info(f"User {username} requesting OpenAI chat completion with model {original_model}")
     
-    # Proxy directly to Ollama's OpenAI compatible endpoint
-    return await ollama_proxy.proxy_request(
+    # Model mapping is already handled in proxy.py's _map_model_to_ollama
+    # So we just pass the request through
+    response = await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=request_data,
         stream=request_data.get("stream", False)
     )
+    
+    # If it's a streaming response, return as-is (already a StreamingResponse)
+    if request_data.get("stream", False):
+        return response
+    
+    # For non-streaming, the response is a dict
+    # Map model name back in the response
+    if isinstance(response, dict) and "model" in response:
+        from app.config import model_mapper
+        response["model"] = model_mapper.get_display_model_name(response["model"])
+    
+    return response
 
 
 @app.get("/v1/models")

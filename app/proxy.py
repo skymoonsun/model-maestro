@@ -192,10 +192,22 @@ class OllamaProxy:
                                     line, buffer = buffer.split(b'\n', 1)
                                     if line:
                                         try:
-                                            # Parse and map model names
-                                            json_data = json.loads(line.decode('utf-8'))
-                                            mapped_data = self._map_model_from_ollama(json_data)
-                                            yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                            # Check if it's SSE format (for OpenAI endpoints)
+                                            if line.startswith(b'data: '):
+                                                # Extract JSON after "data: "
+                                                json_str = line[6:].decode('utf-8').strip()
+                                                if json_str and json_str != '[DONE]':
+                                                    json_data = json.loads(json_str)
+                                                    mapped_data = self._map_model_from_ollama(json_data)
+                                                    yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                else:
+                                                    # Pass through [DONE] or empty
+                                                    yield line + b'\n'
+                                            else:
+                                                # Regular Ollama format (NDJSON)
+                                                json_data = json.loads(line.decode('utf-8'))
+                                                mapped_data = self._map_model_from_ollama(json_data)
+                                                yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                         except (json.JSONDecodeError, UnicodeDecodeError):
                                             # If not valid JSON, pass through as-is
                                             yield line + b'\n'
