@@ -165,47 +165,49 @@ class OllamaProxy:
             data = self._map_model_to_ollama(data)
         
         try:
+            if method.upper() == "POST" and stream:
+                # Handle streaming response - client must stay open during streaming
+                async def stream_generator():
+                    async with httpx.AsyncClient(timeout=300.0) as client:
+                        async with client.stream("POST", url, json=data) as resp:
+                            if resp.status_code != 200:
+                                error_text = await resp.aread()
+                                raise HTTPException(
+                                    status_code=resp.status_code,
+                                    detail=f"Ollama error: {error_text.decode()}"
+                                )
+                            async for chunk in resp.aiter_bytes():
+                                if not chunk:
+                                    continue
+                                # Parse and map model names in streaming chunks
+                                try:
+                                    # Decode chunk and process each line
+                                    text = chunk.decode('utf-8')
+                                    lines = text.strip().split('\n')
+                                    for line in lines:
+                                        if line.strip():
+                                            json_data = json.loads(line)
+                                            mapped_data = self._map_model_from_ollama(json_data)
+                                            yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                except json.JSONDecodeError:
+                                    # If not valid JSON, pass through as-is
+                                    yield chunk
+                                except Exception as e:
+                                    # Log error but continue streaming
+                                    print(f"Stream processing error: {e}")
+                                    yield chunk
+                
+                return StreamingResponse(
+                    stream_generator(),
+                    media_type="application/x-ndjson"
+                )
+            
+            # Non-streaming requests
             async with httpx.AsyncClient(timeout=300.0) as client:
                 if method.upper() == "GET":
                     response = await client.get(url)
                 elif method.upper() == "POST":
-                    if stream:
-                        # Handle streaming response
-                        async def stream_generator():
-                            async with client.stream("POST", url, json=data) as resp:
-                                if resp.status_code != 200:
-                                    error_text = await resp.aread()
-                                    raise HTTPException(
-                                        status_code=resp.status_code,
-                                        detail=f"Ollama error: {error_text.decode()}"
-                                    )
-                                async for chunk in resp.aiter_bytes():
-                                    if not chunk:
-                                        continue
-                                    # Parse and map model names in streaming chunks
-                                    try:
-                                        # Decode chunk and process each line
-                                        text = chunk.decode('utf-8')
-                                        lines = text.strip().split('\n')
-                                        for line in lines:
-                                            if line.strip():
-                                                json_data = json.loads(line)
-                                                mapped_data = self._map_model_from_ollama(json_data)
-                                                yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                    except json.JSONDecodeError:
-                                        # If not valid JSON, pass through as-is
-                                        yield chunk
-                                    except Exception as e:
-                                        # Log error but continue streaming
-                                        print(f"Stream processing error: {e}")
-                                        yield chunk
-                        
-                        return StreamingResponse(
-                            stream_generator(),
-                            media_type="application/x-ndjson"
-                        )
-                    else:
-                        response = await client.post(url, json=data)
+                    response = await client.post(url, json=data)
                 elif method.upper() == "DELETE":
                     response = await client.delete(url, json=data)
                 else:
