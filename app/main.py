@@ -267,15 +267,27 @@ async def openai_chat_completions(
     
     original_model = request_data.get('model', 'unknown')
     logger.info(f"User {username} requesting OpenAI chat completion with model {original_model}")
-    logger.debug(f"Request data: {json.dumps(request_data, indent=2)}")
+    logger.info(f"Full request data: {json.dumps(request_data, indent=2)}")
+    
+    # Remove unsupported OpenAI parameters that Ollama doesn't support
+    # Keep only Ollama-compatible parameters
+    unsupported_params = ['tools', 'tool_choice', 'functions', 'function_call', 
+                         'response_format', 'logit_bias', 'user', 'presence_penalty', 
+                         'frequency_penalty', 'n', 'stop', 'logprobs', 'top_logprobs']
+    
+    cleaned_data = {k: v for k, v in request_data.items() if k not in unsupported_params}
+    
+    if len(cleaned_data) != len(request_data):
+        removed = set(request_data.keys()) - set(cleaned_data.keys())
+        logger.info(f"Removed unsupported parameters: {removed}")
     
     # Model mapping is already handled in proxy.py's _map_model_to_ollama
-    # So we just pass the request through
+    # So we just pass the cleaned request through
     response = await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
-        data=request_data,
-        stream=request_data.get("stream", False)
+        data=cleaned_data,
+        stream=cleaned_data.get("stream", False)
     )
     
     # If it's a streaming response, return as-is (already a StreamingResponse)
