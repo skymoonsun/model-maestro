@@ -176,9 +176,11 @@ class OllamaProxy:
                         async with client.stream("POST", url, json=data) as resp:
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
+                                error_msg = error_text.decode()
+                                print(f"Ollama upstream error ({resp.status_code}): {error_msg}")
                                 raise HTTPException(
                                     status_code=resp.status_code,
-                                    detail=f"Ollama error: {error_text.decode()}"
+                                    detail=f"Ollama upstream error: {error_msg}"
                                 )
                             
                             # Buffer to accumulate partial lines

@@ -274,7 +274,12 @@ async def openai_v1_proxy(
     # Determine if streaming
     stream = data.get("stream", False) if data else False
     
-    logger.info(f"User {username} proxy {method} {endpoint}")
+    # Log request details (but not full content for privacy/size)
+    if data:
+        msg_count = len(data.get('messages', [])) if 'messages' in data else 0
+        logger.info(f"User {username} proxy {method} {endpoint} - keys: {list(data.keys())}, messages: {msg_count}")
+    else:
+        logger.info(f"User {username} proxy {method} {endpoint}")
     
     # Direct proxy - no modifications
     return await ollama_proxy.proxy_request(
