@@ -248,9 +248,33 @@ python cli.py list-users
 
 `.env` dosyasındaki `OLLAMA_BASE_URL` adresini kontrol edin:
 
-- Docker içinde: `http://host.docker.internal:11434`
+- Docker içinde (macOS/Windows): `http://host.docker.internal:11434`
+- Docker içinde (Linux): `http://localhost:11434` (ve `docker-compose.yml`'de `network_mode: "host"` kullanın)
 - Local: `http://localhost:11434`
 - Uzak sunucu: `http://sunucu-ip:11434`
+
+**Linux'ta Docker Network Sorunu:**
+
+Linux sistemlerde container'dan host'a erişim için `docker-compose.yml` dosyasını şu şekilde güncelleyin:
+
+```yaml
+services:
+  ollama-proxy:
+    build: .
+    container_name: ollama-proxy
+    network_mode: "host"  # Bu satırı ekleyin
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    env_file:
+      - .env
+    restart: unless-stopped
+```
+
+Ve `.env` dosyasında:
+```env
+OLLAMA_BASE_URL=http://localhost:11434
+```
 
 ### 401 Unauthorized hatası
 

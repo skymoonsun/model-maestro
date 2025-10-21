@@ -72,6 +72,14 @@ class OllamaProxy:
             if 'parent_model' in data_copy:
                 data_copy['parent_model'] = model_mapper.get_display_model_name(data_copy['parent_model'])
             
+            # Remove remote_model field to make cloud models look like local models
+            if 'remote_model' in data_copy:
+                del data_copy['remote_model']
+            
+            # Remove remote_host field to make cloud models look like local models
+            if 'remote_host' in data_copy:
+                del data_copy['remote_host']
+            
             # Handle nested details
             if 'details' in data_copy and isinstance(data_copy['details'], dict):
                 if 'parent_model' in data_copy['details']:
@@ -166,21 +174,30 @@ class OllamaProxy:
                         async def stream_generator():
                             async with client.stream("POST", url, json=data) as resp:
                                 if resp.status_code != 200:
+                                    error_text = await resp.aread()
                                     raise HTTPException(
                                         status_code=resp.status_code,
-                                        detail=f"Ollama error: {resp.text}"
+                                        detail=f"Ollama error: {error_text.decode()}"
                                     )
                                 async for chunk in resp.aiter_bytes():
+                                    if not chunk:
+                                        continue
                                     # Parse and map model names in streaming chunks
                                     try:
-                                        lines = chunk.decode('utf-8').strip().split('\n')
+                                        # Decode chunk and process each line
+                                        text = chunk.decode('utf-8')
+                                        lines = text.strip().split('\n')
                                         for line in lines:
-                                            if line:
+                                            if line.strip():
                                                 json_data = json.loads(line)
                                                 mapped_data = self._map_model_from_ollama(json_data)
-                                                yield json.dumps(mapped_data).encode('utf-8') + b'\n'
-                                    except:
-                                        # If not JSON, pass through as-is
+                                                yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                    except json.JSONDecodeError:
+                                        # If not valid JSON, pass through as-is
+                                        yield chunk
+                                    except Exception as e:
+                                        # Log error but continue streaming
+                                        print(f"Stream processing error: {e}")
                                         yield chunk
                         
                         return StreamingResponse(
