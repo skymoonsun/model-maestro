@@ -162,7 +162,11 @@ class OllamaProxy:
         
         # Map model names in request
         if data:
+            original_data = data.copy()
             data = self._map_model_to_ollama(data)
+            # Log mapping for debugging
+            if original_data.get('model') != data.get('model'):
+                print(f"Model mapped: {original_data.get('model')} -> {data.get('model')}")
         
         try:
             if method.upper() == "POST" and stream:

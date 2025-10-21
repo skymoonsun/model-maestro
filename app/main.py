@@ -267,6 +267,7 @@ async def openai_chat_completions(
     
     original_model = request_data.get('model', 'unknown')
     logger.info(f"User {username} requesting OpenAI chat completion with model {original_model}")
+    logger.debug(f"Request data: {json.dumps(request_data, indent=2)}")
     
     # Model mapping is already handled in proxy.py's _map_model_to_ollama
     # So we just pass the request through
