@@ -279,9 +279,15 @@ async def openai_v1_proxy(
         msg_count = len(data.get('messages', [])) if 'messages' in data else 0
         logger.info(f"User {username} proxy {method} {endpoint} - keys: {list(data.keys())}, messages: {msg_count}")
         
-        # Warn about large requests that might timeout
-        if msg_count > 200:
-            logger.warning(f"Large request with {msg_count} messages - may timeout on cloud models")
+        # DEBUG: Save failed requests for analysis
+        import os
+        debug_dir = "/tmp/ollama_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        import time
+        debug_file = f"{debug_dir}/request_{int(time.time())}.json"
+        with open(debug_file, 'w') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info(f"Request saved to {debug_file}")
     else:
         logger.info(f"User {username} proxy {method} {endpoint}")
     
