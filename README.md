@@ -115,6 +115,26 @@ Tüm API isteklerinde `Authorization` header'ı gereklidir:
 Authorization: Bearer <your-jwt-token>
 ```
 
+## Cursor IDE ile Kullanım
+
+Ollama Proxy API, OpenAI uyumlu endpoint'ler sunar, böylece Cursor IDE'de kullanabilirsiniz.
+
+### Kurulum
+
+1. **Cursor Settings** → **Models** → **Override OpenAI Base URL**
+2. Base URL: `https://ollama.gokaygunes.com/v1`
+3. API Key: `Bearer YOUR_JWT_TOKEN` (JWT token'ınızı buraya yazın)
+4. Model: `gpt-oss:120b` (veya herhangi bir model ismi)
+
+### OpenAI Compatible Endpoints
+
+- `POST /v1/chat/completions` - Chat completions (Cursor için)
+- `GET /v1/models` - Model listesi (OpenAI formatında)
+
+### Örnek Kullanım
+
+Cursor'da kod yazarken Ctrl+K veya Ctrl+L ile modelinizi kullanabilirsiniz. Model seçiminde Ollama modelleriniz görünecektir.
+
 ### Chat Completion
 
 ```bash
