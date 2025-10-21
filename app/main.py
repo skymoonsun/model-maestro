@@ -249,76 +249,39 @@ async def create_model(
 
 
 # OpenAI Compatible Endpoints for Cursor
-# Directly proxy to Ollama's native OpenAI compatible endpoints
-@app.post("/v1/chat/completions")
-async def openai_chat_completions(
+# Simple pass-through proxy with JWT auth only
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def openai_v1_proxy(
+    path: str,
     request: Request,
     username: str = Depends(get_current_user)
 ):
     """
-    OpenAI compatible chat completions endpoint
-    
-    Proxies to Ollama's native /v1/chat/completions endpoint with model mapping
-    Requires JWT authentication
+    Proxy all /v1/* requests to Ollama with JWT authentication
+    Only adds JWT, everything else passes through unchanged
+    Model mapping is handled in proxy.py
     """
-    # Get request body
-    body = await request.body()
-    request_data = json.loads(body.decode('utf-8'))
+    method = request.method
+    endpoint = f"/v1/{path}"
     
-    original_model = request_data.get('model', 'unknown')
-    logger.info(f"User {username} requesting OpenAI chat completion with model {original_model}")
-    logger.info(f"Full request data: {json.dumps(request_data, indent=2)}")
+    # Get request body if exists
+    data = None
+    if method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        if body:
+            data = json.loads(body.decode('utf-8'))
     
-    # Remove unsupported OpenAI parameters that Ollama doesn't support
-    # Keep only Ollama-compatible parameters
-    unsupported_params = ['tools', 'tool_choice', 'functions', 'function_call', 
-                         'response_format', 'logit_bias', 'user', 'presence_penalty', 
-                         'frequency_penalty', 'n', 'stop', 'logprobs', 'top_logprobs']
+    # Determine if streaming
+    stream = data.get("stream", False) if data else False
     
-    cleaned_data = {k: v for k, v in request_data.items() if k not in unsupported_params}
+    logger.info(f"User {username} proxy {method} {endpoint}")
     
-    if len(cleaned_data) != len(request_data):
-        removed = set(request_data.keys()) - set(cleaned_data.keys())
-        logger.info(f"Removed unsupported parameters: {removed}")
-    
-    # Model mapping is already handled in proxy.py's _map_model_to_ollama
-    # So we just pass the cleaned request through
-    response = await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/v1/chat/completions",
-        data=cleaned_data,
-        stream=cleaned_data.get("stream", False)
-    )
-    
-    # If it's a streaming response, return as-is (already a StreamingResponse)
-    if request_data.get("stream", False):
-        return response
-    
-    # For non-streaming, the response is a dict
-    # Map model name back in the response
-    if isinstance(response, dict) and "model" in response:
-        from app.config import model_mapper
-        response["model"] = model_mapper.get_display_model_name(response["model"])
-    
-    return response
-
-
-@app.get("/v1/models")
-async def openai_list_models(
-    username: str = Depends(get_current_user)
-):
-    """
-    OpenAI compatible models list endpoint
-    
-    Directly proxies to Ollama's native /v1/models endpoint
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} requesting OpenAI models list")
-    
-    # Proxy directly to Ollama's OpenAI compatible endpoint
+    # Direct proxy - no modifications
     return await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/v1/models"
+        method=method,
+        endpoint=endpoint,
+        data=data,
+        stream=stream
     )
 
 
