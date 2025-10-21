@@ -103,6 +103,27 @@ Değişiklikleri uygulamak için servisi yeniden başlatın:
 docker-compose restart
 ```
 
+## 6. Model Mapping Mantığı
+
+### Client → Proxy → Ollama
+
+1. Client `gpt-oss:120b` gönderir
+2. Proxy `config/model_mappings.json` dosyasına bakar
+3. Ollama'ya `gpt-oss:120b-cloud` olarak iletir
+
+### Ollama → Proxy → Client
+
+1. Ollama `gpt-oss:120b-cloud` döner
+2. Proxy reverse mapping yapar
+3. Client'a `gpt-oss:120b` döner
+
+### Model Listesi (/api/tags)
+
+- Ollama'dan tüm modelleri al
+- Cloud modellerin `-cloud` suffix'ini kaldır
+- Local modelleri olduğu gibi bırak
+- Cloud modellerden `remote_host` alanını kaldır (tüm modeller local gibi görünür)
+
 ## 6. Sorun Giderme
 
 ### Servisi Durdur

@@ -192,23 +192,23 @@ curl -X POST http://localhost:8000/api/chat \
 - `POST /api/push` - Push model
 - `POST /api/create` - Create model from Modelfile
 
-## Model Mapping Mantığı
+### Model Mapping Mantığı
 
-### Client → Proxy → Ollama
+**Client → Proxy → Ollama:**
+- Client `gpt-oss:120b` gönderir
+- Proxy mapping'i kontrol eder
+- Ollama'ya `gpt-oss:120b-cloud` olarak iletir
 
-1. Client `gpt-oss:120b` gönderir
-2. Proxy `config/model_mappings.json` dosyasına bakar
-3. Ollama'ya `gpt-oss:120b-cloud` olarak iletir
+**Ollama → Proxy → Client:**
+- Ollama `gpt-oss:120b-cloud` döner
+- Proxy reverse mapping yapar
+- Client'a `gpt-oss:120b` döner
 
-### Ollama → Proxy → Client
-
-1. Ollama `gpt-oss:120b-cloud` döner
-2. Proxy reverse mapping yapar
-3. Client'a `gpt-oss:120b` döner
-
-### Local Modeller
-
-Mapping'de olmayan modeller (örn: `bge-m3:latest`) olduğu gibi geçer.
+**Model Listesi (/api/tags):**
+- Ollama'dan tüm modelleri al
+- Cloud modellerin `-cloud` suffix'ini kaldır
+- Local modelleri olduğu gibi bırak
+- Cloud modellerden `remote_host` alanını kaldır (tüm modeller local gibi görünür)
 
 ## Geliştirme
 
