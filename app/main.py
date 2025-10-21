@@ -271,49 +271,86 @@ async def openai_chat_completions(
     logger.info(f"User {username} requesting OpenAI chat completion with model {request.model}")
     
     # Convert OpenAI request to Ollama format
-    ollama_request = {
-        "model": request.model,
-        "messages": openai_to_ollama_messages(request.messages),
-        "stream": request.stream or False
-    }
+    ollama_messages = openai_to_ollama_messages(request.messages)
+    
+    # Build Ollama request
+    ollama_request = OllamaChatRequest(
+        model=request.model,
+        messages=ollama_messages,
+        stream=request.stream or False
+    )
     
     # Add optional parameters if provided
+    options = {}
     if request.temperature is not None:
-        ollama_request.setdefault("options", {})["temperature"] = request.temperature
+        options["temperature"] = request.temperature
     if request.max_tokens is not None:
-        ollama_request.setdefault("options", {})["num_predict"] = request.max_tokens
+        options["num_predict"] = request.max_tokens
     if request.top_p is not None:
-        ollama_request.setdefault("options", {})["top_p"] = request.top_p
+        options["top_p"] = request.top_p
     
     if request.stream:
         # Handle streaming response
         async def openai_stream_generator():
-            ollama_response = await ollama_proxy.proxy_request(
-                method="POST",
-                endpoint="/api/chat",
-                data=ollama_request,
-                stream=True
-            )
-            
-            # ollama_response is a StreamingResponse
-            async for chunk in ollama_response.body_iterator:
-                if not chunk:
-                    continue
-                try:
-                    # Parse Ollama chunk
-                    ollama_data = json.loads(chunk.decode('utf-8'))
-                    
-                    # Convert to OpenAI format
-                    openai_chunk = ollama_stream_to_openai_stream(ollama_data)
-                    if openai_chunk:
-                        yield f"data: {openai_chunk.model_dump_json()}\n\n".encode('utf-8')
-                    
-                    # Send [DONE] at the end
-                    if ollama_data.get("done", False):
-                        yield b"data: [DONE]\n\n"
-                except Exception as e:
-                    logger.error(f"Error processing stream chunk: {e}")
-                    continue
+            try:
+                # Call Ollama chat endpoint directly
+                ollama_data = {
+                    "model": ollama_request.model,
+                    "messages": ollama_request.messages,
+                    "stream": True
+                }
+                if options:
+                    ollama_data["options"] = options
+                
+                # Get streaming response from proxy
+                response = await ollama_proxy.proxy_request(
+                    method="POST",
+                    endpoint="/api/chat",
+                    data=ollama_data,
+                    stream=True
+                )
+                
+                # response is a StreamingResponse, iterate its body
+                async for chunk in response.body_iterator:
+                    if not chunk:
+                        continue
+                    try:
+                        # Decode and parse JSON
+                        line = chunk.decode('utf-8').strip()
+                        if not line:
+                            continue
+                        
+                        ollama_chunk = json.loads(line)
+                        
+                        # Convert to OpenAI format
+                        openai_chunk = ollama_stream_to_openai_stream(ollama_chunk)
+                        if openai_chunk:
+                            yield f"data: {openai_chunk.model_dump_json()}\n\n".encode('utf-8')
+                        
+                        # Send [DONE] at the end
+                        if ollama_chunk.get("done", False):
+                            yield b"data: [DONE]\n\n"
+                    except json.JSONDecodeError:
+                        continue
+                    except Exception as e:
+                        logger.error(f"Stream chunk error: {e}")
+                        continue
+            except Exception as e:
+                logger.error(f"Streaming error: {e}")
+                # Send error in OpenAI format
+                error_chunk = {
+                    "id": "chatcmpl-error",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": f"Error: {str(e)}"},
+                        "finish_reason": "stop"
+                    }]
+                }
+                yield f"data: {json.dumps(error_chunk)}\n\n".encode('utf-8')
+                yield b"data: [DONE]\n\n"
         
         return StreamingResponse(
             openai_stream_generator(),
@@ -325,10 +362,18 @@ async def openai_chat_completions(
         )
     else:
         # Non-streaming response
+        ollama_data = {
+            "model": ollama_request.model,
+            "messages": ollama_request.messages,
+            "stream": False
+        }
+        if options:
+            ollama_data["options"] = options
+        
         ollama_response = await ollama_proxy.proxy_request(
             method="POST",
             endpoint="/api/chat",
-            data=ollama_request,
+            data=ollama_data,
             stream=False
         )
         
