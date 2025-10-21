@@ -199,7 +199,12 @@ class OllamaProxy:
                 
                 return StreamingResponse(
                     stream_generator(),
-                    media_type="application/x-ndjson"
+                    media_type="application/x-ndjson",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",  # Nginx buffering'i kapat
+                        "Connection": "keep-alive"
+                    }
                 )
             
             # Non-streaming requests
