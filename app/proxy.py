@@ -111,6 +111,14 @@ class OllamaProxy:
                 if 'model' in model_copy:
                     model_copy['model'] = model_mapper.get_display_model_name(model_copy['model'])
                 
+                # Map remote_model field if exists
+                if 'remote_model' in model_copy:
+                    model_copy['remote_model'] = model_mapper.get_display_model_name(model_copy['remote_model'])
+                
+                # Remove remote_host field to make cloud models look like local models
+                if 'remote_host' in model_copy:
+                    del model_copy['remote_host']
+                
                 # Map parent_model in details
                 if 'details' in model_copy and isinstance(model_copy['details'], dict):
                     if 'parent_model' in model_copy['details']:
