@@ -415,9 +415,14 @@ async def openai_v1_proxy(
                     detail=f"Bu modele erişim yetkiniz yok: {model_name}"
                 )
         
-        # Some models don't support tools parameter (e.g., deepseek-v3.1)
+        # Some models don't support tools parameter
         # Remove tools for models that don't support them
-        models_without_tool_support = ['deepseek-v3.1:671b', 'deepseek-v3.1']
+        models_without_tool_support = [
+            'deepseek-v3.1:671b',
+            'deepseek-v3.1',
+            'kimi-k2:1t',
+            'kimi-k2'
+        ]
         
         if any(unsupported in model_name for unsupported in models_without_tool_support):
             if 'tools' in data or 'tool_choice' in data:

@@ -135,12 +135,28 @@ class ModelMappingManager:
         (client -> ollama)
         
         Args:
-            display_name: Model name from client (e.g., "gpt-oss:120b")
+            display_name: Model name from client (e.g., "gpt-oss:120b" or "glm-4.6")
         
         Returns:
             Real model name for Ollama (e.g., "gpt-oss:120b-cloud")
+        
+        Note:
+            If display_name has no tag (no ':'), try with ':latest' suffix as well.
+            Ollama automatically appends ':latest' to tagless model names.
         """
-        return self._mappings.get(display_name, display_name)
+        # Try exact match first
+        if display_name in self._mappings:
+            return self._mappings[display_name]
+        
+        # If no ':' in name, try with ':latest' suffix
+        # (Ollama treats "glm-4.6" as "glm-4.6:latest")
+        if ':' not in display_name:
+            latest_name = f"{display_name}:latest"
+            if latest_name in self._mappings:
+                return self._mappings[latest_name]
+        
+        # No mapping found, return as-is
+        return display_name
     
     def get_display_model_name(self, real_name: str) -> str:
         """
