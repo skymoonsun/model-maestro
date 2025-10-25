@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     database_url: str
     admin_token: str
     redis_url: str = "redis://localhost:6379/0"
+    docs_username: str = "admin"
+    docs_password: str = "changeme"
     
     class Config:
         env_file = ".env"
@@ -123,11 +125,13 @@ class ModelMappingManager:
             self._reverse_mappings = {}
     
     async def ensure_loaded(self):
-        """Ensure mappings are loaded (always fresh from Redis)"""
-        # Always try Redis first for fresh data
-        if not await self._load_from_redis():
-            # If Redis fails, load from DB and save to Redis
-            await self._load_from_db()
+        """Ensure mappings are loaded (from memory cache or Redis on first load)"""
+        # Only load once - either from Redis or DB
+        if not self._cache_loaded:
+            # Try Redis first (fastest)
+            if not await self._load_from_redis():
+                # Redis empty/failed, load from DB and populate Redis
+                await self._load_from_db()
     
     def get_real_model_name(self, display_name: str) -> str:
         """

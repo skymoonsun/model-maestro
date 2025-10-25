@@ -171,6 +171,43 @@ docker exec ollama-proxy refresh-token john
 docker exec ollama-proxy delete-user john
 ```
 
+## API Documentation
+
+Ollama Proxy API, Swagger UI ve ReDoc ile detaylı API dokümantasyonu sunar. Dokümantasyon endpoint'leri basic authentication ile korunmaktadır.
+
+### Swagger UI Erişimi
+
+```
+http://localhost:8000/api/docs
+```
+
+### ReDoc Erişimi
+
+```
+http://localhost:8000/api/redoc
+```
+
+### Authentication
+
+Dokümantasyon sayfalarına erişmek için basic authentication kullanılır. Kullanıcı adı ve şifre `.env` dosyasında tanımlanmalıdır:
+
+```env
+DOCS_USERNAME=admin
+DOCS_PASSWORD=secure_docs_password_change_this
+```
+
+Tarayıcı otomatik olarak kullanıcı adı ve şifre isteyecektir.
+
+### OpenAPI Schema
+
+OpenAPI JSON schema'ya erişim için:
+
+```
+http://localhost:8000/api/openapi.json
+```
+
+**Not**: Bu endpoint de basic authentication gerektirir.
+
 ## Admin API
 
 Admin endpoint'leri ile kullanıcı ve model yönetimi yapabilirsiniz. Tüm admin endpoint'leri `ADMIN_TOKEN` gerektirir.

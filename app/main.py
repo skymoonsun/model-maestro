@@ -1,8 +1,12 @@
 """Main FastAPI application - Ollama Proxy with JWT Authentication"""
 
 from typing import Any, Dict
-from fastapi import FastAPI, Depends, Request, HTTPException
+from fastapi import FastAPI, Depends, Request, HTTPException, status
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.openapi.utils import get_openapi
+import secrets
 import logging
 import json
 
@@ -31,21 +35,64 @@ logger = logging.getLogger(__name__)
 
 # Global instances
 redis_manager = RedisManager(settings.redis_url)
+security = HTTPBasic()
 
 # Set global Redis manager in config
 from app.config import redis_manager as config_redis_manager
 import app.config
 app.config.redis_manager = redis_manager
 
-# Create FastAPI app
+# Create FastAPI app with docs disabled (we'll add auth)
 app = FastAPI(
     title="Ollama Proxy API",
     description="JWT authenticated proxy for Ollama with cloud model mapping",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None,  # Disable default docs
+    redoc_url=None,  # Disable default redoc
+    openapi_url=None  # Disable default openapi
 )
 
 # Include admin router
 app.include_router(admin_router)
+
+
+# Basic Auth for documentation
+def verify_docs_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify basic auth credentials for documentation access"""
+    correct_username = secrets.compare_digest(credentials.username, settings.docs_username)
+    correct_password = secrets.compare_digest(credentials.password, settings.docs_password)
+    
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+# Protected documentation endpoints
+@app.get("/api/docs", include_in_schema=False)
+async def get_documentation(username: str = Depends(verify_docs_credentials)):
+    """Swagger UI with basic auth"""
+    return get_swagger_ui_html(openapi_url="/api/openapi.json", title="API Docs")
+
+
+@app.get("/api/redoc", include_in_schema=False)
+async def get_redoc(username: str = Depends(verify_docs_credentials)):
+    """ReDoc with basic auth"""
+    return get_redoc_html(openapi_url="/api/openapi.json", title="API Docs")
+
+
+@app.get("/api/openapi.json", include_in_schema=False)
+async def get_open_api_endpoint(username: str = Depends(verify_docs_credentials)):
+    """OpenAPI schema with basic auth"""
+    return get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
 
 # Disable response buffering for streaming
 @app.on_event("startup")

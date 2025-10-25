@@ -49,3 +49,4 @@ Thumbs.db
 .cursor/plans/
 .specstory/
 .cursorindexingignore
+.docs/
