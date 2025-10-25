@@ -78,20 +78,7 @@ ADMIN_TOKEN=admin-super-secret-token-change-this-in-production
 
 ### 4. Model Mapping'i Yapılandırın
 
-`config/model_mappings.json` dosyasını ihtiyacınıza göre düzenleyin:
-
-```json
-{
-  "mappings": {
-    "gpt-oss:120b": "gpt-oss:120b-cloud",
-    "gpt-oss:20b": "gpt-oss:20b-cloud",
-    "deepseek-v3.1:671b": "deepseek-v3.1:671b-cloud",
-    "kimi-k2:1t": "kimi-k2:1t-cloud",
-    "qwen3-coder:480b": "qwen3-coder:480b-cloud",
-    "glm-4.6": "glm-4.6:cloud"
-  }
-}
-```
+Model mapping'ler PostgreSQL veritabanında saklanır. İlk model mapping'leri Admin API ile oluşturun (aşağıdaki "İlk Model Mapping'leri Oluşturun" bölümüne bakın).
 
 ### 5. Database Migration'ları Çalıştırın
 
@@ -119,21 +106,33 @@ Servis `http://localhost:8000` adresinde çalışacaktır.
 
 **Not**: Development ortamında PostgreSQL ve Redis otomatik olarak başlatılır. Production ortamında bu servisler ayrı olarak yapılandırılmalıdır.
 
-### 7. İlk Model Mapping'leri Oluşturun (Opsiyonel)
+### 7. İlk Model Mapping'leri Oluşturun (Gerekli)
 
-Admin API kullanarak model mapping'leri oluşturabilirsiniz:
+Admin API kullanarak model mapping'leri oluşturun:
 
 ```bash
+# Model mapping'leri ekleyin
 curl -X POST http://localhost:8000/admin/model-mappings \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "display_name": "gpt-oss:120b",
-    "real_name": "gpt-oss:120b-cloud"
-  }'
+  -d '{"display_name": "gpt-oss:120b", "real_name": "gpt-oss:120b-cloud"}'
+
+curl -X POST http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name": "deepseek-v3.1:671b", "real_name": "deepseek-v3.1:671b-cloud"}'
+
+curl -X POST http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"display_name": "qwen3-coder:480b", "real_name": "qwen3-coder:480b-cloud"}'
+
+# Tüm mapping'leri listeleyin
+curl -X GET http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Veya JSON dosyasından import etmek için migration script yazabilirsiniz.
+**Not**: Model mapping'ler PostgreSQL'de saklanır ve Redis cache'i otomatik olarak güncellenir.
 
 ## Kullanıcı Yönetimi
 

@@ -9,7 +9,6 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
-      - ./config:/app/config
     env_file:
       - .env
     extra_hosts:

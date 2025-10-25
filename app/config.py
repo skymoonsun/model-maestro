@@ -36,11 +36,9 @@ class ModelMappingManager:
     Manage model name mappings
     
     Uses PostgreSQL for storage with Redis cache for performance.
-    Falls back to JSON file if DB is unavailable.
     """
     
-    def __init__(self, config_path: str = "/app/config/model_mappings.json"):
-        self.config_path = config_path
+    def __init__(self):
         self._mappings: Dict[str, str] = {}
         self._reverse_mappings: Dict[str, str] = {}
         self._cache_loaded = False
@@ -107,20 +105,7 @@ class ModelMappingManager:
                 
         except Exception as e:
             print(f"Error loading model mappings from DB: {e}")
-            # Fallback to JSON file
-            self._load_from_json()
-    
-    def _load_from_json(self):
-        """Load model mappings from JSON file (fallback)"""
-        try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self._mappings = data.get("mappings", {})
-                    self._reverse_mappings = {v: k for k, v in self._mappings.items()}
-                    self._cache_loaded = True
-        except Exception as e:
-            print(f"Error loading model mappings from JSON: {e}")
+            # No fallback - mappings will be empty
             self._mappings = {}
             self._reverse_mappings = {}
     

@@ -85,30 +85,34 @@ docker exec ollama-proxy delete-user developer
 
 ## 5. Model Mapping Ekleme
 
-Yeni bir cloud model eklemek için `config/model_mappings.json` dosyasını düzenleyin:
-
-```json
-{
-  "mappings": {
-    "gpt-oss:120b": "gpt-oss:120b-cloud",
-    "gpt-oss:20b": "gpt-oss:20b-cloud",
-    "yeni-model:versyon": "yeni-model:versyon-cloud"
-  }
-}
-```
-
-Değişiklikleri uygulamak için servisi yeniden başlatın:
+Yeni bir cloud model eklemek için Admin API kullanın:
 
 ```bash
-docker-compose restart
+# Admin token'ı ayarlayın
+export ADMIN_TOKEN="your-admin-token-here"
+
+# Yeni model mapping ekle
+curl -X POST http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "yeni-model:versyon",
+    "real_name": "yeni-model:versyon-cloud"
+  }'
+
+# Tüm mapping'leri listeleyin
+curl -X GET http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
+
+**Not**: Model mapping'ler PostgreSQL'de saklanır ve anında etkili olur (restart gerekmez).
 
 ## 6. Model Mapping Mantığı
 
 ### Client → Proxy → Ollama
 
 1. Client `gpt-oss:120b` gönderir
-2. Proxy `config/model_mappings.json` dosyasına bakar
+2. Proxy PostgreSQL'den mapping'i okur
 3. Ollama'ya `gpt-oss:120b-cloud` olarak iletir
 
 ### Ollama → Proxy → Client
