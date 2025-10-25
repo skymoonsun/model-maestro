@@ -7,6 +7,8 @@ YELLOW := \033[0;33m
 RED := \033[0;31m
 NC := \033[0m # No Color
 
+COMPOSE ?= docker compose
+
 help: ## Show this help message
 	@echo "$(BLUE)Ollama Proxy API - Docker Management$(NC)"
 	@echo ""
@@ -28,7 +30,7 @@ help: ## Show this help message
 
 dev-up: ## Start development environment (PostgreSQL, Redis, API, Celery)
 	@echo "$(GREEN)Starting development environment...$(NC)"
-	docker-compose -f docker-compose.dev.yml up -d
+	$(COMPOSE) -f docker-compose.dev.yml up -d
 	@echo "$(GREEN)✓ Development environment started$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Services:$(NC)"
@@ -44,20 +46,20 @@ dev-up: ## Start development environment (PostgreSQL, Redis, API, Celery)
 
 dev-down: ## Stop development environment
 	@echo "$(YELLOW)Stopping development environment...$(NC)"
-	docker-compose -f docker-compose.dev.yml down --remove-orphans
+	$(COMPOSE) -f docker-compose.dev.yml down --remove-orphans
 	@echo "$(GREEN)✓ Development environment stopped$(NC)"
 
 dev-restart: ## Restart development environment
 	@echo "$(YELLOW)Restarting development environment...$(NC)"
-	docker-compose -f docker-compose.dev.yml restart
+	$(COMPOSE) -f docker-compose.dev.yml restart
 	@echo "$(GREEN)✓ Development environment restarted$(NC)"
 
 dev-logs: ## Show all development logs (follow)
-	docker-compose -f docker-compose.dev.yml logs -f
+	$(COMPOSE) -f docker-compose.dev.yml logs -f
 
 dev-build: ## Rebuild development containers
 	@echo "$(YELLOW)Rebuilding development containers...$(NC)"
-	docker-compose -f docker-compose.dev.yml build --no-cache
+	$(COMPOSE) -f docker-compose.dev.yml build --no-cache
 	@echo "$(GREEN)✓ Containers rebuilt$(NC)"
 
 dev-clean: ## Stop and remove all development containers and volumes
@@ -65,7 +67,7 @@ dev-clean: ## Stop and remove all development containers and volumes
 	@echo "$(RED)WARNING: This will delete all data including PostgreSQL and Redis!$(NC)"
 	@read -p "Are you sure? (yes/no): " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
-		docker-compose -f docker-compose.dev.yml down -v; \
+		$(COMPOSE) -f docker-compose.dev.yml down -v; \
 		echo "$(GREEN)✓ Development environment cleaned$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
@@ -80,25 +82,25 @@ dev-shell: ## Open shell in API container
 
 prod-up: ## Start production environment
 	@echo "$(GREEN)Starting production environment...$(NC)"
-	docker-compose -f docker-compose.yml up -d
+	$(COMPOSE) -f docker-compose.yml up -d
 	@echo "$(GREEN)✓ Production environment started$(NC)"
 
 prod-down: ## Stop production environment
 	@echo "$(YELLOW)Stopping production environment...$(NC)"
-	docker-compose -f docker-compose.yml down --remove-orphans
+	$(COMPOSE) -f docker-compose.yml down --remove-orphans
 	@echo "$(GREEN)✓ Production environment stopped$(NC)"
 
 prod-restart: ## Restart production environment
 	@echo "$(YELLOW)Restarting production environment...$(NC)"
-	docker-compose -f docker-compose.yml restart
+	$(COMPOSE) -f docker-compose.yml restart
 	@echo "$(GREEN)✓ Production environment restarted$(NC)"
 
 prod-logs: ## Show production logs (follow)
-	docker-compose -f docker-compose.yml logs -f
+	$(COMPOSE) -f docker-compose.yml logs -f
 
 prod-build: ## Rebuild production containers
 	@echo "$(YELLOW)Rebuilding production containers...$(NC)"
-	docker-compose -f docker-compose.yml build --no-cache
+	$(COMPOSE) -f docker-compose.yml build --no-cache
 	@echo "$(GREEN)✓ Containers rebuilt$(NC)"
 
 # ============================================================================
@@ -194,22 +196,22 @@ redis-keys: ## List all Redis keys
 
 status: ## Show status of all services
 	@echo "$(BLUE)Service Status:$(NC)"
-	docker-compose -f docker-compose.dev.yml ps
+	$(COMPOSE) -f docker-compose.dev.yml ps
 
 logs-api: ## Show API container logs
-	docker-compose -f docker-compose.dev.yml logs -f ollama-proxy
+	$(COMPOSE) -f docker-compose.dev.yml logs -f ollama-proxy
 
 logs-celery: ## Show Celery worker logs
-	docker-compose -f docker-compose.dev.yml logs -f celery-worker
+	$(COMPOSE) -f docker-compose.dev.yml logs -f celery-worker
 
 logs-beat: ## Show Celery beat logs
-	docker-compose -f docker-compose.dev.yml logs -f celery-beat
+	$(COMPOSE) -f docker-compose.dev.yml logs -f celery-beat
 
 logs-db: ## Show PostgreSQL logs
-	docker-compose -f docker-compose.dev.yml logs -f postgres
+	$(COMPOSE) -f docker-compose.dev.yml logs -f postgres
 
 logs-redis: ## Show Redis logs
-	docker-compose -f docker-compose.dev.yml logs -f redis
+	$(COMPOSE) -f docker-compose.dev.yml logs -f redis
 
 stats: ## Show container resource usage
 	docker stats ollama-proxy ollama-proxy-postgres ollama-proxy-redis celery-worker celery-beat
@@ -252,16 +254,16 @@ setup: dev-up db-init ## Complete setup (start containers + initialize database)
 # ============================================================================
 
 restart-api: ## Restart only API container
-	docker-compose -f docker-compose.dev.yml restart ollama-proxy
+	$(COMPOSE) -f docker-compose.dev.yml restart ollama-proxy
 
 restart-celery: ## Restart Celery worker and beat
-	docker-compose -f docker-compose.dev.yml restart celery-worker celery-beat
+	$(COMPOSE) -f docker-compose.dev.yml restart celery-worker celery-beat
 
 restart-db: ## Restart PostgreSQL
-	docker-compose -f docker-compose.dev.yml restart postgres
+	$(COMPOSE) -f docker-compose.dev.yml restart postgres
 
 restart-redis: ## Restart Redis
-	docker-compose -f docker-compose.dev.yml restart redis
+	$(COMPOSE) -f docker-compose.dev.yml restart redis
 
 rebuild: dev-build dev-up ## Rebuild and restart all containers
 	@echo "$(GREEN)✓ Rebuild complete$(NC)"
