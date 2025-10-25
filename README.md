@@ -7,7 +7,7 @@ FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama pro
 - 🔐 **JWT Authentication**: Token tabanlı güvenli erişim
 - 🔄 **Model Mapping**: Cloud modellerin isimlerini otomatik manipüle eder
 - 🐳 **Docker Support**: Kolay deployment için Docker ve Docker Compose
-- 🛠️ **CLI Tool**: Kullanıcı yönetimi için komut satırı aracı
+- 🛠️ **Admin API**: Kullanıcı ve model yönetimi için RESTful API
 - 📡 **Full Ollama API**: Tüm Ollama endpoint'lerini destekler
 - ⚡ **Background Tasks**: Redis tabanlı async activity logging
 - 📊 **Token Usage Tracking**: Detaylı kullanım takibi ve limit yönetimi
@@ -138,48 +138,16 @@ curl -X GET http://localhost:8000/admin/model-mappings \
 
 ### Kullanıcı Oluşturma
 
-```bash
-# Yöntem 1 (Önerilen)
-docker exec ollama-proxy create-user john
-
-# Yöntem 2
-docker exec ollama-proxy python cli.py create-user john
-```
-
-Çıktı:
-```
-✓ User created successfully!
-
-Username: john
-Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-Created: 2024-01-20T10:30:00.000000
-
-⚠ Save this token securely. You can refresh it later if needed.
-```
-
-### Kullanıcıları Listeleme
+Admin API kullanarak kullanıcı oluşturun:
 
 ```bash
-docker exec ollama-proxy list-users
+curl -X POST http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "john"}'
 ```
 
-### Kullanıcı Bilgilerini Görüntüleme
-
-```bash
-docker exec ollama-proxy show-user john
-```
-
-### Token Yenileme
-
-```bash
-docker exec ollama-proxy refresh-token john
-```
-
-### Kullanıcı Silme
-
-```bash
-docker exec ollama-proxy delete-user john
-```
+Detaylı bilgi için [Admin API - Kullanıcı Yönetimi](#admin-api) bölümüne bakın.
 
 ## API Documentation
 
@@ -747,11 +715,19 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### CLI'yi Local Çalıştırma
+### Local Geliştirme
+
+Local development için Admin API kullanın:
 
 ```bash
-python cli.py create-user john
-python cli.py list-users
+# Admin token'ı ayarlayın
+export ADMIN_TOKEN="your-admin-token"
+
+# Kullanıcı oluşturma
+curl -X POST http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "john"}'
 ```
 
 ## Güvenlik

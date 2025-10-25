@@ -9,7 +9,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ ./app/
-COPY cli.py .
 COPY docker-entrypoint.sh .
 
 # Copy Alembic files for database migrations
@@ -20,7 +19,7 @@ COPY alembic/ ./alembic/
 RUN mkdir -p /app/data /app/config
 
 # Make scripts executable
-RUN chmod +x cli.py docker-entrypoint.sh
+RUN chmod +x docker-entrypoint.sh
 
 # Expose port
 EXPOSE 8000
