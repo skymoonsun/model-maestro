@@ -115,11 +115,19 @@ async def startup_event():
     
     # Connect to Redis
     await redis_manager.connect()
+    
+    # Start background tasks
+    from app.background_tasks import start_background_tasks
+    await start_background_tasks()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down Ollama Proxy API")
+    
+    # Stop background tasks
+    from app.background_tasks import stop_background_tasks
+    await stop_background_tasks()
     
     # Close HTTP client connection pool
     await ollama_proxy.close()

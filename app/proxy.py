@@ -3,12 +3,15 @@
 from typing import Dict, Any, Optional
 import httpx
 import json
+import logging
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings, model_mapper
 from app.user_manager import user_manager
 from app.auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaProxy:
@@ -252,15 +255,45 @@ class OllamaProxy:
         today = datetime.utcnow().strftime("%Y-%m-%d")
         usage_cache_key = CACHE_KEYS["USER_DAILY_USAGE"].format(username=username, date=today)
         
-        daily_usage = await redis_manager.get(usage_cache_key)
+        # Try to get from cache (as hash)
+        daily_usage = None
+        try:
+            if redis_manager._connected and redis_manager.redis_client:
+                # Check if key exists and get type
+                key_exists = await redis_manager.redis_client.exists(usage_cache_key)
+                if key_exists:
+                    key_type = await redis_manager.redis_client.type(usage_cache_key)
+                    if key_type == 'hash':
+                        # Read as hash
+                        hash_data = await redis_manager.redis_client.hgetall(usage_cache_key)
+                        daily_usage = {
+                            "total_requests": int(hash_data.get("total_requests", 0)),
+                            "total_tokens": int(hash_data.get("total_tokens", 0)),
+                            "prompt_tokens": int(hash_data.get("prompt_tokens", 0)),
+                            "completion_tokens": int(hash_data.get("completion_tokens", 0))
+                        }
+                    else:
+                        # Wrong type, delete it
+                        await redis_manager.redis_client.delete(usage_cache_key)
+        except Exception as e:
+            logger.warning(f"Error reading daily usage cache: {e}")
         
         if not daily_usage:
             # Cache miss - get from DB
             start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = start_of_day + timedelta(days=1)
             daily_usage = await user_manager.get_user_token_usage(username, start_of_day, end_of_day)
-            if daily_usage:
-                await redis_manager.set(usage_cache_key, daily_usage, expire=CACHE_TTL["USER_DAILY_USAGE"])
+            if daily_usage and redis_manager._connected and redis_manager.redis_client:
+                # Store as hash
+                await redis_manager.redis_client.hset(
+                    usage_cache_key,
+                    mapping={
+                        "total_requests": daily_usage.get("total_requests", 0),
+                        "total_tokens": daily_usage.get("total_tokens", 0),
+                        "prompt_tokens": daily_usage.get("prompt_tokens", 0),
+                        "completion_tokens": daily_usage.get("completion_tokens", 0)
+                    }
+                )
         
         # 3. Check request limit
         request_limit = user_limit.get("request_limit")
@@ -288,7 +321,7 @@ class OllamaProxy:
         """
         Log user activity for token usage and model access (batch processing)
         
-        Queues the activity log for batch processing via Celery.
+        Queues the activity log for background batch processing.
         
         Args:
             username: Username
@@ -298,9 +331,9 @@ class OllamaProxy:
             completion_tokens: Number of completion tokens used
             total_tokens: Total tokens used
         """
-        from app.celery_app import queue_activity_log
+        from app.background_tasks import queue_activity_log_async
         
-        await queue_activity_log(
+        await queue_activity_log_async(
             username=username,
             model_name=model_name,
             request_type=request_type,
