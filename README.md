@@ -1,6 +1,6 @@
 # Ollama Proxy API
 
-FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama proxy servisi.
+FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama proxy servisi. Token kullanım takibi, kullanıcı bazlı model erişim kontrolü ve Redis tabanlı async background processing desteği ile production-ready çözüm.
 
 ## Özellikler
 
@@ -9,6 +9,9 @@ FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama pro
 - 🐳 **Docker Support**: Kolay deployment için Docker ve Docker Compose
 - 🛠️ **CLI Tool**: Kullanıcı yönetimi için komut satırı aracı
 - 📡 **Full Ollama API**: Tüm Ollama endpoint'lerini destekler
+- ⚡ **Background Tasks**: Redis tabanlı async activity logging
+- 📊 **Token Usage Tracking**: Detaylı kullanım takibi ve limit yönetimi
+- 🔒 **Model Access Control**: Kullanıcı bazlı model erişim kontrolü
 
 ## Kurulum
 
@@ -102,11 +105,19 @@ docker exec ollama-proxy alembic upgrade head
 
 ### 6. Docker ile Çalıştırın
 
+**Development (PostgreSQL + Redis dahil):**
+```bash
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+**Production (sadece FastAPI):**
 ```bash
 docker-compose up -d
 ```
 
 Servis `http://localhost:8000` adresinde çalışacaktır.
+
+**Not**: Development ortamında PostgreSQL ve Redis otomatik olarak başlatılır. Production ortamında bu servisler ayrı olarak yapılandırılmalıdır.
 
 ### 7. İlk Model Mapping'leri Oluşturun (Opsiyonel)
 
@@ -751,7 +762,64 @@ python cli.py list-users
 - HTTPS kullanın (production için)
 - Docker container'ı güvenlik güncellemeleri için düzenli olarak yeniden build edin
 
+## Background Tasks
+
+Ollama Proxy API, kullanıcı activity log'larını Redis tabanlı bir background task sistemi ile işler. Bu sistem:
+
+- ⚡ **Async Processing**: Kullanıcıyı bekletmeden log kaydı yapar
+- 🔄 **Batch Processing**: 50 log/batch ile verimli veritabanı işlemi
+- 💾 **Redis Queue**: Güvenilir ve hızlı kuyruk sistemi
+- 🛡️ **Error Resilient**: Hata durumunda bile log kaybı olmaz
+
+### Redis Cache Temizleme
+
+Eğer cache sorunları yaşıyorsanız:
+
+```bash
+# Docker içinde
+docker exec ollama-proxy python scripts/clear_cache.py
+
+# Local
+python scripts/clear_cache.py
+```
+
+Bu script tüm `user_daily_usage` cache key'lerini temizler.
+
+### Background Task Konfigürasyonu
+
+`app/background_tasks.py` dosyasında konfigüre edilebilir:
+
+```python
+QUEUE_KEY = "activity_log_queue"  # Redis queue key
+BATCH_SIZE = 50                    # Batch size
+POLL_INTERVAL = 2.0                # Poll interval in seconds
+```
+
 ## Sorun Giderme
+
+### Activity log kaydolmuyor
+
+Logs'da şu mesajları kontrol edin:
+```
+INFO:app.background_tasks:Starting background activity log processor
+INFO:app.background_tasks:Processed X activity logs
+```
+
+Eğer bu mesajlar görünmüyorsa, Redis bağlantısını kontrol edin.
+
+### Redis bağlantı hatası
+
+`.env` dosyasında Redis URL'ini kontrol edin:
+```env
+REDIS_URL=redis://localhost:6379/0
+```
+
+### Cache type hatası (WRONGTYPE)
+
+Eğer cache'de WRONGTYPE hatası alıyorsanız:
+```bash
+python scripts/clear_cache.py
+```
 
 ### Ollama'ya bağlanamıyor
 
