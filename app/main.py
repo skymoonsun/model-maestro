@@ -147,11 +147,20 @@ async def generate(
             detail=f"Bu modele erişim yetkiniz yok: {request.model}"
         )
     
+    # Check user limits BEFORE making request to Ollama
+    within_limits = await ollama_proxy.check_user_limits(username, "generate")
+    if not within_limits:
+        raise HTTPException(
+            status_code=429,
+            detail="User has exceeded their request or token limit"
+        )
+    
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/api/generate",
         data=request.model_dump(exclude_none=True),
-        stream=request.stream or False
+        stream=request.stream or False,
+        username=username
     )
 
 
@@ -175,11 +184,20 @@ async def chat(
             detail=f"Bu modele erişim yetkiniz yok: {request.model}"
         )
     
+    # Check user limits BEFORE making request to Ollama
+    within_limits = await ollama_proxy.check_user_limits(username, "chat")
+    if not within_limits:
+        raise HTTPException(
+            status_code=429,
+            detail="User has exceeded their request or token limit"
+        )
+    
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/api/chat",
         data=request.model_dump(exclude_none=True),
-        stream=request.stream or False
+        stream=request.stream or False,
+        username=username
     )
 
 
@@ -203,10 +221,19 @@ async def embeddings(
             detail=f"Bu modele erişim yetkiniz yok: {request.model}"
         )
     
+    # Check user limits BEFORE making request to Ollama
+    within_limits = await ollama_proxy.check_user_limits(username, "embeddings")
+    if not within_limits:
+        raise HTTPException(
+            status_code=429,
+            detail="User has exceeded their request or token limit"
+        )
+    
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/api/embeddings",
-        data=request.model_dump(exclude_none=True)
+        data=request.model_dump(exclude_none=True),
+        username=username
     )
 
 
@@ -227,7 +254,8 @@ async def list_models(
     logger.info(f"ollama_proxy instance: {ollama_proxy}")
     all_models_response = await ollama_proxy.proxy_request(
         method="GET",
-        endpoint="/api/tags"
+        endpoint="/api/tags",
+        username=username
     )
     logger.info(f"Received response from Ollama: {type(all_models_response)}")
     
@@ -280,7 +308,8 @@ async def show_model(
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/api/show",
-        data=request.model_dump(exclude_none=True)
+        data=request.model_dump(exclude_none=True),
+        username=username
     )
 
 
@@ -299,7 +328,8 @@ async def copy_model(
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/api/copy",
-        data=request.model_dump(exclude_none=True)
+        data=request.model_dump(exclude_none=True),
+        username=username
     )
 
 
@@ -318,7 +348,8 @@ async def delete_model(
     return await ollama_proxy.proxy_request(
         method="DELETE",
         endpoint="/api/delete",
-        data=request.model_dump(exclude_none=True)
+        data=request.model_dump(exclude_none=True),
+        username=username
     )
 
 
@@ -338,7 +369,8 @@ async def pull_model(
         method="POST",
         endpoint="/api/pull",
         data=request.model_dump(exclude_none=True),
-        stream=request.stream or False
+        stream=request.stream or False,
+        username=username
     )
 
 
@@ -358,7 +390,8 @@ async def push_model(
         method="POST",
         endpoint="/api/push",
         data=request.model_dump(exclude_none=True),
-        stream=request.stream or False
+        stream=request.stream or False,
+        username=username
     )
 
 
@@ -378,7 +411,8 @@ async def create_model(
         method="POST",
         endpoint="/api/create",
         data=request.model_dump(exclude_none=True),
-        stream=request.stream or False
+        stream=request.stream or False,
+        username=username
     )
 
 
@@ -396,7 +430,8 @@ async def openai_list_models(username: str = Depends(get_current_user)):
     # Get all models from Ollama
     all_models_response = await ollama_proxy.proxy_request(
         method="GET",
-        endpoint="/v1/models"
+        endpoint="/v1/models",
+        username=username
     )
     
     # Get user's model access
@@ -461,6 +496,14 @@ async def openai_v1_proxy(
                     status_code=403,
                     detail=f"Bu modele erişim yetkiniz yok: {model_name}"
                 )
+            
+            # Check user limits BEFORE making request to Ollama
+            within_limits = await ollama_proxy.check_user_limits(username, "chat")
+            if not within_limits:
+                raise HTTPException(
+                    status_code=429,
+                    detail="User has exceeded their request or token limit"
+                )
         
         # Some models don't support tools parameter
         # Remove tools for models that don't support them
@@ -483,7 +526,8 @@ async def openai_v1_proxy(
         method=method,
         endpoint=endpoint,
         data=data,
-        stream=stream
+        stream=stream,
+        username=username
     )
 
 

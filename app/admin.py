@@ -4,7 +4,7 @@ Requires admin token for authentication.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List
+from typing import List, Optional
 from app.models import (
     CreateUserRequest,
     AssignModelsRequest,
@@ -12,7 +12,9 @@ from app.models import (
     UserResponse,
     UserWithModelsResponse,
     UserModelsResponse,
-    ModelMappingResponse
+    ModelMappingResponse,
+    SetUserLimitRequest,
+    UserLimitResponse
 )
 from app.auth import verify_admin
 from app.user_manager import user_manager
@@ -326,5 +328,207 @@ async def invalidate_model_mapping_cache(
         return {"message": "Cache invalidated successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to invalidate cache: {str(e)}")
+
+
+# ============================================================================
+# User Limit Management Endpoints
+# ============================================================================
+
+@router.post("/users/{username}/limits", response_model=UserLimitResponse)
+async def set_user_limit(
+    username: str,
+    request: SetUserLimitRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Set user request and token limits (Admin only).
+    
+    Request body:
+    {
+        "request_limit": 1000,  # None for unlimited
+        "token_limit": 1000000  # None for unlimited
+    }
+    
+    To set unlimited access, send null values:
+    {
+        "request_limit": null,
+        "token_limit": null
+    }
+    """
+    try:
+        limit_data = await user_manager.set_user_limit(
+            username,
+            request.request_limit,
+            request.token_limit
+        )
+        
+        if not limit_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return UserLimitResponse(**limit_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/users/{username}/limits", response_model=UserLimitResponse)
+async def get_user_limit(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get user request and token limits (Admin only).
+    """
+    try:
+        limit_data = await user_manager.get_user_limit(username)
+        
+        if not limit_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return UserLimitResponse(**limit_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/users/{username}/limits", status_code=204)
+async def remove_user_limit(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Remove user limits (Admin only).
+    This will remove all limits for the user, making them unlimited.
+    """
+    try:
+        result = await user_manager.remove_user_limit(username)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found or no limits to remove")
+        
+        return None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# User Activity Log Endpoints
+# ============================================================================
+
+@router.get("/users/{username}/activity")
+async def get_user_activity(
+    username: str,
+    limit: int = 100,
+    offset: int = 0,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get user activity logs (Admin only).
+    
+    Query parameters:
+    - limit: Number of logs to return (default: 100)
+    - offset: Number of logs to skip (default: 0)
+    """
+    try:
+        activities = await user_manager.get_user_activity(username, limit, offset)
+        
+        if activities is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "username": username,
+            "activities": activities,
+            "total_returned": len(activities),
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/users/{username}/token-usage")
+async def get_user_token_usage(
+    username: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get user token usage statistics (Admin only).
+    
+    Query parameters:
+    - start_date: Start date in ISO format (e.g., "2024-01-01")
+    - end_date: End date in ISO format (e.g., "2024-01-31")
+    """
+    try:
+        from datetime import datetime
+        
+        start_dt = None
+        end_dt = None
+        
+        if start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        if end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        
+        usage = await user_manager.get_user_token_usage(username, start_dt, end_dt)
+        
+        if usage is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "username": username,
+            "usage": usage,
+            "period": {
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/users/{username}/model-usage")
+async def get_user_model_usage(
+    username: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get user model usage statistics (Admin only).
+    
+    Query parameters:
+    - start_date: Start date in ISO format (e.g., "2024-01-01")
+    - end_date: End date in ISO format (e.g., "2024-01-31")
+    """
+    try:
+        from datetime import datetime
+        
+        start_dt = None
+        end_dt = None
+        
+        if start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        if end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        
+        model_usage = await user_manager.get_user_model_usage(username, start_dt, end_dt)
+        
+        if model_usage is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "username": username,
+            "model_usage": model_usage,
+            "period": {
+                "start_date": start_date,
+                "end_date": end_date
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 

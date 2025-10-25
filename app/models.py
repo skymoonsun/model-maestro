@@ -144,3 +144,16 @@ class ModelMappingResponse(BaseModel):
     real_name: str
     created_at: Optional[str] = None
 
+class SetUserLimitRequest(BaseModel):
+    """Set user limit request"""
+    request_limit: Optional[int] = None
+    token_limit: Optional[int] = None
+
+class UserLimitResponse(BaseModel):
+    """User limit response"""
+    username: str
+    request_limit: Optional[int] = None
+    token_limit: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+

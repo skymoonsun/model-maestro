@@ -3,10 +3,12 @@
 from typing import Dict, Any, Optional
 import httpx
 import json
-from fastapi import HTTPException
+from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings, model_mapper
+from app.user_manager import user_manager
+from app.auth import get_current_user
 
 
 class OllamaProxy:
@@ -176,12 +178,85 @@ class OllamaProxy:
         data_copy['data'] = models
         return data_copy
     
+    async def check_user_limits(self, username: str, request_type: str) -> bool:
+        """
+        Check if user has exceeded their limits
+        
+        Args:
+            username: Username
+            request_type: Type of request (generate, chat, embeddings, etc.)
+        
+        Returns:
+            True if user is within limits, False otherwise
+        """
+        # Get user limits
+        user_limit = await user_manager.get_user_limit(username)
+        if not user_limit:
+            # No limits set, allow request
+            return True
+        
+        # Check request limit
+        request_limit = user_limit.get("request_limit")
+        if request_limit is not None:
+            # Get user's request count for today
+            from datetime import datetime, timedelta
+            start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = start_of_day + timedelta(days=1)
+            
+            token_usage = await user_manager.get_user_token_usage(username, start_of_day, end_of_day)
+            if token_usage and token_usage.get("total_requests", 0) >= request_limit:
+                return False
+        
+        # Check token limit
+        token_limit = user_limit.get("token_limit")
+        if token_limit is not None:
+            # Get user's token usage for today
+            from datetime import datetime, timedelta
+            start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = start_of_day + timedelta(days=1)
+            
+            token_usage = await user_manager.get_user_token_usage(username, start_of_day, end_of_day)
+            if token_usage and token_usage.get("total_tokens", 0) >= token_limit:
+                return False
+        
+        return True
+    
+    async def _log_user_activity(
+        self,
+        username: str,
+        model_name: str,
+        request_type: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0
+    ):
+        """
+        Log user activity for token usage and model access
+        
+        Args:
+            username: Username
+            model_name: Model name used
+            request_type: Type of request (generate, chat, embeddings, etc.)
+            prompt_tokens: Number of prompt tokens used
+            completion_tokens: Number of completion tokens used
+            total_tokens: Total tokens used
+        """
+        await user_manager.log_user_activity(
+            username=username,
+            model_name=model_name,
+            request_type=request_type,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+        )
+    
     async def proxy_request(
         self,
         method: str,
         endpoint: str,
         data: Optional[Dict[str, Any]] = None,
-        stream: bool = False
+        stream: bool = False,
+        username: Optional[str] = None
     ):
         """
         Proxy request to Ollama
@@ -191,12 +266,18 @@ class OllamaProxy:
             endpoint: Ollama API endpoint
             data: Request body data
             stream: Whether to stream the response
+            username: Username for logging and limit checking
         
         Returns:
             Response from Ollama (mapped model names)
         """
         # Ensure model mappings are loaded from database
         await self._ensure_mappings_loaded()
+        
+        # Extract model name for logging
+        model_name = None
+        if data and isinstance(data, dict):
+            model_name = data.get('model') or data.get('name')
         
         url = f"{self.base_url}{endpoint}"
         
@@ -220,6 +301,8 @@ class OllamaProxy:
                             
                             # Buffer to accumulate partial lines
                             buffer = b""
+                            prompt_tokens = 0
+                            completion_tokens = 0
                             
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
@@ -240,6 +323,13 @@ class OllamaProxy:
                                                 if json_str and json_str != '[DONE]':
                                                     json_data = json.loads(json_str)
                                                     mapped_data = self._map_model_from_ollama(json_data)
+                                                    
+                                                    # Extract token usage if available
+                                                    if isinstance(mapped_data, dict) and 'usage' in mapped_data:
+                                                        usage = mapped_data['usage']
+                                                        prompt_tokens += usage.get('prompt_tokens', 0)
+                                                        completion_tokens += usage.get('completion_tokens', 0)
+                                                    
                                                     yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                 else:
                                                     # Pass through [DONE] or empty
@@ -248,6 +338,13 @@ class OllamaProxy:
                                                 # Regular Ollama format (NDJSON)
                                                 json_data = json.loads(line.decode('utf-8'))
                                                 mapped_data = self._map_model_from_ollama(json_data)
+                                                
+                                                # Extract token usage if available
+                                                if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
+                                                    prompt_tokens += mapped_data.get('prompt_eval_count', 0)
+                                                if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
+                                                    completion_tokens += mapped_data.get('eval_count', 0)
+                                                
                                                 yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                         except (json.JSONDecodeError, UnicodeDecodeError):
                                             # If not valid JSON, pass through as-is
@@ -258,9 +355,27 @@ class OllamaProxy:
                                 try:
                                     json_data = json.loads(buffer.decode('utf-8'))
                                     mapped_data = self._map_model_from_ollama(json_data)
+                                    
+                                    # Extract token usage if available
+                                    if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
+                                        prompt_tokens += mapped_data.get('prompt_eval_count', 0)
+                                    if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
+                                        completion_tokens += mapped_data.get('eval_count', 0)
+                                    
                                     yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                 except (json.JSONDecodeError, UnicodeDecodeError):
                                     yield buffer
+                            
+                            # Log user activity after streaming is complete
+                            if username and model_name:
+                                await self._log_user_activity(
+                                    username=username,
+                                    model_name=model_name,
+                                    request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=completion_tokens,
+                                    total_tokens=prompt_tokens + completion_tokens
+                                )
                 
                 # Return streaming response immediately without buffering
                 response = StreamingResponse(
@@ -296,6 +411,16 @@ class OllamaProxy:
                 try:
                     response_data = response.json()
                 except:
+                    # Log user activity for non-JSON responses
+                    if username and model_name:
+                        await self._log_user_activity(
+                            username=username,
+                            model_name=model_name,
+                            request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                            prompt_tokens=0,
+                            completion_tokens=0,
+                            total_tokens=0
+                        )
                     return response.text
                 
                 # Map model names in response
@@ -305,6 +430,39 @@ class OllamaProxy:
                     response_data = self._map_openai_models_list(response_data)
                 else:
                     response_data = self._map_model_from_ollama(response_data)
+                
+                # Extract token usage for logging
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
+                
+                if isinstance(response_data, dict):
+                    # For chat/generate responses
+                    if 'prompt_eval_count' in response_data:
+                        prompt_tokens = response_data.get('prompt_eval_count', 0)
+                    if 'eval_count' in response_data:
+                        completion_tokens = response_data.get('eval_count', 0)
+                    if 'total_duration' in response_data and 'load_duration' in response_data:
+                        # Estimate tokens for embeddings (approximate)
+                        total_tokens = prompt_tokens + completion_tokens
+                    
+                    # For OpenAI format responses
+                    if 'usage' in response_data:
+                        usage = response_data['usage']
+                        prompt_tokens = usage.get('prompt_tokens', 0)
+                        completion_tokens = usage.get('completion_tokens', 0)
+                        total_tokens = usage.get('total_tokens', 0)
+                
+                # Log user activity
+                if username and model_name:
+                    await self._log_user_activity(
+                        username=username,
+                        model_name=model_name,
+                        request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+                    )
                 
                 return response_data
                 

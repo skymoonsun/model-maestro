@@ -6,7 +6,7 @@ import jwt
 
 from app.config import get_settings
 from app.database import async_session_maker
-from app.repositories import UserRepository, UserModelRepository
+from app.repositories import UserRepository, UserModelRepository, UserActivityRepository, UserLimitRepository
 
 
 class UserManager:
@@ -255,6 +255,172 @@ class UserManager:
             
             user_model_repo = UserModelRepository(session)
             return await user_model_repo.revoke_all_models(user.id)
+    
+    async def log_user_activity(
+        self,
+        username: str,
+        model_name: str,
+        request_type: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0
+    ) -> bool:
+        """Log user activity for token usage and model access"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return False
+            
+            activity_repo = UserActivityRepository(session)
+            await activity_repo.log_activity(
+                user_id=user.id,
+                model_name=model_name,
+                request_type=request_type,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+            )
+            
+            await session.commit()
+            return True
+    
+    async def get_user_activity(
+        self,
+        username: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Optional[List[dict]]:
+        """Get user activity logs"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            activity_repo = UserActivityRepository(session)
+            activities = await activity_repo.get_user_activity(user.id, limit, offset)
+            
+            return [
+                {
+                    "model_name": activity.model_name,
+                    "request_type": activity.request_type,
+                    "prompt_tokens": activity.prompt_tokens,
+                    "completion_tokens": activity.completion_tokens,
+                    "total_tokens": activity.total_tokens,
+                    "created_at": activity.created_at.isoformat() if activity.created_at else None
+                }
+                for activity in activities
+            ]
+    
+    async def get_user_token_usage(
+        self,
+        username: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> Optional[dict]:
+        """Get user token usage statistics"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            activity_repo = UserActivityRepository(session)
+            return await activity_repo.get_user_token_usage(user.id, start_date, end_date)
+    
+    async def get_user_model_usage(
+        self,
+        username: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> Optional[List[dict]]:
+        """Get user model usage statistics"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            activity_repo = UserActivityRepository(session)
+            return await activity_repo.get_user_model_usage(user.id, start_date, end_date)
+    
+    async def set_user_limit(
+        self,
+        username: str,
+        request_limit: Optional[int] = None,
+        token_limit: Optional[int] = None
+    ) -> Optional[dict]:
+        """Set user request and token limits"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            limit_repo = UserLimitRepository(session)
+            user_limit = await limit_repo.set_user_limit(user.id, request_limit, token_limit)
+            
+            await session.commit()
+            
+            return {
+                "username": username,
+                "request_limit": user_limit.request_limit,
+                "token_limit": user_limit.token_limit,
+                "created_at": user_limit.created_at.isoformat() if user_limit.created_at else None,
+                "updated_at": user_limit.updated_at.isoformat() if user_limit.updated_at else None
+            }
+    
+    async def get_user_limit(self, username: str) -> Optional[dict]:
+        """Get user request and token limits"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return None
+            
+            limit_repo = UserLimitRepository(session)
+            user_limit = await limit_repo.get_user_limit(user.id)
+            
+            if not user_limit:
+                return {
+                    "username": username,
+                    "request_limit": None,
+                    "token_limit": None,
+                    "created_at": None,
+                    "updated_at": None
+                }
+            
+            return {
+                "username": username,
+                "request_limit": user_limit.request_limit,
+                "token_limit": user_limit.token_limit,
+                "created_at": user_limit.created_at.isoformat() if user_limit.created_at else None,
+                "updated_at": user_limit.updated_at.isoformat() if user_limit.updated_at else None
+            }
+    
+    async def remove_user_limit(self, username: str) -> bool:
+        """Remove user limits"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+            
+            if not user:
+                return False
+            
+            limit_repo = UserLimitRepository(session)
+            result = await limit_repo.remove_user_limit(user.id)
+            
+            if result:
+                await session.commit()
+            
+            return result
 
 
 # Global user manager instance

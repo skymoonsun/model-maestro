@@ -58,3 +58,39 @@ class UserModel(Base):
     def __repr__(self):
         return f"<UserModel(user_id={self.user_id}, model='{self.model_display_name}', all={self.has_all_models})>"
 
+class UserActivityLog(Base):
+    """User activity log for tracking token usage and model access"""
+    __tablename__ = "user_activity_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    model_name = Column(String(255), nullable=False)
+    prompt_tokens = Column(Integer, default=0, nullable=False)
+    completion_tokens = Column(Integer, default=0, nullable=False)
+    total_tokens = Column(Integer, default=0, nullable=False)
+    request_type = Column(String(50), nullable=False)  # generate, chat, embeddings, etc.
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<UserActivityLog(user_id={self.user_id}, model='{self.model_name}', tokens={self.total_tokens})>"
+
+class UserLimit(Base):
+    """User request and token limits"""
+    __tablename__ = "user_limits"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    request_limit = Column(Integer, nullable=True)  # None for unlimited
+    token_limit = Column(Integer, nullable=True)    # None for unlimited
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<UserLimit(user_id={self.user_id}, requests={self.request_limit}, tokens={self.token_limit})>"
+

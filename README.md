@@ -425,6 +425,159 @@ curl -X DELETE http://localhost:8000/admin/model-mappings/gpt-oss:120b \
 
 **Not**: Model mapping ekleme/silme işlemlerinde cache otomatik olarak yenilenir.
 
+### Kullanıcı Limit Yönetimi
+
+Admin endpoint'leri ile kullanıcı bazlı request ve token limitleri tanımlayabilirsiniz.
+
+#### Kullanıcı Limitleri Tanımlama
+
+```bash
+curl -X POST http://localhost:8000/admin/users/john/limits \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_limit": 1000,
+    "token_limit": 1000000
+  }'
+```
+
+**Request body:**
+- `request_limit`: Günlük maksimum istek sayısı (null/sayı)
+- `token_limit`: Günlük maksimum token kullanımı (null/sayı)
+
+**Not**: `null` değeri limitsiz erişim anlamına gelir.
+
+**Response:**
+```json
+{
+  "username": "john",
+  "request_limit": 1000,
+  "token_limit": 1000000,
+  "created_at": "2024-01-20T10:30:00.000000",
+  "updated_at": "2024-01-20T11:00:00.000000"
+}
+```
+
+#### Kullanıcı Limitlerini Görüntüleme
+
+```bash
+curl -X GET http://localhost:8000/admin/users/john/limits \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "request_limit": 1000,
+  "token_limit": 1000000,
+  "created_at": "2024-01-20T10:30:00.000000",
+  "updated_at": "2024-01-20T11:00:00.000000"
+}
+```
+
+#### Kullanıcı Limitlerini Kaldırma
+
+```bash
+curl -X DELETE http://localhost:8000/admin/users/john/limits \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+Bu işlem kullanıcı limitlerini kaldırır ve limitsiz erişim sağlar.
+
+### Kullanıcı Activity Logları
+
+Admin endpoint'leri ile kullanıcı aktivitelerini görüntüleyebilirsiniz.
+
+#### Kullanıcı Activity Loglarını Görüntüleme
+
+```bash
+curl -X GET "http://localhost:8000/admin/users/john/activity?limit=50&offset=0" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Query parameters:**
+- `limit`: Döndürülecek log sayısı (varsayılan: 100)
+- `offset`: Atlanacak log sayısı (varsayılan: 0)
+
+**Response:**
+```json
+{
+  "username": "john",
+  "activities": [
+    {
+      "model_name": "gpt-oss:120b",
+      "request_type": "chat",
+      "prompt_tokens": 150,
+      "completion_tokens": 300,
+      "total_tokens": 450,
+      "created_at": "2024-01-20T10:30:00.000000"
+    }
+  ],
+  "total_returned": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+#### Kullanıcı Token Kullanım İstatistikleri
+
+```bash
+curl -X GET "http://localhost:8000/admin/users/john/token-usage?start_date=2024-01-01&end_date=2024-01-31" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Query parameters:**
+- `start_date`: Başlangıç tarihi (ISO format: "2024-01-01")
+- `end_date`: Bitiş tarihi (ISO format: "2024-01-31")
+
+**Response:**
+```json
+{
+  "username": "john",
+  "usage": {
+    "prompt_tokens": 5000,
+    "completion_tokens": 10000,
+    "total_tokens": 15000,
+    "total_requests": 25
+  },
+  "period": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-01-31"
+  }
+}
+```
+
+#### Kullanıcı Model Kullanım İstatistikleri
+
+```bash
+curl -X GET "http://localhost:8000/admin/users/john/model-usage?start_date=2024-01-01&end_date=2024-01-31" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "username": "john",
+  "model_usage": [
+    {
+      "model_name": "gpt-oss:120b",
+      "request_count": 15,
+      "total_tokens": 8000
+    },
+    {
+      "model_name": "deepseek-v3.1:671b",
+      "request_count": 10,
+      "total_tokens": 7000
+    }
+  ],
+  "period": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-01-31"
+  }
+}
+```
+
 ### Model Erişim Kontrolü
 
 Kullanıcılar yalnızca kendilerine atanmış modellere erişebilir:
