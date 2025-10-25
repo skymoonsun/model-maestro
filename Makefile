@@ -44,7 +44,7 @@ dev-up: ## Start development environment (PostgreSQL, Redis, API, Celery)
 
 dev-down: ## Stop development environment
 	@echo "$(YELLOW)Stopping development environment...$(NC)"
-	docker-compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.dev.yml down --remove-orphans
 	@echo "$(GREEN)✓ Development environment stopped$(NC)"
 
 dev-restart: ## Restart development environment
@@ -85,7 +85,7 @@ prod-up: ## Start production environment
 
 prod-down: ## Stop production environment
 	@echo "$(YELLOW)Stopping production environment...$(NC)"
-	docker-compose -f docker-compose.yml down
+	docker-compose -f docker-compose.yml down --remove-orphans
 	@echo "$(GREEN)✓ Production environment stopped$(NC)"
 
 prod-restart: ## Restart production environment
