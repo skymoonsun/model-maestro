@@ -20,7 +20,7 @@ from app.auth import verify_admin
 from app.user_manager import user_manager
 from app.config import ModelMappingManager
 
-router = APIRouter(prefix="/admin", tags=["Admin"])
+router = APIRouter(prefix="/admin")
 model_mapping_manager = ModelMappingManager()
 
 
@@ -28,7 +28,7 @@ model_mapping_manager = ModelMappingManager()
 # User Management Endpoints
 # ============================================================================
 
-@router.post("/users", response_model=UserResponse, status_code=201)
+@router.post("/users", response_model=UserResponse, status_code=201, tags=["Admin - User Management"])
 async def create_user_admin(
     request: CreateUserRequest,
     admin: str = Depends(verify_admin)
@@ -51,7 +51,7 @@ async def create_user_admin(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/users/{username}", status_code=204)
+@router.delete("/users/{username}", status_code=204, tags=["Admin - User Management"])
 async def delete_user_admin(
     username: str,
     admin: str = Depends(verify_admin)
@@ -68,7 +68,7 @@ async def delete_user_admin(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.put("/users/{username}/token", response_model=UserResponse)
+@router.put("/users/{username}/token", response_model=UserResponse, tags=["Admin - User Management"])
 async def refresh_user_token_admin(
     username: str,
     admin: str = Depends(verify_admin)
@@ -91,7 +91,7 @@ async def refresh_user_token_admin(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/users/{username}", response_model=UserWithModelsResponse)
+@router.get("/users/{username}", response_model=UserWithModelsResponse, tags=["Admin - User Management"])
 async def get_user_admin(
     username: str,
     admin: str = Depends(verify_admin)
@@ -116,7 +116,7 @@ async def get_user_admin(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/users", response_model=List[UserWithModelsResponse])
+@router.get("/users", response_model=List[UserWithModelsResponse], tags=["Admin - User Management"])
 async def list_users_admin(admin: str = Depends(verify_admin)):
     """
     List all users with their assigned models (Admin only).
@@ -143,7 +143,7 @@ async def list_users_admin(admin: str = Depends(verify_admin)):
 # Model Assignment Endpoints
 # ============================================================================
 
-@router.post("/users/{username}/models", response_model=UserModelsResponse)
+@router.post("/users/{username}/models", response_model=UserModelsResponse, tags=["Admin - Model Assignment"])
 async def assign_models(
     username: str,
     request: AssignModelsRequest,
@@ -177,7 +177,7 @@ async def assign_models(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/users/{username}/models/all", response_model=UserModelsResponse)
+@router.post("/users/{username}/models/all", response_model=UserModelsResponse, tags=["Admin - Model Assignment"])
 async def grant_all_models(
     username: str,
     admin: str = Depends(verify_admin)
@@ -205,7 +205,7 @@ async def grant_all_models(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/users/{username}/models", response_model=UserModelsResponse)
+@router.get("/users/{username}/models", response_model=UserModelsResponse, tags=["Admin - Model Assignment"])
 async def get_user_models_admin(
     username: str,
     admin: str = Depends(verify_admin)
@@ -225,7 +225,7 @@ async def get_user_models_admin(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.delete("/users/{username}/models/{model_name}", status_code=204)
+@router.delete("/users/{username}/models/{model_name}", status_code=204, tags=["Admin - Model Assignment"])
 async def revoke_model(
     username: str,
     model_name: str,
@@ -257,7 +257,7 @@ async def revoke_model(
 # Model Mapping Management Endpoints
 # ============================================================================
 
-@router.post("/model-mappings", response_model=ModelMappingResponse, status_code=201)
+@router.post("/model-mappings", response_model=ModelMappingResponse, status_code=201, tags=["Admin - Model Mapping"])
 async def create_model_mapping(
     request: CreateMappingRequest,
     admin: str = Depends(verify_admin)
@@ -290,7 +290,7 @@ async def create_model_mapping(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/model-mappings", response_model=List[ModelMappingResponse])
+@router.get("/model-mappings", response_model=List[ModelMappingResponse], tags=["Admin - Model Mapping"])
 async def list_model_mappings(admin: str = Depends(verify_admin)):
     """
     List all model mappings (Admin only).
@@ -307,7 +307,7 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
     ]
 
 
-@router.delete("/model-mappings/{display_name}", status_code=204)
+@router.delete("/model-mappings/{display_name}", status_code=204, tags=["Admin - Model Mapping"])
 async def delete_model_mapping(
     display_name: str,
     admin: str = Depends(verify_admin)
@@ -325,7 +325,7 @@ async def delete_model_mapping(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@router.post("/model-mappings/invalidate-cache", status_code=200)
+@router.post("/model-mappings/invalidate-cache", status_code=200, tags=["Admin - Model Mapping"])
 async def invalidate_model_mapping_cache(
     admin: str = Depends(verify_admin)
 ):
@@ -344,7 +344,7 @@ async def invalidate_model_mapping_cache(
 # User Limit Management Endpoints
 # ============================================================================
 
-@router.post("/users/{username}/limits", response_model=UserLimitResponse)
+@router.post("/users/{username}/limits", response_model=UserLimitResponse, tags=["Admin - User Limits"])
 async def set_user_limit(
     username: str,
     request: SetUserLimitRequest,
@@ -384,7 +384,7 @@ async def set_user_limit(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/users/{username}/limits", response_model=UserLimitResponse)
+@router.get("/users/{username}/limits", response_model=UserLimitResponse, tags=["Admin - User Limits"])
 async def get_user_limit(
     username: str,
     admin: str = Depends(verify_admin)
@@ -403,7 +403,7 @@ async def get_user_limit(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/users/{username}/limits", status_code=204)
+@router.delete("/users/{username}/limits", status_code=204, tags=["Admin - User Limits"])
 async def remove_user_limit(
     username: str,
     admin: str = Depends(verify_admin)
@@ -431,7 +431,7 @@ async def remove_user_limit(
 # User Activity Log Endpoints
 # ============================================================================
 
-@router.get("/users/{username}/activity")
+@router.get("/users/{username}/activity", tags=["Admin - Activity Logs"])
 async def get_user_activity(
     username: str,
     limit: int = 100,
@@ -462,7 +462,7 @@ async def get_user_activity(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/users/{username}/token-usage")
+@router.get("/users/{username}/token-usage", tags=["Admin - Activity Logs"])
 async def get_user_token_usage(
     username: str,
     start_date: Optional[str] = None,
@@ -506,7 +506,7 @@ async def get_user_token_usage(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/users/{username}/model-usage")
+@router.get("/users/{username}/model-usage", tags=["Admin - Activity Logs"])
 async def get_user_model_usage(
     username: str,
     start_date: Optional[str] = None,

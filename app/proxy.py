@@ -87,6 +87,19 @@ class OllamaProxy:
         
         return data_copy
     
+    async def _map_model_to_display(self, real_name: str) -> str:
+        """
+        Map real model name to display name (reverse mapping)
+        
+        Args:
+            real_name: Real model name from Ollama
+        
+        Returns:
+            Display model name for client
+        """
+        await self._ensure_mappings_loaded()
+        return model_mapper.get_display_model_name(real_name)
+    
     def _map_model_from_ollama(self, data: Any) -> Any:
         """
         Map model names in response data from Ollama format to client format

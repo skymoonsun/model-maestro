@@ -3,7 +3,7 @@
 from typing import Any, Dict
 from fastapi import FastAPI, Depends, Request, HTTPException, status
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
 import secrets
@@ -18,12 +18,6 @@ from app.models import (
     OllamaGenerateRequest,
     OllamaChatRequest,
     OllamaEmbeddingsRequest,
-    OllamaShowRequest,
-    OllamaCopyRequest,
-    OllamaDeleteRequest,
-    OllamaPullRequest,
-    OllamaPushRequest,
-    OllamaCreateRequest,
 )
 from app.admin import router as admin_router
 from app.user_manager import user_manager
@@ -38,7 +32,9 @@ import app.redis
 app.redis.redis_manager = RedisManager(settings.redis_url)
 redis_manager = app.redis.redis_manager
 
+# Security schemes
 security = HTTPBasic()
+bearer_scheme = HTTPBearer()
 
 # Set global Redis manager in config
 import app.config
@@ -51,7 +47,8 @@ app = FastAPI(
     version="1.0.0",
     docs_url=None,  # Disable default docs
     redoc_url=None,  # Disable default redoc
-    openapi_url=None  # Disable default openapi
+    openapi_url=None,  # Disable default openapi
+    swagger_ui_parameters={"persistAuthorization": True}
 )
 
 # Include admin router
@@ -89,12 +86,27 @@ async def get_redoc(username: str = Depends(verify_docs_credentials)):
 @app.get("/api/openapi.json", include_in_schema=False)
 async def get_open_api_endpoint(username: str = Depends(verify_docs_credentials)):
     """OpenAPI schema with basic auth"""
-    return get_openapi(
+    openapi_schema = get_openapi(
         title=app.title,
         version=app.version,
         description=app.description,
         routes=app.routes,
     )
+    
+    # Add JWT security scheme
+    openapi_schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter your JWT token in the format: your-token-here (without 'Bearer' prefix)"
+        }
+    }
+    
+    # Apply security globally
+    openapi_schema["security"] = [{"BearerAuth": []}]
+    
+    return openapi_schema
 
 # Disable response buffering for streaming
 @app.on_event("startup")
@@ -116,7 +128,11 @@ async def shutdown_event():
     await redis_manager.disconnect()
 
 
-@app.get("/")
+# ============================================================================
+# System Endpoints
+# ============================================================================
+
+@app.get("/", include_in_schema=False)
 async def root():
     """Root endpoint"""
     return {
@@ -126,13 +142,69 @@ async def root():
     }
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
 async def health():
     """Health check endpoint"""
     return {"status": "healthy"}
 
 
-@app.post("/api/generate")
+# ============================================================================
+# Ollama Native API Endpoints
+# ============================================================================
+
+@app.get("/api/tags", tags=["Ollama Native API"])
+async def list_models(username: str = Depends(get_current_user)):
+    """
+    List available models (filtered by user access and mapped display names)
+    
+    Requires JWT authentication
+    """
+    logger.info(f"User {username} requesting model list")
+    
+    # Get all models from Ollama
+    all_models_response = await ollama_proxy.proxy_request(
+        method="GET",
+        endpoint="/api/tags",
+        username=username
+    )
+    
+    # Get user's model access
+    user_models_data = await user_manager.get_user_models(username)
+    
+    # If user_models_data is None, deny access
+    if not user_models_data:
+        logger.warning(f"User {username} not found or has no model access")
+        return {"models": []}
+    
+    # Apply model mapping to display names
+    if isinstance(all_models_response, dict) and "models" in all_models_response:
+        mapped_models = []
+        
+        for model in all_models_response["models"]:
+            model_name = model.get("name") or model.get("model")
+            if model_name:
+                # Apply reverse mapping (real_name -> display_name)
+                mapped_name = await ollama_proxy._map_model_to_display(model_name)
+                model_copy = model.copy()
+                model_copy["name"] = mapped_name
+                model_copy["model"] = mapped_name
+                mapped_models.append(model_copy)
+        
+        # Filter models based on user access (using display names)
+        if user_models_data["has_all_models"]:
+            return {"models": mapped_models}
+        
+        allowed_models = set(user_models_data["models"])
+        filtered_models = [
+            model for model in mapped_models
+            if model.get("name") in allowed_models or model.get("model") in allowed_models
+        ]
+        return {"models": filtered_models}
+    
+    return all_models_response
+
+
+@app.post("/api/generate", tags=["Ollama Native API"])
 async def generate(
     request: OllamaGenerateRequest,
     username: str = Depends(get_current_user)
@@ -169,7 +241,7 @@ async def generate(
     )
 
 
-@app.post("/api/chat")
+@app.post("/api/chat", tags=["Ollama Native API"])
 async def chat(
     request: OllamaChatRequest,
     username: str = Depends(get_current_user)
@@ -206,7 +278,7 @@ async def chat(
     )
 
 
-@app.post("/api/embeddings")
+@app.post("/api/embeddings", tags=["Ollama Native API"])
 async def embeddings(
     request: OllamaEmbeddingsRequest,
     username: str = Depends(get_current_user)
@@ -242,191 +314,14 @@ async def embeddings(
     )
 
 
-@app.get("/api/tags")
-async def list_models(
-    username: str = Depends(get_current_user)
-):
-    """
-    List available models (filtered by user access)
-    
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} requesting model list")
-    logger.info(f"DEBUG: /api/tags endpoint called with username: {username}")
-    
-    # Get all models from Ollama
-    logger.info(f"Calling ollama_proxy.proxy_request for /api/tags")
-    logger.info(f"ollama_proxy instance: {ollama_proxy}")
-    all_models_response = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/api/tags",
-        username=username
-    )
-    logger.info(f"Received response from Ollama: {type(all_models_response)}")
-    
-    # Get user's model access
-    user_models_data = await user_manager.get_user_models(username)
-    logger.info(f"User {username} model access: {user_models_data}")
-    
-    # If user has access to all models, return everything
-    if user_models_data and user_models_data["has_all_models"]:
-        return all_models_response
-    
-    # If user_models_data is None, deny access
-    if not user_models_data:
-        logger.warning(f"User {username} not found or has no model access")
-        return {"models": []}
-    
-    # Filter models based on user access
-    allowed_models = set(user_models_data["models"])
-    
-    if isinstance(all_models_response, dict) and "models" in all_models_response:
-        filtered_models = [
-            model for model in all_models_response["models"]
-            if model.get("name") in allowed_models or model.get("model") in allowed_models
-        ]
-        return {"models": filtered_models}
-    
-    return all_models_response
+# ============================================================================
+# OpenAI Compatible API Endpoints
+# ============================================================================
 
-
-@app.post("/api/show")
-async def show_model(
-    request: OllamaShowRequest,
-    username: str = Depends(get_current_user)
-):
-    """
-    Show model information
-    
-    Requires JWT authentication and model access
-    """
-    logger.info(f"User {username} requesting show for model {request.name}")
-    
-    # Check model access
-    has_access = await check_model_access(username, request.name)
-    if not has_access:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Bu modele erişim yetkiniz yok: {request.name}"
-        )
-    
-    return await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/api/show",
-        data=request.model_dump(exclude_none=True),
-        username=username
-    )
-
-
-@app.post("/api/copy")
-async def copy_model(
-    request: OllamaCopyRequest,
-    username: str = Depends(get_current_user)
-):
-    """
-    Copy a model
-    
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} copying model from {request.source} to {request.destination}")
-    
-    return await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/api/copy",
-        data=request.model_dump(exclude_none=True),
-        username=username
-    )
-
-
-@app.delete("/api/delete")
-async def delete_model(
-    request: OllamaDeleteRequest,
-    username: str = Depends(get_current_user)
-):
-    """
-    Delete a model
-    
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} deleting model {request.name}")
-    
-    return await ollama_proxy.proxy_request(
-        method="DELETE",
-        endpoint="/api/delete",
-        data=request.model_dump(exclude_none=True),
-        username=username
-    )
-
-
-@app.post("/api/pull")
-async def pull_model(
-    request: OllamaPullRequest,
-    username: str = Depends(get_current_user)
-):
-    """
-    Pull a model from registry
-    
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} pulling model {request.name}")
-    
-    return await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/api/pull",
-        data=request.model_dump(exclude_none=True),
-        stream=request.stream or False,
-        username=username
-    )
-
-
-@app.post("/api/push")
-async def push_model(
-    request: OllamaPushRequest,
-    username: str = Depends(get_current_user)
-):
-    """
-    Push a model to registry
-    
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} pushing model {request.name}")
-    
-    return await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/api/push",
-        data=request.model_dump(exclude_none=True),
-        stream=request.stream or False,
-        username=username
-    )
-
-
-@app.post("/api/create")
-async def create_model(
-    request: OllamaCreateRequest,
-    username: str = Depends(get_current_user)
-):
-    """
-    Create a model from a Modelfile
-    
-    Requires JWT authentication
-    """
-    logger.info(f"User {username} creating model {request.name}")
-    
-    return await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/api/create",
-        data=request.model_dump(exclude_none=True),
-        stream=request.stream or False,
-        username=username
-    )
-
-
-# OpenAI Compatible Endpoints for Cursor
-# /v1/models endpoint with filtering
-@app.get("/v1/models")
+@app.get("/v1/models", tags=["OpenAI Compatible API"])
 async def openai_list_models(username: str = Depends(get_current_user)):
     """
-    List available models in OpenAI format (filtered by user access)
+    List available models in OpenAI format (filtered by user access and mapped display names)
     
     Requires JWT authentication
     """
@@ -442,16 +337,34 @@ async def openai_list_models(username: str = Depends(get_current_user)):
     # Get user's model access
     user_models_data = await user_manager.get_user_models(username)
     
-    # If user has access to all models, return everything
-    if user_models_data["has_all_models"]:
-        return all_models_response
+    # If user_models_data is None, deny access
+    if not user_models_data:
+        logger.warning(f"User {username} not found or has no model access")
+        return {"object": "list", "data": []}
     
-    # Filter models based on user access
-    allowed_models = set(user_models_data["models"])
-    
+    # Apply model mapping to display names
     if isinstance(all_models_response, dict) and "data" in all_models_response:
+        mapped_models = []
+        
+        for model in all_models_response["data"]:
+            model_id = model.get("id")
+            if model_id:
+                # Apply reverse mapping (real_name -> display_name)
+                mapped_id = await ollama_proxy._map_model_to_display(model_id)
+                model_copy = model.copy()
+                model_copy["id"] = mapped_id
+                mapped_models.append(model_copy)
+        
+        # Filter models based on user access (using display names)
+        if user_models_data["has_all_models"]:
+            return {
+                "object": all_models_response.get("object", "list"),
+                "data": mapped_models
+            }
+        
+        allowed_models = set(user_models_data["models"])
         filtered_models = [
-            model for model in all_models_response["data"]
+            model for model in mapped_models
             if model.get("id") in allowed_models
         ]
         return {
@@ -462,74 +375,59 @@ async def openai_list_models(username: str = Depends(get_current_user)):
     return all_models_response
 
 
-# Simple pass-through proxy with JWT auth only
-@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def openai_v1_proxy(
-    path: str,
+@app.post("/v1/chat/completions", tags=["OpenAI Compatible API"])
+async def openai_chat_completions(
     request: Request,
     username: str = Depends(get_current_user)
 ):
     """
-    Proxy all /v1/* requests to Ollama with JWT authentication
-    Only adds JWT, everything else passes through unchanged
-    Model mapping is handled in proxy.py
+    OpenAI compatible chat completions endpoint
+    
+    Requires JWT authentication and model access
     """
-    method = request.method
-    endpoint = f"/v1/{path}"
+    # Parse request body
+    body = await request.body()
+    data = json.loads(body.decode('utf-8')) if body else {}
     
-    # Get request body if exists
-    data = None
-    if method in ["POST", "PUT", "PATCH"]:
-        body = await request.body()
-        if body:
-            data = json.loads(body.decode('utf-8'))
+    model_name = data.get('model', '')
+    msg_count = len(data.get('messages', []))
+    stream = data.get("stream", False)
     
-    # Determine if streaming
-    stream = data.get("stream", False) if data else False
+    logger.info(f"User {username} requesting OpenAI chat - model: {model_name}, messages: {msg_count}")
     
-    # Log request details
-    if data:
-        msg_count = len(data.get('messages', [])) if 'messages' in data else 0
-        model_name = data.get('model', '')
-        logger.info(f"User {username} proxy {method} {endpoint} - model: {model_name}, messages: {msg_count}")
+    # Check model access
+    if model_name:
+        has_access = await check_model_access(username, model_name)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Bu modele erişim yetkiniz yok: {model_name}"
+            )
         
-        # Check model access for chat completions
-        if model_name and 'chat/completions' in endpoint:
-            has_access = await check_model_access(username, model_name)
-            if not has_access:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Bu modele erişim yetkiniz yok: {model_name}"
-                )
-            
-            # Check user limits BEFORE making request to Ollama
-            within_limits = await ollama_proxy.check_user_limits(username, "chat")
-            if not within_limits:
-                raise HTTPException(
-                    status_code=429,
-                    detail="User has exceeded their request or token limit"
-                )
-        
-        # Some models don't support tools parameter
-        # Remove tools for models that don't support them
-        models_without_tool_support = [
-            'deepseek-v3.1:671b',
-            'deepseek-v3.1',
-            'kimi-k2:1t',
-            'kimi-k2'
-        ]
-        
-        if any(unsupported in model_name for unsupported in models_without_tool_support):
-            if 'tools' in data or 'tool_choice' in data:
-                data = {k: v for k, v in data.items() if k not in ['tools', 'tool_choice']}
-                logger.info(f"Removed tools/tool_choice for model {model_name} (not supported)")
-    else:
-        logger.info(f"User {username} proxy {method} {endpoint}")
+        # Check user limits
+        within_limits = await ollama_proxy.check_user_limits(username, "chat")
+        if not within_limits:
+            raise HTTPException(
+                status_code=429,
+                detail="User has exceeded their request or token limit"
+            )
     
-    # Direct proxy with cleaned data
+    # Some models don't support tools parameter
+    models_without_tool_support = [
+        'deepseek-v3.1:671b',
+        'deepseek-v3.1',
+        'kimi-k2:1t',
+        'kimi-k2'
+    ]
+    
+    if any(unsupported in model_name for unsupported in models_without_tool_support):
+        if 'tools' in data or 'tool_choice' in data:
+            data = {k: v for k, v in data.items() if k not in ['tools', 'tool_choice']}
+            logger.info(f"Removed tools/tool_choice for model {model_name} (not supported)")
+    
     return await ollama_proxy.proxy_request(
-        method=method,
-        endpoint=endpoint,
+        method="POST",
+        endpoint="/v1/chat/completions",
         data=data,
         stream=stream,
         username=username
@@ -539,4 +437,3 @@ async def openai_v1_proxy(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

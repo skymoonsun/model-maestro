@@ -1,6 +1,40 @@
 version: '3.8'
 
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ollama-proxy-postgres
+    environment:
+      POSTGRES_DB: ollama_proxy
+      POSTGRES_USER: ollama_user
+      POSTGRES_PASSWORD: ollama_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ollama_user -d ollama_proxy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: ollama-proxy-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   ollama-proxy:
     build: .
     container_name: ollama-proxy
@@ -14,6 +48,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
   
   # Celery worker for background tasks
   celery-worker:
@@ -30,6 +69,7 @@ services:
     restart: unless-stopped
     depends_on:
       - ollama-proxy
+      - redis
   
   # Celery beat for periodic tasks
   celery-beat:
@@ -46,4 +86,9 @@ services:
     restart: unless-stopped
     depends_on:
       - ollama-proxy
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:
 

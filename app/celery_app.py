@@ -32,6 +32,11 @@ celery_app.conf.update(
     task_time_limit=30,
     worker_prefetch_multiplier=4,
     worker_max_tasks_per_child=1000,
+    # Don't store successful task results
+    result_expires=0,  # Delete immediately
+    task_ignore_result=True,  # Don't store results at all
+    # Only store results for failed tasks
+    task_store_eager_result=False,
 )
 
 # Celery beat schedule for periodic tasks
