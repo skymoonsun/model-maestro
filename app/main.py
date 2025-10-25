@@ -33,12 +33,14 @@ settings = get_settings()
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
 
-# Global instances
-redis_manager = RedisManager(settings.redis_url)
+# Initialize global Redis manager
+import app.redis
+app.redis.redis_manager = RedisManager(settings.redis_url)
+redis_manager = app.redis.redis_manager
+
 security = HTTPBasic()
 
 # Set global Redis manager in config
-from app.config import redis_manager as config_redis_manager
 import app.config
 app.config.redis_manager = redis_manager
 
@@ -106,6 +108,9 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutting down Ollama Proxy API")
+    
+    # Close HTTP client connection pool
+    await ollama_proxy.close()
     
     # Disconnect from Redis
     await redis_manager.disconnect()

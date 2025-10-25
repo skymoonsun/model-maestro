@@ -2,7 +2,7 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pyjwt==2.8.0
 pydantic-settings==2.1.0
-httpx==0.26.0
+httpx[http2]==0.26.0
 typer==0.9.0
 python-dotenv==1.0.0
 rich==13.7.0
@@ -10,4 +10,5 @@ asyncpg==0.29.0
 sqlalchemy[asyncio]==2.0.25
 alembic==1.13.1
 redis==5.0.1
+celery==5.3.4
 

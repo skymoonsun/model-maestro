@@ -7,6 +7,7 @@ from fastapi import Depends
 
 from app.user_manager import user_manager
 from app.config import get_settings
+from app.redis import CACHE_KEYS, CACHE_TTL
 
 
 security = HTTPBearer()
@@ -18,6 +19,8 @@ async def get_current_user(
 ) -> str:
     """
     Validate JWT token and return current username
+    
+    Uses Redis cache to avoid DB lookups on every request.
     
     Args:
         authorization: Authorization header (Bearer token)
@@ -46,7 +49,18 @@ async def get_current_user(
     
     token = parts[1]
     
-    # Verify token
+    # Import redis_manager at runtime
+    from app.redis import redis_manager
+    
+    # Try Redis cache first
+    cache_key = f"token:{token}"
+    if redis_manager:
+        cached_username = await redis_manager.get(cache_key)
+        
+        if cached_username:
+            return cached_username
+    
+    # Cache miss - verify token from DB
     username = await user_manager.verify_token(token)
     if not username:
         raise HTTPException(
@@ -54,6 +68,10 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Cache the token -> username mapping (unlimited TTL)
+    if redis_manager:
+        await redis_manager.set(cache_key, username, expire=CACHE_TTL["TOKEN_USERNAME"])
     
     return username
 
@@ -105,6 +123,8 @@ async def check_model_access(username: str, model_name: str) -> bool:
     """
     Check if user has access to specific model
     
+    Uses Redis cache to avoid DB lookups on every request.
+    
     Args:
         username: Username
         model_name: Model display name
@@ -112,5 +132,28 @@ async def check_model_access(username: str, model_name: str) -> bool:
     Returns:
         True if user has access, False otherwise
     """
-    return await user_manager.check_model_access(username, model_name)
+    # Import redis_manager at runtime
+    from app.redis import redis_manager
+    
+    # Try Redis cache first
+    cache_key = CACHE_KEYS["USER_ACCESS"].format(username=username)
+    if redis_manager:
+        cached_access = await redis_manager.get(cache_key)
+        
+        if cached_access:
+            # cached_access = {"has_all": True} or {"has_all": False, "models": [...]}
+            if cached_access.get("has_all"):
+                return True
+            return model_name in cached_access.get("models", [])
+    
+    # Cache miss - get from DB
+    access_data = await user_manager.get_user_model_access(username)
+    
+    # Cache the result (unlimited TTL)
+    if redis_manager:
+        await redis_manager.set(cache_key, access_data, expire=CACHE_TTL["USER_ACCESS"])
+    
+    if access_data.get("has_all"):
+        return True
+    return model_name in access_data.get("models", [])
 

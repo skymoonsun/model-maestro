@@ -81,6 +81,13 @@ class UserManager:
             if not user:
                 raise ValueError(f"Kullanıcı bulunamadı: {username}")
             
+            # Invalidate Redis caches
+            from app.redis import redis_manager, CACHE_KEYS
+            if user.token:
+                await redis_manager.delete(f"token:{user.token}")
+            await redis_manager.delete(CACHE_KEYS["USER_ACCESS"].format(username=username))
+            await redis_manager.delete(CACHE_KEYS["USER_LIMIT"].format(username=username))
+            
             # Hard delete all user_models entries
             await user_model_repo.delete_all_for_user(user.id)
             
@@ -94,6 +101,10 @@ class UserManager:
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             
+            # Get old token
+            old_user = await user_repo.get_by_username(username)
+            old_token = old_user.token if old_user else None
+            
             # Generate new token
             new_token = self._generate_token(username)
             
@@ -102,6 +113,13 @@ class UserManager:
             
             if not user:
                 return None
+            
+            # Invalidate old token cache and set new one
+            from app.redis import redis_manager, CACHE_TTL
+            if old_token:
+                await redis_manager.delete(f"token:{old_token}")
+            # Cache new token
+            await redis_manager.set(f"token:{new_token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
             
             return {
                 "username": user.username,
@@ -421,6 +439,31 @@ class UserManager:
                 await session.commit()
             
             return result
+    
+    async def get_user_model_access(self, username: str) -> dict:
+        """
+        Get user's model access information (for caching)
+        
+        Returns:
+            Dict with "has_all" boolean and "models" list
+        """
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user_model_repo = UserModelRepository(session)
+            
+            user = await user_repo.get_by_username(username)
+            if not user:
+                return {"has_all": False, "models": []}
+            
+            has_all = await user_model_repo.has_all_models(user.id)
+            if has_all:
+                return {"has_all": True, "models": []}
+            
+            user_models = await user_model_repo.get_user_models(user.id)
+            return {
+                "has_all": False,
+                "models": [um.model_name for um in user_models]
+            }
 
 
 # Global user manager instance

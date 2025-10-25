@@ -18,6 +18,7 @@ class OllamaProxy:
         self.settings = get_settings()
         self.base_url = self.settings.ollama_base_url
         self._mappings_loaded = False
+        self._http_client: Optional[httpx.AsyncClient] = None
     
     async def _ensure_mappings_loaded(self):
         """Ensure model mappings are loaded from database"""
@@ -25,6 +26,35 @@ class OllamaProxy:
         if not self._mappings_loaded:
             await model_mapper.ensure_loaded()
             self._mappings_loaded = True
+    
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        """
+        Get or create persistent HTTP client with connection pooling
+        
+        Returns:
+            Configured AsyncClient with HTTP/2 support
+        """
+        if self._http_client is None:
+            # Configure connection limits
+            limits = httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=50,
+                keepalive_expiry=300  # 5 minutes
+            )
+            
+            self._http_client = httpx.AsyncClient(
+                timeout=600.0,
+                limits=limits,
+                http2=True  # Enable HTTP/2
+            )
+        
+        return self._http_client
+    
+    async def close(self):
+        """Close HTTP client connection pool"""
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
     
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -180,7 +210,7 @@ class OllamaProxy:
     
     async def check_user_limits(self, username: str, request_type: str) -> bool:
         """
-        Check if user has exceeded their limits
+        Check if user has exceeded their limits (with Redis caching)
         
         Args:
             username: Username
@@ -189,34 +219,46 @@ class OllamaProxy:
         Returns:
             True if user is within limits, False otherwise
         """
-        # Get user limits
-        user_limit = await user_manager.get_user_limit(username)
-        if not user_limit:
-            # No limits set, allow request
-            return True
+        from datetime import datetime, timedelta
+        from app.redis import redis_manager, CACHE_KEYS, CACHE_TTL
         
-        # Check request limit
-        request_limit = user_limit.get("request_limit")
-        if request_limit is not None:
-            # Get user's request count for today
-            from datetime import datetime, timedelta
+        # 1. Get user limit from cache or DB
+        limit_cache_key = CACHE_KEYS["USER_LIMIT"].format(username=username)
+        user_limit = await redis_manager.get(limit_cache_key)
+        
+        if not user_limit:
+            # Cache miss - get from DB
+            user_limit = await user_manager.get_user_limit(username)
+            if user_limit:
+                await redis_manager.set(limit_cache_key, user_limit, expire=CACHE_TTL["USER_LIMIT"])
+            else:
+                # No limits set, allow request
+                return True
+        
+        # 2. Get daily usage from cache or DB
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        usage_cache_key = CACHE_KEYS["USER_DAILY_USAGE"].format(username=username, date=today)
+        
+        daily_usage = await redis_manager.get(usage_cache_key)
+        
+        if not daily_usage:
+            # Cache miss - get from DB
             start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = start_of_day + timedelta(days=1)
-            
-            token_usage = await user_manager.get_user_token_usage(username, start_of_day, end_of_day)
-            if token_usage and token_usage.get("total_requests", 0) >= request_limit:
+            daily_usage = await user_manager.get_user_token_usage(username, start_of_day, end_of_day)
+            if daily_usage:
+                await redis_manager.set(usage_cache_key, daily_usage, expire=CACHE_TTL["USER_DAILY_USAGE"])
+        
+        # 3. Check request limit
+        request_limit = user_limit.get("request_limit")
+        if request_limit is not None and daily_usage:
+            if daily_usage.get("total_requests", 0) >= request_limit:
                 return False
         
-        # Check token limit
+        # 4. Check token limit
         token_limit = user_limit.get("token_limit")
-        if token_limit is not None:
-            # Get user's token usage for today
-            from datetime import datetime, timedelta
-            start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_day = start_of_day + timedelta(days=1)
-            
-            token_usage = await user_manager.get_user_token_usage(username, start_of_day, end_of_day)
-            if token_usage and token_usage.get("total_tokens", 0) >= token_limit:
+        if token_limit is not None and daily_usage:
+            if daily_usage.get("total_tokens", 0) >= token_limit:
                 return False
         
         return True
@@ -231,7 +273,9 @@ class OllamaProxy:
         total_tokens: int = 0
     ):
         """
-        Log user activity for token usage and model access
+        Log user activity for token usage and model access (batch processing)
+        
+        Queues the activity log for batch processing via Celery.
         
         Args:
             username: Username
@@ -241,7 +285,9 @@ class OllamaProxy:
             completion_tokens: Number of completion tokens used
             total_tokens: Total tokens used
         """
-        await user_manager.log_user_activity(
+        from app.celery_app import queue_activity_log
+        
+        await queue_activity_log(
             username=username,
             model_name=model_name,
             request_type=request_type,
@@ -287,10 +333,10 @@ class OllamaProxy:
         
         try:
             if method.upper() == "POST" and stream:
-                # Handle streaming response - client must stay open during streaming
+                # Handle streaming response with persistent HTTP client
                 async def stream_generator():
-                    async with httpx.AsyncClient(timeout=600.0) as client:
-                        async with client.stream("POST", url, json=data) as resp:
+                    client = await self._get_http_client()
+                    async with client.stream("POST", url, json=data) as resp:
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
                                 error_msg = error_text.decode()
@@ -389,82 +435,82 @@ class OllamaProxy:
                 # Remove Transfer-Encoding header to let framework handle it
                 return response
             
-            # Non-streaming requests
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                if method.upper() == "GET":
-                    response = await client.get(url)
-                elif method.upper() == "POST":
-                    response = await client.post(url, json=data)
-                elif method.upper() == "DELETE":
-                    response = await client.delete(url, json=data)
-                else:
-                    raise HTTPException(status_code=405, detail="Method not allowed")
-                
-                # Check response status
-                if response.status_code >= 400:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"Ollama error: {response.text}"
-                    )
-                
-                # Parse response
-                try:
-                    response_data = response.json()
-                except:
-                    # Log user activity for non-JSON responses
-                    if username and model_name:
-                        await self._log_user_activity(
-                            username=username,
-                            model_name=model_name,
-                            request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
-                            prompt_tokens=0,
-                            completion_tokens=0,
-                            total_tokens=0
-                        )
-                    return response.text
-                
-                # Map model names in response
-                if endpoint == "/api/tags":
-                    response_data = self._map_models_list(response_data)
-                elif endpoint == "/v1/models":
-                    response_data = self._map_openai_models_list(response_data)
-                else:
-                    response_data = self._map_model_from_ollama(response_data)
-                
-                # Extract token usage for logging
-                prompt_tokens = 0
-                completion_tokens = 0
-                total_tokens = 0
-                
-                if isinstance(response_data, dict):
-                    # For chat/generate responses
-                    if 'prompt_eval_count' in response_data:
-                        prompt_tokens = response_data.get('prompt_eval_count', 0)
-                    if 'eval_count' in response_data:
-                        completion_tokens = response_data.get('eval_count', 0)
-                    if 'total_duration' in response_data and 'load_duration' in response_data:
-                        # Estimate tokens for embeddings (approximate)
-                        total_tokens = prompt_tokens + completion_tokens
-                    
-                    # For OpenAI format responses
-                    if 'usage' in response_data:
-                        usage = response_data['usage']
-                        prompt_tokens = usage.get('prompt_tokens', 0)
-                        completion_tokens = usage.get('completion_tokens', 0)
-                        total_tokens = usage.get('total_tokens', 0)
-                
-                # Log user activity
+            # Non-streaming requests with persistent HTTP client
+            client = await self._get_http_client()
+            if method.upper() == "GET":
+                response = await client.get(url)
+            elif method.upper() == "POST":
+                response = await client.post(url, json=data)
+            elif method.upper() == "DELETE":
+                response = await client.delete(url, json=data)
+            else:
+                raise HTTPException(status_code=405, detail="Method not allowed")
+            
+            # Check response status
+            if response.status_code >= 400:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Ollama error: {response.text}"
+                )
+            
+            # Parse response
+            try:
+                response_data = response.json()
+            except:
+                # Log user activity for non-JSON responses
                 if username and model_name:
                     await self._log_user_activity(
                         username=username,
                         model_name=model_name,
                         request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                        total_tokens=0
                     )
+                return response.text
+            
+            # Map model names in response
+            if endpoint == "/api/tags":
+                response_data = self._map_models_list(response_data)
+            elif endpoint == "/v1/models":
+                response_data = self._map_openai_models_list(response_data)
+            else:
+                response_data = self._map_model_from_ollama(response_data)
+            
+            # Extract token usage for logging
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            
+            if isinstance(response_data, dict):
+                # For chat/generate responses
+                if 'prompt_eval_count' in response_data:
+                    prompt_tokens = response_data.get('prompt_eval_count', 0)
+                if 'eval_count' in response_data:
+                    completion_tokens = response_data.get('eval_count', 0)
+                if 'total_duration' in response_data and 'load_duration' in response_data:
+                    # Estimate tokens for embeddings (approximate)
+                    total_tokens = prompt_tokens + completion_tokens
                 
-                return response_data
+                # For OpenAI format responses
+                if 'usage' in response_data:
+                    usage = response_data['usage']
+                    prompt_tokens = usage.get('prompt_tokens', 0)
+                    completion_tokens = usage.get('completion_tokens', 0)
+                    total_tokens = usage.get('total_tokens', 0)
+            
+            # Log user activity
+            if username and model_name:
+                await self._log_user_activity(
+                    username=username,
+                    model_name=model_name,
+                    request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+                )
+            
+            return response_data
                 
         except httpx.RequestError as e:
             raise HTTPException(

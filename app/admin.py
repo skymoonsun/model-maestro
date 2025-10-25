@@ -161,6 +161,11 @@ async def assign_models(
     """
     try:
         await user_manager.assign_models_to_user(username, request.models)
+        
+        # Invalidate model access cache
+        from app.redis import redis_manager, CACHE_KEYS
+        await redis_manager.delete(CACHE_KEYS["USER_ACCESS"].format(username=username))
+        
         user_models = await user_manager.get_user_models(username)
         
         return UserModelsResponse(
@@ -184,6 +189,11 @@ async def grant_all_models(
     """
     try:
         await user_manager.grant_all_models(username)
+        
+        # Invalidate model access cache
+        from app.redis import redis_manager, CACHE_KEYS
+        await redis_manager.delete(CACHE_KEYS["USER_ACCESS"].format(username=username))
+        
         user_models = await user_manager.get_user_models(username)
         
         return UserModelsResponse(
@@ -365,6 +375,10 @@ async def set_user_limit(
         if not limit_data:
             raise HTTPException(status_code=404, detail="User not found")
         
+        # Invalidate limit cache
+        from app.redis import redis_manager, CACHE_KEYS
+        await redis_manager.delete(CACHE_KEYS["USER_LIMIT"].format(username=username))
+        
         return UserLimitResponse(**limit_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -403,6 +417,10 @@ async def remove_user_limit(
         
         if not result:
             raise HTTPException(status_code=404, detail="User not found or no limits to remove")
+        
+        # Invalidate limit cache
+        from app.redis import redis_manager, CACHE_KEYS
+        await redis_manager.delete(CACHE_KEYS["USER_LIMIT"].format(username=username))
         
         return None
     except Exception as e:

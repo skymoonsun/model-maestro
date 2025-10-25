@@ -112,20 +112,28 @@ class RedisManager:
             logger.error(f"Redis EXISTS error for key {key}: {e}")
             return False
 
-# Global Redis manager instance
-redis_manager = RedisManager()
+# Global Redis manager instance (initialized in main.py)
+redis_manager: Optional[RedisManager] = None
 
 # Cache key constants
 CACHE_KEYS = {
     "MODEL_MAPPINGS": "model_mappings",
     "MODEL_MAPPINGS_REVERSE": "model_mappings_reverse",
     "USER_MODELS": "user_models:{username}",
-    "USER_HAS_ALL_MODELS": "user_has_all_models:{username}"
+    "USER_HAS_ALL_MODELS": "user_has_all_models:{username}",
+    "USER_ACCESS": "user_access:{username}",
+    "USER_LIMIT": "user_limit:{username}",
+    "USER_DAILY_USAGE": "user_daily_usage:{username}:{date}",
+    "TOKEN_USERNAME": "token:{token}"
 }
 
 # Cache TTL (Time To Live) in seconds
 CACHE_TTL = {
     "MODEL_MAPPINGS": None,  # No expiration (permanent)
-    "USER_MODELS": 1800,      # 30 minutes
-    "USER_HAS_ALL_MODELS": 1800  # 30 minutes
+    "USER_MODELS": None,      # No expiration (permanent)
+    "USER_HAS_ALL_MODELS": None,  # No expiration (permanent)
+    "USER_ACCESS": None,      # No expiration (permanent)
+    "USER_LIMIT": None,       # No expiration (permanent)
+    "USER_DAILY_USAGE": None, # No expiration (permanent)
+    "TOKEN_USERNAME": None    # No expiration (permanent)
 }
