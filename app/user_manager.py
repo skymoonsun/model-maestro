@@ -1,6 +1,7 @@
 """User management and JWT token operations (PostgreSQL-based)"""
 
 from datetime import datetime
+import secrets
 from typing import Optional, List
 import jwt
 
@@ -19,7 +20,8 @@ class UserManager:
         """Generate JWT token for user (no expiration)"""
         payload = {
             "username": username,
-            "iat": int(datetime.utcnow().timestamp())
+            "iat": int(datetime.utcnow().timestamp()),
+            "jti": secrets.token_urlsafe(32)  # Benzersiz JWT ID
         }
         token = jwt.encode(payload, self.settings.jwt_secret_key, algorithm="HS256")
         return token
