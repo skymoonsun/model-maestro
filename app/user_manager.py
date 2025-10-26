@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import secrets
+import uuid
 from typing import Optional, List
 import jwt
 
@@ -21,7 +22,10 @@ class UserManager:
         payload = {
             "username": username,
             "iat": int(datetime.utcnow().timestamp()),
-            "jti": secrets.token_urlsafe(32)  # Benzersiz JWT ID
+            "jti": str(uuid.uuid4()),  # Benzersiz JWT ID
+            "sub": username,  # Subject (kullanıcı adı)
+            "iss": "ollama-proxy",  # Issuer
+            "aud": "ollama-api"  # Audience
         }
         token = jwt.encode(payload, self.settings.jwt_secret_key, algorithm="HS256")
         return token
