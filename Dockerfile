@@ -15,8 +15,8 @@ COPY docker-entrypoint.sh .
 COPY alembic.ini .
 COPY alembic/ ./alembic/
 
-# Create directories for data and config
-RUN mkdir -p /app/data /app/config
+# Create directories for data and cache
+RUN mkdir -p /app/data /app/cache
 
 # Make scripts executable
 RUN chmod +x docker-entrypoint.sh

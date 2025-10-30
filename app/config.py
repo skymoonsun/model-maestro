@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Dict, Optional
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-from app.redis import RedisManager, CACHE_KEYS, CACHE_TTL
 
 
 class Settings(BaseSettings):
@@ -35,56 +34,73 @@ class ModelMappingManager:
     """
     Manage model name mappings
     
-    Uses PostgreSQL for storage with Redis cache for performance.
+    Uses PostgreSQL for storage with JSON file cache for performance.
     """
     
-    def __init__(self):
+    def __init__(self, cache_dir: Optional[str] = None):
+        # Auto-detect cache directory: /app/cache for Docker, ./cache for local
+        if cache_dir is None:
+            if os.path.exists("/app"):
+                cache_dir = "/app/cache"
+            else:
+                # Local development
+                cache_dir = os.path.join(os.getcwd(), "cache")
+        
+        self.cache_dir = cache_dir
+        self.cache_file = os.path.join(cache_dir, "model_mappings.json")
         self._mappings: Dict[str, str] = {}
         self._reverse_mappings: Dict[str, str] = {}
         self._cache_loaded = False
+        
+        # Ensure cache directory exists
+        os.makedirs(cache_dir, exist_ok=True)
+        print(f"Using cache directory: {cache_dir}")
     
-    async def _load_from_redis(self) -> bool:
-        """Load model mappings from Redis cache"""
+    def _load_from_cache_file(self) -> bool:
+        """Load model mappings from JSON cache file"""
         try:
-            # Use global redis_manager
-            if redis_manager is None:
+            if not os.path.exists(self.cache_file):
                 return False
-            # Try to get from Redis first
-            mappings_data = await redis_manager.get(CACHE_KEYS["MODEL_MAPPINGS"])
-            reverse_mappings_data = await redis_manager.get(CACHE_KEYS["MODEL_MAPPINGS_REVERSE"])
             
-            if mappings_data and reverse_mappings_data:
-                self._mappings = mappings_data
-                self._reverse_mappings = reverse_mappings_data
+            with open(self.cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self._mappings = data.get("mappings", {})
+                self._reverse_mappings = data.get("reverse_mappings", {})
                 self._cache_loaded = True
+                print(f"Loaded {len(self._mappings)} model mappings from cache file")
                 return True
-            return False
         except Exception as e:
-            print(f"Error loading model mappings from Redis: {e}")
+            print(f"Error loading model mappings from cache file: {e}")
             return False
     
-    async def _save_to_redis(self):
-        """Save model mappings to Redis cache"""
+    def _save_to_cache_file(self):
+        """Save model mappings to JSON cache file"""
         try:
-            # Use global redis_manager
-            if redis_manager is None:
-                return
+            data = {
+                "mappings": self._mappings,
+                "reverse_mappings": self._reverse_mappings
+            }
             
-            # Get TTL for model mappings (None means no expiration)
-            ttl = CACHE_TTL["MODEL_MAPPINGS"]
+            # Write to temporary file first, then rename (atomic operation)
+            temp_file = f"{self.cache_file}.tmp"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
             
-            await redis_manager.set(
-                CACHE_KEYS["MODEL_MAPPINGS"], 
-                self._mappings, 
-                ttl
-            )
-            await redis_manager.set(
-                CACHE_KEYS["MODEL_MAPPINGS_REVERSE"], 
-                self._reverse_mappings, 
-                ttl
-            )
+            # Atomic rename
+            if os.path.exists(self.cache_file):
+                os.remove(self.cache_file)
+            os.rename(temp_file, self.cache_file)
+            
+            print(f"Saved {len(self._mappings)} model mappings to cache file")
         except Exception as e:
-            print(f"Error saving model mappings to Redis: {e}")
+            print(f"Error saving model mappings to cache file: {e}")
+            # Try to clean up temp file if it exists
+            temp_file = f"{self.cache_file}.tmp"
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
     
     async def _load_from_db(self):
         """Load model mappings from PostgreSQL"""
@@ -100,8 +116,10 @@ class ModelMappingManager:
                 self._reverse_mappings = {m.real_name: m.display_name for m in mappings}
                 self._cache_loaded = True
                 
-                # Save to Redis cache
-                await self._save_to_redis()
+                # Save to cache file
+                self._save_to_cache_file()
+                
+                print(f"Loaded {len(self._mappings)} model mappings from database")
                 
         except Exception as e:
             print(f"Error loading model mappings from DB: {e}")
@@ -110,12 +128,12 @@ class ModelMappingManager:
             self._reverse_mappings = {}
     
     async def ensure_loaded(self):
-        """Ensure mappings are loaded (from memory cache or Redis on first load)"""
-        # Only load once - either from Redis or DB
+        """Ensure mappings are loaded (from cache file or DB on first load)"""
+        # Only load once
         if not self._cache_loaded:
-            # Try Redis first (fastest)
-            if not await self._load_from_redis():
-                # Redis empty/failed, load from DB and populate Redis
+            # Try cache file first (fastest)
+            if not self._load_from_cache_file():
+                # Cache file empty/failed, load from DB and populate cache
                 await self._load_from_db()
     
     def get_real_model_name(self, display_name: str) -> str:
@@ -165,21 +183,13 @@ class ModelMappingManager:
         return self._mappings.copy()
     
     async def reload(self):
-        """Reload mappings from database and update Redis cache"""
+        """Reload mappings from database"""
         self._cache_loaded = False
         await self._load_from_db()
     
     async def invalidate_cache(self):
-        """Invalidate Redis cache"""
-        try:
-            # Use global redis_manager
-            if redis_manager is None:
-                return
-            await redis_manager.delete(CACHE_KEYS["MODEL_MAPPINGS"])
-            await redis_manager.delete(CACHE_KEYS["MODEL_MAPPINGS_REVERSE"])
-            self._cache_loaded = False
-        except Exception as e:
-            print(f"Error invalidating Redis cache: {e}")
+        """Invalidate cache (force reload from DB)"""
+        self._cache_loaded = False
     
     async def create_mapping(self, display_name: str, real_name: str) -> Dict[str, str]:
         """Create a new model mapping in database"""
@@ -200,8 +210,10 @@ class ModelMappingManager:
             self._mappings[display_name] = real_name
             self._reverse_mappings[real_name] = display_name
             
-            # Update Redis cache
-            await self._save_to_redis()
+            # Save to cache file
+            self._save_to_cache_file()
+            
+            print(f"Created mapping: {display_name} -> {real_name}")
             
             return {
                 "display_name": mapping.display_name,
@@ -231,8 +243,10 @@ class ModelMappingManager:
                 if real_name in self._reverse_mappings:
                     del self._reverse_mappings[real_name]
             
-            # Update Redis cache
-            await self._save_to_redis()
+            # Save to cache file
+            self._save_to_cache_file()
+            
+            print(f"Deleted mapping: {display_name}")
     
     async def list_mappings(self):
         """List all model mappings from database"""
@@ -257,5 +271,5 @@ class ModelMappingManager:
 model_mapper = ModelMappingManager()
 
 # Global Redis manager instance (will be set by main.py)
+from app.redis import RedisManager
 redis_manager = None
-

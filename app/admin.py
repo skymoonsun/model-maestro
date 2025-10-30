@@ -18,10 +18,9 @@ from app.models import (
 )
 from app.auth import verify_admin
 from app.user_manager import user_manager
-from app.config import ModelMappingManager
+from app.config import model_mapper
 
 router = APIRouter(prefix="/admin")
-model_mapping_manager = ModelMappingManager()
 
 
 # ============================================================================
@@ -274,7 +273,7 @@ async def create_model_mapping(
     Cache is automatically reloaded after creation.
     """
     try:
-        mapping = await model_mapping_manager.create_mapping(
+        mapping = await model_mapper.create_mapping(
             request.display_name,
             request.real_name
         )
@@ -295,7 +294,7 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
     """
     List all model mappings (Admin only).
     """
-    mappings = await model_mapping_manager.list_mappings()
+    mappings = await model_mapper.list_mappings()
     
     return [
         ModelMappingResponse(
@@ -319,7 +318,7 @@ async def delete_model_mapping(
     Cache is automatically reloaded after deletion.
     """
     try:
-        await model_mapping_manager.delete_mapping(display_name)
+        await model_mapper.delete_mapping(display_name)
         # Cache is automatically updated in delete_mapping
         return None
     except ValueError as e:
@@ -334,7 +333,7 @@ async def invalidate_model_mapping_cache(
     Forces reload from database on next request.
     """
     try:
-        await model_mapping_manager.invalidate_cache()
+        await model_mapper.invalidate_cache()
         return {"message": "Cache invalidated successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to invalidate cache: {str(e)}")
