@@ -50,6 +50,11 @@ class UserManager:
                 new_token = self._generate_token(username)
                 user = await user_repo.reactivate(username, new_token)
                 
+                # Cache the token -> username mapping
+                from app.redis import redis_manager, CACHE_TTL
+                if redis_manager:
+                    await redis_manager.set(f"token:{new_token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
+                
                 return {
                     "username": user.username,
                     "token": user.token,
@@ -63,6 +68,11 @@ class UserManager:
             
             # Create new user
             user = await user_repo.create(username, token)
+            
+            # Cache the token -> username mapping
+            from app.redis import redis_manager, CACHE_TTL
+            if redis_manager:
+                await redis_manager.set(f"token:{token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
             
             return {
                 "username": user.username,
