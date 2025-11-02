@@ -52,8 +52,12 @@ class UserManager:
                 
                 # Cache the token -> username mapping
                 from app.redis import redis_manager, CACHE_TTL
+                import logging
+                logger = logging.getLogger(__name__)
+                
                 if redis_manager:
-                    await redis_manager.set(f"token:{new_token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
+                    cache_result = await redis_manager.set(f"token:{new_token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
+                    logger.info(f"[REACTIVATE_USER] Redis cache write for user '{username}': {'SUCCESS' if cache_result else 'FAILED'}")
                 
                 return {
                     "username": user.username,
@@ -71,8 +75,12 @@ class UserManager:
             
             # Cache the token -> username mapping
             from app.redis import redis_manager, CACHE_TTL
+            import logging
+            logger = logging.getLogger(__name__)
+            
             if redis_manager:
-                await redis_manager.set(f"token:{token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
+                cache_result = await redis_manager.set(f"token:{token}", username, expire=CACHE_TTL["TOKEN_USERNAME"])
+                logger.info(f"[CREATE_USER] Redis cache write for user '{username}': {'SUCCESS' if cache_result else 'FAILED'}")
             
             return {
                 "username": user.username,
