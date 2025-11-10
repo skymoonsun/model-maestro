@@ -184,22 +184,41 @@ async def list_models(username: str = Depends(get_current_user)):
         logger.warning(f"User {username} not found or has no model access")
         return {"models": []}
     
+    # Get all mappings from database
+    all_mappings = model_mapper.get_all_mappings()
+    
     # Apply model mapping to display names
     if isinstance(all_models_response, dict) and "models" in all_models_response:
-        mapped_models = []
+        # Use a dict to track unique display names and avoid duplicates
+        models_dict = {}
         
+        # First, add all models from Ollama with reverse mapping
         for model in all_models_response["models"]:
             model_name = model.get("name") or model.get("model")
             if model_name:
                 # Get ALL display names for this real model
-                # If multiple display names map to the same real model, create separate entries
                 display_names = model_mapper.get_all_display_names_for_real_name(model_name)
                 
                 for display_name in display_names:
-                    model_copy = model.copy()
-                    model_copy["name"] = display_name
-                    model_copy["model"] = display_name
-                    mapped_models.append(model_copy)
+                    if display_name not in models_dict:
+                        model_copy = model.copy()
+                        model_copy["name"] = display_name
+                        model_copy["model"] = display_name
+                        models_dict[display_name] = model_copy
+        
+        # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
+        # This allows multiple display names to point to the same real model
+        for display_name, real_name in all_mappings.items():
+            if display_name not in models_dict:
+                # Create a synthetic model entry for this display name
+                # Use a template from Ollama models or create a minimal one
+                base_model = all_models_response["models"][0] if all_models_response["models"] else {}
+                model_entry = base_model.copy() if base_model else {}
+                model_entry["name"] = display_name
+                model_entry["model"] = display_name
+                models_dict[display_name] = model_entry
+        
+        mapped_models = list(models_dict.values())
         
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
@@ -353,21 +372,37 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         logger.warning(f"User {username} not found or has no model access")
         return {"object": "list", "data": []}
     
+    # Get all mappings from database
+    all_mappings = model_mapper.get_all_mappings()
+    
     # Apply model mapping to display names
     if isinstance(all_models_response, dict) and "data" in all_models_response:
-        mapped_models = []
+        # Use a dict to track unique display names and avoid duplicates
+        models_dict = {}
         
+        # First, add all models from Ollama with reverse mapping
         for model in all_models_response["data"]:
             model_id = model.get("id")
             if model_id:
                 # Get ALL display names for this real model
-                # If multiple display names map to the same real model, create separate entries
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
                 
                 for display_name in display_names:
-                    model_copy = model.copy()
-                    model_copy["id"] = display_name
-                    mapped_models.append(model_copy)
+                    if display_name not in models_dict:
+                        model_copy = model.copy()
+                        model_copy["id"] = display_name
+                        models_dict[display_name] = model_copy
+        
+        # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
+        for display_name, real_name in all_mappings.items():
+            if display_name not in models_dict:
+                # Create a synthetic model entry for this display name
+                base_model = all_models_response["data"][0] if all_models_response["data"] else {}
+                model_entry = base_model.copy() if base_model else {}
+                model_entry["id"] = display_name
+                models_dict[display_name] = model_entry
+        
+        mapped_models = list(models_dict.values())
         
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
