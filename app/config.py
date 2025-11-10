@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -49,7 +49,7 @@ class ModelMappingManager:
         self.cache_dir = cache_dir
         self.cache_file = os.path.join(cache_dir, "model_mappings.json")
         self._mappings: Dict[str, str] = {}
-        self._reverse_mappings: Dict[str, str] = {}
+        self._reverse_mappings: Dict[str, List[str]] = {}  # One real_name can have multiple display_names
         self._cache_loaded = False
         
         # Ensure cache directory exists
@@ -113,7 +113,14 @@ class ModelMappingManager:
                 mappings = await repo.list_all()
                 
                 self._mappings = {m.display_name: m.real_name for m in mappings}
-                self._reverse_mappings = {m.real_name: m.display_name for m in mappings}
+                
+                # Build reverse mapping: one real_name can have multiple display_names
+                self._reverse_mappings = {}
+                for m in mappings:
+                    if m.real_name not in self._reverse_mappings:
+                        self._reverse_mappings[m.real_name] = []
+                    self._reverse_mappings[m.real_name].append(m.display_name)
+                
                 self._cache_loaded = True
                 
                 # Save to cache file
@@ -170,13 +177,18 @@ class ModelMappingManager:
         Convert real Ollama model name to display name
         (ollama -> client)
         
+        If multiple display names map to the same real name, returns the first one.
+        
         Args:
             real_name: Model name from Ollama (e.g., "gpt-oss:120b-cloud")
         
         Returns:
             Display model name for client (e.g., "gpt-oss:120b")
         """
-        return self._reverse_mappings.get(real_name, real_name)
+        display_names = self._reverse_mappings.get(real_name, [])
+        if display_names:
+            return display_names[0]  # Return first display name
+        return real_name  # No mapping found, return as-is
     
     def get_all_mappings(self) -> Dict[str, str]:
         """Get all model mappings"""
@@ -208,7 +220,11 @@ class ModelMappingManager:
             
             # Update local cache
             self._mappings[display_name] = real_name
-            self._reverse_mappings[real_name] = display_name
+            
+            # Update reverse mapping (append to list)
+            if real_name not in self._reverse_mappings:
+                self._reverse_mappings[real_name] = []
+            self._reverse_mappings[real_name].append(display_name)
             
             # Save to cache file
             self._save_to_cache_file()
@@ -240,8 +256,14 @@ class ModelMappingManager:
             real_name = self._mappings.get(display_name)
             if real_name:
                 del self._mappings[display_name]
+                
+                # Remove display_name from reverse mapping list
                 if real_name in self._reverse_mappings:
-                    del self._reverse_mappings[real_name]
+                    if display_name in self._reverse_mappings[real_name]:
+                        self._reverse_mappings[real_name].remove(display_name)
+                    # If list becomes empty, remove the key
+                    if not self._reverse_mappings[real_name]:
+                        del self._reverse_mappings[real_name]
             
             # Save to cache file
             self._save_to_cache_file()

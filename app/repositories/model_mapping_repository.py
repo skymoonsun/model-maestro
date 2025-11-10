@@ -44,10 +44,15 @@ class ModelMappingRepository:
         mappings = await self.list_all()
         return {m.display_name: m.real_name for m in mappings}
     
-    async def get_reverse_dict(self) -> Dict[str, str]:
-        """Get all mappings as reverse dict {real_name: display_name}"""
+    async def get_reverse_dict(self) -> Dict[str, List[str]]:
+        """Get all mappings as reverse dict {real_name: [display_name1, display_name2, ...]}"""
         mappings = await self.list_all()
-        return {m.real_name: m.display_name for m in mappings}
+        reverse_dict = {}
+        for m in mappings:
+            if m.real_name not in reverse_dict:
+                reverse_dict[m.real_name] = []
+            reverse_dict[m.real_name].append(m.display_name)
+        return reverse_dict
     
     async def delete_by_display_name(self, display_name: str) -> bool:
         """Delete mapping by display name"""
