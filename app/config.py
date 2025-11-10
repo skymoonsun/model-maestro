@@ -65,7 +65,22 @@ class ModelMappingManager:
             with open(self.cache_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self._mappings = data.get("mappings", {})
-                self._reverse_mappings = data.get("reverse_mappings", {})
+                
+                # Handle both old format (string) and new format (list) for reverse_mappings
+                reverse_mappings_raw = data.get("reverse_mappings", {})
+                self._reverse_mappings = {}
+                
+                for real_name, display_names in reverse_mappings_raw.items():
+                    if isinstance(display_names, str):
+                        # Old format: convert string to list
+                        self._reverse_mappings[real_name] = [display_names]
+                    elif isinstance(display_names, list):
+                        # New format: use as-is
+                        self._reverse_mappings[real_name] = display_names
+                    else:
+                        # Invalid format: skip
+                        continue
+                
                 self._cache_loaded = True
                 print(f"Loaded {len(self._mappings)} model mappings from cache file")
                 return True
