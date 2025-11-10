@@ -191,12 +191,15 @@ async def list_models(username: str = Depends(get_current_user)):
         for model in all_models_response["models"]:
             model_name = model.get("name") or model.get("model")
             if model_name:
-                # Apply reverse mapping (real_name -> display_name)
-                mapped_name = await ollama_proxy._map_model_to_display(model_name)
-                model_copy = model.copy()
-                model_copy["name"] = mapped_name
-                model_copy["model"] = mapped_name
-                mapped_models.append(model_copy)
+                # Get ALL display names for this real model
+                # If multiple display names map to the same real model, create separate entries
+                display_names = model_mapper.get_all_display_names_for_real_name(model_name)
+                
+                for display_name in display_names:
+                    model_copy = model.copy()
+                    model_copy["name"] = display_name
+                    model_copy["model"] = display_name
+                    mapped_models.append(model_copy)
         
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
@@ -357,11 +360,14 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         for model in all_models_response["data"]:
             model_id = model.get("id")
             if model_id:
-                # Apply reverse mapping (real_name -> display_name)
-                mapped_id = await ollama_proxy._map_model_to_display(model_id)
-                model_copy = model.copy()
-                model_copy["id"] = mapped_id
-                mapped_models.append(model_copy)
+                # Get ALL display names for this real model
+                # If multiple display names map to the same real model, create separate entries
+                display_names = model_mapper.get_all_display_names_for_real_name(model_id)
+                
+                for display_name in display_names:
+                    model_copy = model.copy()
+                    model_copy["id"] = display_name
+                    mapped_models.append(model_copy)
         
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:

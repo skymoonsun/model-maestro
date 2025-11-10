@@ -190,6 +190,22 @@ class ModelMappingManager:
             return display_names[0]  # Return first display name
         return real_name  # No mapping found, return as-is
     
+    def get_all_display_names_for_real_name(self, real_name: str) -> List[str]:
+        """
+        Get all display names that map to a given real name
+        
+        Args:
+            real_name: Real Ollama model name (e.g., "qwen2.5-coder:latest")
+        
+        Returns:
+            List of display names (e.g., ["qwen3-coder:480b", "qwen3-coder:780b"])
+            If no mappings exist, returns [real_name]
+        """
+        display_names = self._reverse_mappings.get(real_name, [])
+        if display_names:
+            return display_names
+        return [real_name]  # No mapping found, return real_name as single item
+    
     def get_all_mappings(self) -> Dict[str, str]:
         """Get all model mappings"""
         return self._mappings.copy()
