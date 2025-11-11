@@ -12,7 +12,7 @@ import json
 
 from app.auth import get_current_user, check_model_access
 from app.proxy import ollama_proxy
-from app.config import get_settings
+from app.config import get_settings, model_mapper
 from app.redis import RedisManager
 from app.models import (
     OllamaGenerateRequest,
