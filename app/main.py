@@ -462,10 +462,13 @@ async def openai_chat_completions(
             )
     
     # Some models don't support tools parameter
+    # These models will have 'tools' and 'tool_choice' parameters removed from requests
     models_without_tool_support = [
         'deepseek-v3.1:671b',
         'deepseek-v3.1',
         'kimi-k2:1t',
+        'kimi-k2-thinking',
+        'kimi-k2-thinking:latest',
         'kimi-k2'
     ]
     
