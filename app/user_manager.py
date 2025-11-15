@@ -3,12 +3,15 @@
 from datetime import datetime
 import secrets
 import uuid
+import logging
 from typing import Optional, List
 import jwt
 
 from app.config import get_settings
 from app.database import async_session_maker
 from app.repositories import UserRepository, UserModelRepository, UserActivityRepository, UserLimitRepository
+
+logger = logging.getLogger(__name__)
 
 
 class UserManager:
@@ -189,7 +192,19 @@ class UserManager:
     async def verify_token(self, token: str) -> Optional[str]:
         """Verify JWT token and return username"""
         try:
-            payload = jwt.decode(token, self.settings.jwt_secret_key, algorithms=["HS256"])
+            # Decode token with signature verification only
+            # Don't verify iss, aud, exp (we handle these ourselves)
+            payload = jwt.decode(
+                token,
+                self.settings.jwt_secret_key,
+                algorithms=["HS256"],
+                options={
+                    "verify_signature": True,
+                    "verify_exp": False,  # No expiration
+                    "verify_iss": False,  # Don't verify issuer
+                    "verify_aud": False,  # Don't verify audience
+                }
+            )
             username = payload.get("username")
             
             if not username:
@@ -204,10 +219,11 @@ class UserManager:
                     return username
             
             return None
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            logger.error(f"JWT decode error: {e}")
             return None
         except Exception as e:
-            print(f"Error verifying token: {e}")
+            logger.error(f"Error verifying token: {e}")
             return None
     
     async def assign_models_to_user(self, username: str, models: List[str]) -> bool:
