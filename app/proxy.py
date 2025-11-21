@@ -395,39 +395,39 @@ class OllamaProxy:
                     
                     try:
                         async with client.stream("POST", url, json=data) as resp:
-                                # Check status code before streaming
-                                if resp.status_code != 200:
-                                    error_text = await resp.aread()
-                                    error_msg = error_text.decode()
-                                    
-                                    # Try to parse error message if it's JSON
-                                    try:
-                                        error_json = json.loads(error_msg)
-                                        if isinstance(error_json, dict) and 'error' in error_json:
-                                            error_detail = error_json['error']
-                                            if isinstance(error_detail, dict) and 'message' in error_detail:
-                                                error_msg = error_detail['message']
-                                    except (json.JSONDecodeError, KeyError, TypeError):
-                                        # If not JSON or doesn't have expected structure, use as-is
-                                        pass
-                                    
-                                    # Log the request data that caused the error for debugging
-                                    logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
-                                    logger.error(f"Request URL: {url}")
-                                    logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
-                                    logger.error(f"Full error response: {error_text.decode()}")
-                                    
-                                    # Send error in SSE format for OpenAI compatibility
-                                    error_response = {
-                                        "error": {
-                                            "message": f"Ollama upstream error: {error_msg}",
-                                            "type": "api_error",
-                                            "code": resp.status_code
-                                        }
+                            # Check status code before streaming
+                            if resp.status_code != 200:
+                                error_text = await resp.aread()
+                                error_msg = error_text.decode()
+                                
+                                # Try to parse error message if it's JSON
+                                try:
+                                    error_json = json.loads(error_msg)
+                                    if isinstance(error_json, dict) and 'error' in error_json:
+                                        error_detail = error_json['error']
+                                        if isinstance(error_detail, dict) and 'message' in error_detail:
+                                            error_msg = error_detail['message']
+                                except (json.JSONDecodeError, KeyError, TypeError):
+                                    # If not JSON or doesn't have expected structure, use as-is
+                                    pass
+                                
+                                # Log the request data that caused the error for debugging
+                                logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
+                                logger.error(f"Request URL: {url}")
+                                logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+                                logger.error(f"Full error response: {error_text.decode()}")
+                                
+                                # Send error in SSE format for OpenAI compatibility
+                                error_response = {
+                                    "error": {
+                                        "message": f"Ollama upstream error: {error_msg}",
+                                        "type": "api_error",
+                                        "code": resp.status_code
                                     }
-                                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                    yield b'data: [DONE]\n\n'
-                                    return
+                                }
+                                yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                yield b'data: [DONE]\n\n'
+                                return
                             
                             # Buffer to accumulate partial lines
                             buffer = b""
