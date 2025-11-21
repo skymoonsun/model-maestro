@@ -471,7 +471,9 @@ async def openai_chat_completions(
         'kimi-k2-thinking:latest',
         'kimi-k2',
         'minimax-m2',
-        'minimax-m2:latest'
+        'minimax-m2:latest',
+        'gemini-3-pro-preview',
+        'gemini-3-pro-preview:latest'
     ]
     
     # Remove unsupported parameters for specific models
@@ -481,6 +483,9 @@ async def openai_chat_completions(
             removed_params.append('tools')
         if 'tool_choice' in data:
             removed_params.append('tool_choice')
+        # Some models may not support top_p parameter
+        if 'top_p' in data:
+            removed_params.append('top_p')
         
         if removed_params:
             data = {k: v for k, v in data.items() if k not in removed_params}
