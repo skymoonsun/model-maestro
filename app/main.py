@@ -492,6 +492,7 @@ async def openai_chat_completions(
         'logit_bias',
         'logprobs',
         'top_logprobs',
+        'top_k',  # Ollama doesn't support top_k parameter
         'response_format',  # Ollama may not support this
         'user'  # Ollama may not support user field
     ]
