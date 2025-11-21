@@ -377,19 +377,57 @@ class OllamaProxy:
         if data:
             data = self._map_model_to_ollama(data)
         
+        # Validate data for POST requests
+        if method.upper() == "POST" and not data:
+            raise HTTPException(
+                status_code=400,
+                detail="Request body is required for POST requests"
+            )
+        
         try:
             if method.upper() == "POST" and stream:
                 # Handle streaming response with persistent HTTP client
                 async def stream_generator():
                     client = await self._get_http_client()
-                    async with client.stream("POST", url, json=data) as resp:
-                            if resp.status_code != 200:
-                                error_text = await resp.aread()
-                                error_msg = error_text.decode()
-                                raise HTTPException(
-                                    status_code=resp.status_code,
-                                    detail=f"Ollama upstream error: {error_msg}"
-                                )
+                    # Log request data for debugging (only in development)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Sending request to Ollama: {url}, data: {json.dumps(data, ensure_ascii=False)}")
+                    
+                    try:
+                        async with client.stream("POST", url, json=data) as resp:
+                                # Check status code before streaming
+                                if resp.status_code != 200:
+                                    error_text = await resp.aread()
+                                    error_msg = error_text.decode()
+                                    
+                                    # Try to parse error message if it's JSON
+                                    try:
+                                        error_json = json.loads(error_msg)
+                                        if isinstance(error_json, dict) and 'error' in error_json:
+                                            error_detail = error_json['error']
+                                            if isinstance(error_detail, dict) and 'message' in error_detail:
+                                                error_msg = error_detail['message']
+                                    except (json.JSONDecodeError, KeyError, TypeError):
+                                        # If not JSON or doesn't have expected structure, use as-is
+                                        pass
+                                    
+                                    # Log the request data that caused the error for debugging
+                                    logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
+                                    logger.error(f"Request URL: {url}")
+                                    logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+                                    logger.error(f"Full error response: {error_text.decode()}")
+                                    
+                                    # Send error in SSE format for OpenAI compatibility
+                                    error_response = {
+                                        "error": {
+                                            "message": f"Ollama upstream error: {error_msg}",
+                                            "type": "api_error",
+                                            "code": resp.status_code
+                                        }
+                                    }
+                                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: [DONE]\n\n'
+                                    return
                             
                             # Buffer to accumulate partial lines
                             buffer = b""
@@ -468,6 +506,32 @@ class OllamaProxy:
                                     completion_tokens=completion_tokens,
                                     total_tokens=prompt_tokens + completion_tokens
                                 )
+                    except httpx.RequestError as e:
+                        # Network/connection errors
+                        logger.error(f"Network error while streaming to Ollama: {str(e)}")
+                        logger.error(f"Request URL: {url}")
+                        error_response = {
+                            "error": {
+                                "message": f"Failed to connect to Ollama: {str(e)}",
+                                "type": "connection_error",
+                                "code": 503
+                            }
+                        }
+                        yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                        yield b'data: [DONE]\n\n'
+                    except Exception as e:
+                        # Any other unexpected errors
+                        logger.error(f"Unexpected error while streaming: {str(e)}", exc_info=True)
+                        logger.error(f"Request URL: {url}")
+                        error_response = {
+                            "error": {
+                                "message": f"Unexpected error: {str(e)}",
+                                "type": "internal_error",
+                                "code": 500
+                            }
+                        }
+                        yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                        yield b'data: [DONE]\n\n'
                 
                 # Return streaming response immediately without buffering
                 response = StreamingResponse(
@@ -486,6 +550,9 @@ class OllamaProxy:
             if method.upper() == "GET":
                 response = await client.get(url)
             elif method.upper() == "POST":
+                # Log request data for debugging (only in development)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Sending request to Ollama: {url}, data: {json.dumps(data, ensure_ascii=False)}")
                 response = await client.post(url, json=data)
             elif method.upper() == "DELETE":
                 response = await client.delete(url, json=data)
@@ -494,6 +561,11 @@ class OllamaProxy:
             
             # Check response status
             if response.status_code >= 400:
+                # Log the request data that caused the error for debugging
+                logger.error(f"Ollama error ({response.status_code}): {response.text}")
+                logger.error(f"Request URL: {url}")
+                if data:
+                    logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
                 raise HTTPException(
                     status_code=response.status_code,
                     detail=f"Ollama error: {response.text}"

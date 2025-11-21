@@ -469,13 +469,38 @@ async def openai_chat_completions(
         'kimi-k2:1t',
         'kimi-k2-thinking',
         'kimi-k2-thinking:latest',
-        'kimi-k2'
+        'kimi-k2',
+        'minimax-m2',
+        'minimax-m2:latest'
     ]
     
+    # Remove unsupported parameters for specific models
     if any(unsupported in model_name for unsupported in models_without_tool_support):
-        if 'tools' in data or 'tool_choice' in data:
-            data = {k: v for k, v in data.items() if k not in ['tools', 'tool_choice']}
-            logger.info(f"Removed tools/tool_choice for model {model_name} (not supported)")
+        removed_params = []
+        if 'tools' in data:
+            removed_params.append('tools')
+        if 'tool_choice' in data:
+            removed_params.append('tool_choice')
+        
+        if removed_params:
+            data = {k: v for k, v in data.items() if k not in removed_params}
+            logger.info(f"Removed {', '.join(removed_params)} for model {model_name} (not supported)")
+    
+    # Ollama's /v1/chat/completions endpoint may not support all OpenAI parameters
+    # Remove parameters that Ollama doesn't recognize to avoid parsing errors
+    ollama_unsupported_params = [
+        'logit_bias',
+        'logprobs',
+        'top_logprobs',
+        'response_format',  # Ollama may not support this
+        'user'  # Ollama may not support user field
+    ]
+    
+    # Check if any unsupported parameters exist and remove them
+    removed_ollama_params = [param for param in ollama_unsupported_params if param in data]
+    if removed_ollama_params:
+        data = {k: v for k, v in data.items() if k not in removed_ollama_params}
+        logger.debug(f"Removed Ollama unsupported parameters: {', '.join(removed_ollama_params)}")
     
     return await ollama_proxy.proxy_request(
         method="POST",
