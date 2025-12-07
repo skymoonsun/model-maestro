@@ -461,32 +461,42 @@ async def openai_chat_completions(
                 detail="User has exceeded their request or token limit"
             )
     
-    # Some models don't support tools parameter
-    # These models will have 'tools' and 'tool_choice' parameters removed from requests
-    models_without_tool_support = [
-        'deepseek-v3.1:671b',
-        'deepseek-v3.1',
-        'kimi-k2:1t',
-        'kimi-k2-thinking',
-        'kimi-k2-thinking:latest',
-        'kimi-k2',
-        'minimax-m2',
-        'minimax-m2:latest',
-        'gemini-3-pro-preview',
-        'gemini-3-pro-preview:latest'
-    ]
+    # Model-specific unsupported parameters
+    # Key: model name (or prefix for pattern matching with *)
+    # Value: list of parameters that should be removed for this model
+    model_unsupported_params = {
+        # Deepseek models - don't support tools
+        'deepseek-v3.1': ['tools', 'tool_choice'],
+        'deepseek-v3.1:671b': ['tools', 'tool_choice'],
+        # Kimi models - don't support tools and top_p
+        'kimi-k2': ['tools', 'tool_choice', 'top_p'],
+        'kimi-k2:1t': ['tools', 'tool_choice', 'top_p'],
+        'kimi-k2-thinking': ['tools', 'tool_choice', 'top_p'],
+        'kimi-k2-thinking:latest': ['tools', 'tool_choice', 'top_p'],
+        # Minimax models - don't support tools
+        'minimax-m2': ['tools', 'tool_choice'],
+        'minimax-m2:latest': ['tools', 'tool_choice'],
+        # Gemini models - don't support tools and top_p
+        'gemini-3-pro-preview': ['tools', 'tool_choice', 'top_p'],
+        'gemini-3-pro-preview:latest': ['tools', 'tool_choice', 'top_p'],
+    }
     
-    # Remove unsupported parameters for specific models
-    if any(unsupported in model_name for unsupported in models_without_tool_support):
-        removed_params = []
-        if 'tools' in data:
-            removed_params.append('tools')
-        if 'tool_choice' in data:
-            removed_params.append('tool_choice')
-        # Some models may not support top_p parameter
-        if 'top_p' in data:
-            removed_params.append('top_p')
-        
+    # Find unsupported params for this model
+    unsupported_params = []
+    
+    # Try exact match first
+    if model_name in model_unsupported_params:
+        unsupported_params = model_unsupported_params[model_name]
+    else:
+        # Try prefix match (for models with tags like :latest, :671b etc.)
+        for pattern, params in model_unsupported_params.items():
+            if model_name.startswith(pattern + ':') or model_name == pattern:
+                unsupported_params = params
+                break
+    
+    # Remove unsupported parameters for this specific model
+    if unsupported_params:
+        removed_params = [p for p in unsupported_params if p in data]
         if removed_params:
             data = {k: v for k, v in data.items() if k not in removed_params}
             logger.info(f"Removed {', '.join(removed_params)} for model {model_name} (not supported)")
