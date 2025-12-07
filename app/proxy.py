@@ -106,13 +106,12 @@ class OllamaProxy:
     def _map_model_from_ollama(self, data: Any) -> Any:
         """
         Map model names in response data from Ollama format to client format
-        Also converts thinking/reasoning fields for OpenAI compatibility (Cursor support)
         
         Args:
             data: Response data with potential model fields
         
         Returns:
-            Modified data with display model names and OpenAI-compatible reasoning fields
+            Modified data with display model names
         """
         if isinstance(data, dict):
             data_copy = data.copy()
@@ -143,52 +142,6 @@ class OllamaProxy:
                     data_copy['details']['parent_model'] = model_mapper.get_display_model_name(
                         data_copy['details']['parent_model']
                     )
-            
-            # ============================================================
-            # Thinking/Reasoning field conversion for OpenAI compatibility
-            # Ollama uses 'reasoning', OpenAI/Cursor expects 'reasoning_content'
-            # ============================================================
-            
-            # Handle streaming response: choices[].delta.reasoning -> reasoning_content
-            if 'choices' in data_copy and isinstance(data_copy['choices'], list):
-                choices_copy = []
-                for choice in data_copy['choices']:
-                    if isinstance(choice, dict):
-                        choice_copy = choice.copy()
-                        
-                        # Handle delta (streaming)
-                        if 'delta' in choice_copy and isinstance(choice_copy['delta'], dict):
-                            delta_copy = choice_copy['delta'].copy()
-                            
-                            # Convert reasoning -> reasoning_content
-                            if 'reasoning' in delta_copy:
-                                delta_copy['reasoning_content'] = delta_copy.pop('reasoning')
-                            
-                            # Also handle thinking -> reasoning_content (some models use 'thinking')
-                            if 'thinking' in delta_copy:
-                                delta_copy['reasoning_content'] = delta_copy.pop('thinking')
-                            
-                            choice_copy['delta'] = delta_copy
-                        
-                        # Handle message (non-streaming)
-                        if 'message' in choice_copy and isinstance(choice_copy['message'], dict):
-                            message_copy = choice_copy['message'].copy()
-                            
-                            # Convert reasoning -> reasoning_content
-                            if 'reasoning' in message_copy:
-                                message_copy['reasoning_content'] = message_copy.pop('reasoning')
-                            
-                            # Also handle thinking -> reasoning_content
-                            if 'thinking' in message_copy:
-                                message_copy['reasoning_content'] = message_copy.pop('thinking')
-                            
-                            choice_copy['message'] = message_copy
-                        
-                        choices_copy.append(choice_copy)
-                    else:
-                        choices_copy.append(choice)
-                
-                data_copy['choices'] = choices_copy
             
             return data_copy
         
