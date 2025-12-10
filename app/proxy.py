@@ -392,12 +392,16 @@ class OllamaProxy:
                 # Handle streaming response with persistent HTTP client
                 async def stream_generator():
                     client = await self._get_http_client()
-                    # Log request data for debugging (only in development)
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"Sending request to Ollama: {url}, data: {json.dumps(data, ensure_ascii=False)}")
+                    
+                    # Always log streaming requests for debugging
+                    logger.info(f"[STREAM START] Sending streaming request to Ollama: {url}")
+                    logger.info(f"[STREAM START] Model: {data.get('model', 'unknown')}, OpenAI endpoint: {is_openai_endpoint}")
                     
                     try:
                         async with client.stream("POST", url, json=data) as resp:
+                            logger.info(f"[STREAM] Ollama response status: {resp.status_code}")
+                            logger.info(f"[STREAM] Ollama response headers: {dict(resp.headers)}")
+                            
                             # Check status code before streaming
                             if resp.status_code != 200:
                                 error_text = await resp.aread()
@@ -437,10 +441,19 @@ class OllamaProxy:
                             prompt_tokens = 0
                             completion_tokens = 0
                             first_chunk_sent = False
+                            chunk_count = 0
+                            total_bytes = 0
                             
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
                                     continue
+                                
+                                chunk_count += 1
+                                total_bytes += len(chunk)
+                                
+                                # Log first few chunks for debugging
+                                if chunk_count <= 3:
+                                    logger.info(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
                                 
                                 # Add to buffer
                                 buffer += chunk
@@ -469,6 +482,7 @@ class OllamaProxy:
                                                     first_chunk_sent = True
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker with proper SSE format (double newline)
+                                                    logger.info(f"[STREAM] Received [DONE] marker from Ollama")
                                                     yield b'data: [DONE]\n\n'
                                                     first_chunk_sent = True
                                             else:
@@ -488,7 +502,9 @@ class OllamaProxy:
                                                 else:
                                                     yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                                 first_chunk_sent = True
-                                        except (json.JSONDecodeError, UnicodeDecodeError):
+                                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                            # Log parse errors for debugging
+                                            logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
                                             # If not valid JSON, pass through as-is with proper format
                                             if is_openai_endpoint:
                                                 yield b'data: ' + line + b'\n\n'
@@ -498,6 +514,7 @@ class OllamaProxy:
                             
                             # Process any remaining data in buffer
                             if buffer:
+                                logger.info(f"[STREAM] Processing remaining buffer: {len(buffer)} bytes")
                                 try:
                                     # Try to strip any trailing whitespace for clean JSON parsing
                                     buffer_stripped = buffer.strip()
@@ -515,16 +532,22 @@ class OllamaProxy:
                                             yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                         else:
                                             yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                except (json.JSONDecodeError, UnicodeDecodeError):
+                                        first_chunk_sent = True
+                                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                    logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {buffer[:100]!r}")
                                     if buffer.strip():
                                         if is_openai_endpoint:
                                             yield b'data: ' + buffer + b'\n\n'
                                         else:
                                             yield buffer
+                                        first_chunk_sent = True
                             
                             # For OpenAI endpoints, always send [DONE] marker at the end
-                            if is_openai_endpoint and first_chunk_sent:
+                            if is_openai_endpoint:
+                                logger.info(f"[STREAM END] Sending [DONE] marker. Total chunks: {chunk_count}, bytes: {total_bytes}, first_chunk_sent: {first_chunk_sent}")
                                 yield b'data: [DONE]\n\n'
+                            else:
+                                logger.info(f"[STREAM END] Non-OpenAI stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
                             
                             # Log user activity after streaming is complete
                             if username and model_name:
