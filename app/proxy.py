@@ -105,13 +105,14 @@ class OllamaProxy:
     
     def _map_model_from_ollama(self, data: Any) -> Any:
         """
-        Map model names in response data from Ollama format to client format
+        Map model names in response data from Ollama format to client format.
+        Also transforms response to be Cursor-compatible.
         
         Args:
             data: Response data with potential model fields
         
         Returns:
-            Modified data with display model names
+            Modified data with display model names and Cursor-compatible format
         """
         if isinstance(data, dict):
             data_copy = data.copy()
@@ -142,6 +143,70 @@ class OllamaProxy:
                     data_copy['details']['parent_model'] = model_mapper.get_display_model_name(
                         data_copy['details']['parent_model']
                     )
+            
+            # ============================================================
+            # CURSOR COMPATIBILITY: Transform non-standard fields
+            # ============================================================
+            # Handle 'choices' array for streaming chunks (OpenAI format)
+            if 'choices' in data_copy and isinstance(data_copy['choices'], list):
+                transformed_choices = []
+                for choice in data_copy['choices']:
+                    if isinstance(choice, dict):
+                        choice_copy = choice.copy()
+                        
+                        # Handle 'delta' in streaming responses
+                        if 'delta' in choice_copy and isinstance(choice_copy['delta'], dict):
+                            delta = choice_copy['delta'].copy()
+                            
+                            # CURSOR FIX: Handle 'reasoning' field
+                            # Some models (like Gemini) send reasoning in a separate field
+                            # Cursor only reads 'content', so we need to transform
+                            if 'reasoning' in delta:
+                                reasoning = delta.get('reasoning', '')
+                                content = delta.get('content', '')
+                                
+                                # If content is empty but reasoning exists, use reasoning as content
+                                # Format it nicely so user can see the model's thought process
+                                if reasoning and not content:
+                                    # Show reasoning as thinking block
+                                    delta['content'] = f"<think>\n{reasoning}\n</think>\n"
+                                elif reasoning and content:
+                                    # Both exist - prepend reasoning to content
+                                    delta['content'] = f"<think>\n{reasoning}\n</think>\n{content}"
+                                
+                                # Remove the non-standard 'reasoning' field
+                                del delta['reasoning']
+                            
+                            # CURSOR FIX: Remove 'role' from delta after first chunk
+                            # OpenAI only sends 'role' in the first chunk, some models send it every time
+                            # This doesn't break anything but let's keep it clean
+                            # (We'll leave role as-is since it doesn't cause issues)
+                            
+                            choice_copy['delta'] = delta
+                        
+                        # Handle 'message' in non-streaming responses
+                        if 'message' in choice_copy and isinstance(choice_copy['message'], dict):
+                            message = choice_copy['message'].copy()
+                            
+                            # Same reasoning transformation for non-streaming
+                            if 'reasoning' in message:
+                                reasoning = message.get('reasoning', '')
+                                content = message.get('content', '')
+                                
+                                if reasoning and not content:
+                                    message['content'] = f"<think>\n{reasoning}\n</think>\n"
+                                elif reasoning and content:
+                                    message['content'] = f"<think>\n{reasoning}\n</think>\n{content}"
+                                
+                                del message['reasoning']
+                            
+                            choice_copy['message'] = message
+                        
+                        transformed_choices.append(choice_copy)
+                    else:
+                        transformed_choices.append(choice)
+                
+                data_copy['choices'] = transformed_choices
             
             return data_copy
         
