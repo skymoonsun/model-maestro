@@ -441,6 +441,7 @@ class OllamaProxy:
                             prompt_tokens = 0
                             completion_tokens = 0
                             first_chunk_sent = False
+                            done_marker_sent = False  # Track if [DONE] was already sent
                             chunk_count = 0
                             total_bytes = 0
                             
@@ -481,10 +482,12 @@ class OllamaProxy:
                                                     yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                     first_chunk_sent = True
                                                 elif json_str == '[DONE]':
-                                                    # [DONE] marker with proper SSE format (double newline)
-                                                    logger.info(f"[STREAM] Received [DONE] marker from Ollama")
-                                                    yield b'data: [DONE]\n\n'
-                                                    first_chunk_sent = True
+                                                    # [DONE] marker - only send once!
+                                                    if not done_marker_sent:
+                                                        logger.info(f"[STREAM] Received [DONE] marker from Ollama, forwarding")
+                                                        yield b'data: [DONE]\n\n'
+                                                        done_marker_sent = True
+                                                        first_chunk_sent = True
                                             else:
                                                 # Regular Ollama format (NDJSON)
                                                 json_data = json.loads(line.decode('utf-8'))
@@ -542,10 +545,12 @@ class OllamaProxy:
                                             yield buffer
                                         first_chunk_sent = True
                             
-                            # For OpenAI endpoints, always send [DONE] marker at the end
-                            if is_openai_endpoint:
-                                logger.info(f"[STREAM END] Sending [DONE] marker. Total chunks: {chunk_count}, bytes: {total_bytes}, first_chunk_sent: {first_chunk_sent}")
+                            # For OpenAI endpoints, send [DONE] marker if not already sent
+                            if is_openai_endpoint and not done_marker_sent:
+                                logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream). Total chunks: {chunk_count}, bytes: {total_bytes}")
                                 yield b'data: [DONE]\n\n'
+                            elif is_openai_endpoint:
+                                logger.info(f"[STREAM END] Stream complete ([DONE] already sent). Total chunks: {chunk_count}, bytes: {total_bytes}")
                             else:
                                 logger.info(f"[STREAM END] Non-OpenAI stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
                             
