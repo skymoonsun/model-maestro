@@ -160,27 +160,17 @@ class OllamaProxy:
                             
                             # CURSOR FIX: Handle 'reasoning' field
                             # Some models (like Gemini) send reasoning in a separate field
-                            # Cursor only reads 'content', so we need to transform
+                            # Cursor only reads 'content', so we need to remove reasoning
+                            # and only keep actual content
                             if 'reasoning' in delta:
-                                reasoning = delta.get('reasoning', '')
-                                content = delta.get('content', '')
-                                
-                                # If content is empty but reasoning exists, use reasoning as content
-                                # Format it nicely so user can see the model's thought process
-                                if reasoning and not content:
-                                    # Show reasoning as thinking block
-                                    delta['content'] = f"<think>\n{reasoning}\n</think>\n"
-                                elif reasoning and content:
-                                    # Both exist - prepend reasoning to content
-                                    delta['content'] = f"<think>\n{reasoning}\n</think>\n{content}"
-                                
-                                # Remove the non-standard 'reasoning' field
+                                # Remove reasoning - Cursor doesn't support it
+                                # Only keep the actual content
                                 del delta['reasoning']
-                            
-                            # CURSOR FIX: Remove 'role' from delta after first chunk
-                            # OpenAI only sends 'role' in the first chunk, some models send it every time
-                            # This doesn't break anything but let's keep it clean
-                            # (We'll leave role as-is since it doesn't cause issues)
+                                
+                                # If content is empty after removing reasoning, 
+                                # this chunk has no displayable content - set to empty string
+                                if 'content' not in delta:
+                                    delta['content'] = ''
                             
                             choice_copy['delta'] = delta
                         
@@ -188,17 +178,11 @@ class OllamaProxy:
                         if 'message' in choice_copy and isinstance(choice_copy['message'], dict):
                             message = choice_copy['message'].copy()
                             
-                            # Same reasoning transformation for non-streaming
+                            # Same reasoning removal for non-streaming
                             if 'reasoning' in message:
-                                reasoning = message.get('reasoning', '')
-                                content = message.get('content', '')
-                                
-                                if reasoning and not content:
-                                    message['content'] = f"<think>\n{reasoning}\n</think>\n"
-                                elif reasoning and content:
-                                    message['content'] = f"<think>\n{reasoning}\n</think>\n{content}"
-                                
                                 del message['reasoning']
+                                if 'content' not in message:
+                                    message['content'] = ''
                             
                             choice_copy['message'] = message
                         
@@ -543,9 +527,24 @@ class OllamaProxy:
                                                         prompt_tokens += usage.get('prompt_tokens', 0)
                                                         completion_tokens += usage.get('completion_tokens', 0)
                                                     
-                                                    # SSE format: data: {...}\n\n (double newline!)
-                                                    yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                    first_chunk_sent = True
+                                                    # CURSOR FIX: Skip chunks with empty content (reasoning-only chunks)
+                                                    # But always send chunks with finish_reason (end of stream)
+                                                    should_skip = False
+                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                        choices = mapped_data.get('choices', [])
+                                                        if choices and isinstance(choices[0], dict):
+                                                            delta = choices[0].get('delta', {})
+                                                            content = delta.get('content', '')
+                                                            finish_reason = choices[0].get('finish_reason')
+                                                            
+                                                            # Skip if content is empty/whitespace AND no finish_reason
+                                                            if (not content or not content.strip()) and not finish_reason:
+                                                                should_skip = True
+                                                    
+                                                    if not should_skip:
+                                                        # SSE format: data: {...}\n\n (double newline!)
+                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        first_chunk_sent = True
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
                                                     if not done_marker_sent:
