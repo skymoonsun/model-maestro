@@ -384,6 +384,9 @@ class OllamaProxy:
                 detail="Request body is required for POST requests"
             )
         
+        # Detect if this is an OpenAI-compatible endpoint (for SSE formatting)
+        is_openai_endpoint = endpoint.startswith("/v1/")
+        
         try:
             if method.upper() == "POST" and stream:
                 # Handle streaming response with persistent HTTP client
@@ -433,6 +436,7 @@ class OllamaProxy:
                             buffer = b""
                             prompt_tokens = 0
                             completion_tokens = 0
+                            first_chunk_sent = False
                             
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
@@ -460,10 +464,13 @@ class OllamaProxy:
                                                         prompt_tokens += usage.get('prompt_tokens', 0)
                                                         completion_tokens += usage.get('completion_tokens', 0)
                                                     
+                                                    # SSE format: data: {...}\n\n (double newline!)
                                                     yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                else:
-                                                    # Pass through [DONE] or empty
-                                                    yield line + b'\n'
+                                                    first_chunk_sent = True
+                                                elif json_str == '[DONE]':
+                                                    # [DONE] marker with proper SSE format (double newline)
+                                                    yield b'data: [DONE]\n\n'
+                                                    first_chunk_sent = True
                                             else:
                                                 # Regular Ollama format (NDJSON)
                                                 json_data = json.loads(line.decode('utf-8'))
@@ -475,26 +482,49 @@ class OllamaProxy:
                                                 if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
                                                     completion_tokens += mapped_data.get('eval_count', 0)
                                                 
-                                                yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                # For OpenAI endpoints, convert NDJSON to SSE format
+                                                if is_openai_endpoint:
+                                                    yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                else:
+                                                    yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                first_chunk_sent = True
                                         except (json.JSONDecodeError, UnicodeDecodeError):
-                                            # If not valid JSON, pass through as-is
-                                            yield line + b'\n'
+                                            # If not valid JSON, pass through as-is with proper format
+                                            if is_openai_endpoint:
+                                                yield b'data: ' + line + b'\n\n'
+                                            else:
+                                                yield line + b'\n'
+                                            first_chunk_sent = True
                             
                             # Process any remaining data in buffer
                             if buffer:
                                 try:
-                                    json_data = json.loads(buffer.decode('utf-8'))
-                                    mapped_data = self._map_model_from_ollama(json_data)
-                                    
-                                    # Extract token usage if available
-                                    if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
-                                        prompt_tokens += mapped_data.get('prompt_eval_count', 0)
-                                    if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
-                                        completion_tokens += mapped_data.get('eval_count', 0)
-                                    
-                                    yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                    # Try to strip any trailing whitespace for clean JSON parsing
+                                    buffer_stripped = buffer.strip()
+                                    if buffer_stripped:
+                                        json_data = json.loads(buffer_stripped.decode('utf-8'))
+                                        mapped_data = self._map_model_from_ollama(json_data)
+                                        
+                                        # Extract token usage if available
+                                        if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
+                                            prompt_tokens += mapped_data.get('prompt_eval_count', 0)
+                                        if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
+                                            completion_tokens += mapped_data.get('eval_count', 0)
+                                        
+                                        if is_openai_endpoint:
+                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                        else:
+                                            yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                 except (json.JSONDecodeError, UnicodeDecodeError):
-                                    yield buffer
+                                    if buffer.strip():
+                                        if is_openai_endpoint:
+                                            yield b'data: ' + buffer + b'\n\n'
+                                        else:
+                                            yield buffer
+                            
+                            # For OpenAI endpoints, always send [DONE] marker at the end
+                            if is_openai_endpoint and first_chunk_sent:
+                                yield b'data: [DONE]\n\n'
                             
                             # Log user activity after streaming is complete
                             if username and model_name:
@@ -533,16 +563,23 @@ class OllamaProxy:
                         yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
                         yield b'data: [DONE]\n\n'
                 
-                # Return streaming response immediately without buffering
+                # Return streaming response with proper headers for SSE
+                # OpenAI endpoints use text/event-stream, native Ollama uses application/x-ndjson
+                if is_openai_endpoint:
+                    media_type = "text/event-stream"
+                else:
+                    media_type = "application/x-ndjson"
+                
                 response = StreamingResponse(
                     stream_generator(),
-                    media_type="application/json",
+                    media_type=media_type,
                     headers={
-                        "Cache-Control": "no-cache, no-transform",
-                        "X-Accel-Buffering": "no"
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "X-Accel-Buffering": "no",
+                        "Connection": "keep-alive",
+                        "Access-Control-Allow-Origin": "*",
                     }
                 )
-                # Remove Transfer-Encoding header to let framework handle it
                 return response
             
             # Non-streaming requests with persistent HTTP client

@@ -432,6 +432,9 @@ async def openai_chat_completions(
     """
     OpenAI compatible chat completions endpoint
     
+    Fully compatible with Cursor IDE and other OpenAI-compatible clients.
+    Supports streaming responses with proper SSE format.
+    
     Requires JWT authentication and model access
     """
     # Parse request body
@@ -442,7 +445,7 @@ async def openai_chat_completions(
     msg_count = len(data.get('messages', []))
     stream = data.get("stream", False)
     
-    logger.info(f"User {username} requesting OpenAI chat - model: {model_name}, messages: {msg_count}")
+    logger.info(f"User {username} requesting OpenAI chat - model: {model_name}, messages: {msg_count}, stream: {stream}")
     
     # Check model access
     if model_name:
@@ -462,37 +465,41 @@ async def openai_chat_completions(
             )
     
     # Model-specific unsupported parameters
-    # Key: model name (or prefix for pattern matching with *)
+    # Key: model name prefix (matches any tag like :latest, :671b etc.)
     # Value: list of parameters that should be removed for this model
     model_unsupported_params = {
         # Deepseek models - don't support tools
-        'deepseek-v3.1': ['tools', 'tool_choice'],
-        'deepseek-v3.1:671b': ['tools', 'tool_choice'],
+        'deepseek': ['tools', 'tool_choice'],
         # Kimi models - don't support tools and top_p
-        'kimi-k2': ['tools', 'tool_choice', 'top_p'],
-        'kimi-k2:1t': ['tools', 'tool_choice', 'top_p'],
-        'kimi-k2-thinking': ['tools', 'tool_choice', 'top_p'],
-        'kimi-k2-thinking:latest': ['tools', 'tool_choice', 'top_p'],
+        'kimi': ['tools', 'tool_choice', 'top_p'],
         # Minimax models - don't support tools
-        'minimax-m2': ['tools', 'tool_choice'],
-        'minimax-m2:latest': ['tools', 'tool_choice'],
-        # Gemini models - don't support tools and top_p
-        'gemini-3-pro-preview': ['tools', 'tool_choice', 'top_p'],
-        'gemini-3-pro-preview:latest': ['tools', 'tool_choice', 'top_p'],
+        'minimax': ['tools', 'tool_choice'],
+        # Gemini models - don't support tools, top_p, and some other params
+        'gemini': ['tools', 'tool_choice', 'top_p', 'presence_penalty', 'frequency_penalty'],
+        # Qwen models - generally good but may have issues with some params
+        'qwen': ['tools', 'tool_choice'],
+        # Claude models via Ollama - limited tool support
+        'claude': ['tools', 'tool_choice'],
+        # Llama models - varying tool support
+        'llama': ['tools', 'tool_choice'],
+        # Mistral models
+        'mistral': ['tools', 'tool_choice'],
+        # Phi models
+        'phi': ['tools', 'tool_choice'],
+        # CodeLlama
+        'codellama': ['tools', 'tool_choice'],
+        # Starcoder
+        'starcoder': ['tools', 'tool_choice'],
     }
     
-    # Find unsupported params for this model
+    # Find unsupported params for this model using prefix matching
     unsupported_params = []
+    model_name_lower = model_name.lower()
     
-    # Try exact match first
-    if model_name in model_unsupported_params:
-        unsupported_params = model_unsupported_params[model_name]
-    else:
-        # Try prefix match (for models with tags like :latest, :671b etc.)
-        for pattern, params in model_unsupported_params.items():
-            if model_name.startswith(pattern + ':') or model_name == pattern:
-                unsupported_params = params
-                break
+    for prefix, params in model_unsupported_params.items():
+        if model_name_lower.startswith(prefix):
+            unsupported_params = params
+            break
     
     # Remove unsupported parameters for this specific model
     if unsupported_params:
@@ -503,13 +510,22 @@ async def openai_chat_completions(
     
     # Ollama's /v1/chat/completions endpoint may not support all OpenAI parameters
     # Remove parameters that Ollama doesn't recognize to avoid parsing errors
+    # These are Cursor/OpenAI specific parameters that Ollama doesn't handle
     ollama_unsupported_params = [
         'logit_bias',
         'logprobs',
         'top_logprobs',
-        'top_k',  # Ollama doesn't support top_k parameter
-        'response_format',  # Ollama may not support this
-        'user'  # Ollama may not support user field
+        'top_k',  # Ollama uses different format for top_k
+        'response_format',  # Ollama may not support structured outputs
+        'user',  # OpenAI tracking field
+        'service_tier',  # OpenAI specific
+        'parallel_tool_calls',  # OpenAI specific
+        'stream_options',  # OpenAI specific streaming options
+        'store',  # OpenAI specific
+        'metadata',  # OpenAI specific
+        'prediction',  # OpenAI specific
+        'modalities',  # OpenAI specific
+        'audio',  # OpenAI specific
     ]
     
     # Check if any unsupported parameters exist and remove them
@@ -517,6 +533,10 @@ async def openai_chat_completions(
     if removed_ollama_params:
         data = {k: v for k, v in data.items() if k not in removed_ollama_params}
         logger.debug(f"Removed Ollama unsupported parameters: {', '.join(removed_ollama_params)}")
+    
+    # Ensure stream parameter is set (Cursor might not always send it)
+    if 'stream' not in data:
+        data['stream'] = stream
     
     return await ollama_proxy.proxy_request(
         method="POST",
