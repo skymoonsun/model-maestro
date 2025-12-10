@@ -437,6 +437,11 @@ async def openai_chat_completions(
     
     Requires JWT authentication and model access
     """
+    # Log request headers for debugging Cursor issues
+    user_agent = request.headers.get("user-agent", "unknown")
+    logger.info(f"[REQUEST DEBUG] User-Agent: {user_agent}")
+    logger.info(f"[REQUEST DEBUG] Headers: {dict(request.headers)}")
+    
     # Parse request body
     body = await request.body()
     data = json.loads(body.decode('utf-8')) if body else {}
