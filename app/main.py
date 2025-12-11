@@ -437,23 +437,9 @@ async def openai_chat_completions(
     
     Requires JWT authentication and model access
     """
-    # Log request headers for debugging Cursor issues
-    user_agent = request.headers.get("user-agent", "unknown")
-    logger.info(f"[REQUEST DEBUG] User-Agent: {user_agent}")
-    logger.info(f"[REQUEST DEBUG] Headers: {dict(request.headers)}")
-    
     # Parse request body
     body = await request.body()
     data = json.loads(body.decode('utf-8')) if body else {}
-    
-    # Log request body structure for debugging
-    logger.info(f"[REQUEST DEBUG] Body keys: {list(data.keys())}")
-    logger.info(f"[REQUEST DEBUG] Has 'messages': {'messages' in data}")
-    logger.info(f"[REQUEST DEBUG] Has 'input': {'input' in data}")
-    if 'input' in data:
-        logger.info(f"[REQUEST DEBUG] 'input' type: {type(data['input'])}")
-        if isinstance(data['input'], list) and len(data['input']) > 0:
-            logger.info(f"[REQUEST DEBUG] First input item keys: {list(data['input'][0].keys()) if isinstance(data['input'][0], dict) else 'not a dict'}")
     
     model_name = data.get('model', '')
     msg_count = len(data.get('messages', []))
@@ -583,19 +569,13 @@ async def cursor_chat_completions(
     Usage: Set Cursor Base URL to https://your-server/cursor
     Cursor will append /chat/completions automatically
     """
-    # Log request for debugging
-    user_agent = request.headers.get("user-agent", "unknown")
-    logger.info(f"[CURSOR ENDPOINT] User-Agent: {user_agent}")
-    
     # Parse request body
     body = await request.body()
     data = json.loads(body.decode('utf-8')) if body else {}
     
-    logger.info(f"[CURSOR ENDPOINT] Body keys: {list(data.keys())}")
-    
     # Transform Responses API format to Chat Completions format if needed
     if 'input' in data and 'messages' not in data:
-        logger.info("[CURSOR ENDPOINT] Detected Responses API format, transforming to Chat Completions")
+        logger.debug("Detected Responses API format, transforming to Chat Completions")
         
         # Convert 'input' array to 'messages' array
         input_items = data.get('input', [])
@@ -627,13 +607,13 @@ async def cursor_chat_completions(
         # Replace input with messages
         data['messages'] = messages
         del data['input']
-        logger.info(f"[CURSOR ENDPOINT] Transformed to {len(messages)} messages")
+        logger.debug(f"Transformed input to {len(messages)} messages")
     
     model_name = data.get('model', '')
     msg_count = len(data.get('messages', []))
     stream = data.get("stream", True)
     
-    logger.info(f"[CURSOR ENDPOINT] User {username} - model: {model_name}, messages: {msg_count}, stream: {stream}")
+    logger.info(f"User {username} requesting Cursor chat - model: {model_name}, messages: {msg_count}, stream: {stream}")
     
     # Check model access
     if model_name:

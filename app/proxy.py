@@ -525,24 +525,7 @@ class OllamaProxy:
                                                 json_str = line[6:].decode('utf-8').strip()
                                                 if json_str and json_str != '[DONE]':
                                                     json_data = json.loads(json_str)
-                                                    
-                                                    # DEBUG: Log original content before mapping
-                                                    if chunk_count <= 3:
-                                                        original_content = ""
-                                                        if 'choices' in json_data and json_data['choices']:
-                                                            delta = json_data['choices'][0].get('delta', {})
-                                                            original_content = delta.get('content', '<NO CONTENT KEY>')
-                                                        logger.info(f"[DEBUG {chunk_count}] Original JSON content: {original_content!r}")
-                                                    
                                                     mapped_data = self._map_model_from_ollama(json_data)
-                                                    
-                                                    # DEBUG: Log mapped content
-                                                    if chunk_count <= 3:
-                                                        mapped_content = ""
-                                                        if 'choices' in mapped_data and mapped_data['choices']:
-                                                            delta = mapped_data['choices'][0].get('delta', {})
-                                                            mapped_content = delta.get('content', '<NO CONTENT KEY>')
-                                                        logger.info(f"[DEBUG {chunk_count}] Mapped JSON content: {mapped_content!r}")
                                                     
                                                     # Extract token usage if available
                                                     if isinstance(mapped_data, dict) and 'usage' in mapped_data:
@@ -557,11 +540,7 @@ class OllamaProxy:
                                                     
                                                     if not should_skip:
                                                         # SSE format: data: {...}\n\n (double newline!)
-                                                        output_chunk = b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                        # DEBUG: Log what we're actually sending to client
-                                                        if chunk_count <= 3:
-                                                            logger.info(f"[YIELD {chunk_count}] Sending to client: {output_chunk[:300]!r}")
-                                                        yield output_chunk
+                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                         first_chunk_sent = True
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
