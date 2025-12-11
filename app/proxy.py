@@ -527,31 +527,19 @@ class OllamaProxy:
                                                         prompt_tokens += usage.get('prompt_tokens', 0)
                                                         completion_tokens += usage.get('completion_tokens', 0)
                                                     
-                                                    # CURSOR FIX: Skip chunks with empty content (reasoning-only chunks)
-                                                    # But always send chunks with finish_reason (end of stream)
+                                                    # NOTE: Do NOT skip any chunks! 
+                                                    # OpenAI API sends role-only chunks first (content: "")
+                                                    # Cursor needs these chunks to understand the response structure
                                                     should_skip = False
-                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                        choices = mapped_data.get('choices', [])
-                                                        if choices and isinstance(choices[0], dict):
-                                                            delta = choices[0].get('delta', {})
-                                                            content = delta.get('content', '')
-                                                            finish_reason = choices[0].get('finish_reason')
-                                                            
-                                                            # Skip if content is empty/whitespace AND no finish_reason
-                                                            if (not content or not content.strip()) and not finish_reason:
-                                                                should_skip = True
                                                     
                                                     if not should_skip:
                                                         # SSE format: data: {...}\n\n (double newline!)
                                                         output_chunk = b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                         # DEBUG: Log what we're actually sending to client
                                                         if chunk_count <= 3:
-                                                            logger.info(f"[YIELD {chunk_count}] Sending to client: {output_chunk[:200]!r}")
+                                                            logger.info(f"[YIELD {chunk_count}] Sending to client: {output_chunk[:300]!r}")
                                                         yield output_chunk
                                                         first_chunk_sent = True
-                                                    else:
-                                                        if chunk_count <= 3:
-                                                            logger.info(f"[SKIP {chunk_count}] Skipping chunk with empty content")
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
                                                     if not done_marker_sent:
