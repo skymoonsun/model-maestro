@@ -669,14 +669,11 @@ class OllamaProxy:
                     stream_generator(),
                     media_type=media_type,
                     headers={
-                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        # Standard SSE headers
+                        "Cache-Control": "no-cache",
                         "X-Accel-Buffering": "no",
-                        "Connection": "keep-alive",
-                        "Access-Control-Allow-Origin": "*",
-                        # CRITICAL: Tell client we're not compressing (fixes axios streaming issues)
-                        "Content-Encoding": "identity",
-                        # OpenAI-like headers for compatibility
-                        "x-request-id": f"req-{request_id}",
+                        # Don't override Connection - let client decide
+                        # "Connection": "keep-alive",
                     }
                 )
             
