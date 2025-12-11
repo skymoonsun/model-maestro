@@ -539,9 +539,19 @@ async def openai_chat_completions(
         data = {k: v for k, v in data.items() if k not in removed_ollama_params}
         logger.debug(f"Removed Ollama unsupported parameters: {', '.join(removed_ollama_params)}")
     
-    # Ensure stream parameter is set (Cursor might not always send it)
-    if 'stream' not in data:
-        data['stream'] = stream
+    # CURSOR WORKAROUND: Force non-streaming mode
+    # Cursor's axios client / AWS proxy doesn't handle SSE streaming properly
+    # Remove this workaround once Cursor fixes their streaming support
+    force_non_streaming = True  # Set to False to re-enable streaming
+    
+    if force_non_streaming:
+        logger.info(f"[CURSOR WORKAROUND] Forcing non-streaming mode for compatibility")
+        stream = False
+        data['stream'] = False
+    else:
+        # Ensure stream parameter is set (Cursor might not always send it)
+        if 'stream' not in data:
+            data['stream'] = stream
     
     return await ollama_proxy.proxy_request(
         method="POST",
