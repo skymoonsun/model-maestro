@@ -662,7 +662,10 @@ class OllamaProxy:
                 else:
                     media_type = "application/x-ndjson"
                 
-                response = StreamingResponse(
+                import uuid
+                request_id = str(uuid.uuid4())[:8]
+                
+                return StreamingResponse(
                     stream_generator(),
                     media_type=media_type,
                     headers={
@@ -673,10 +676,9 @@ class OllamaProxy:
                         # CRITICAL: Tell client we're not compressing (fixes axios streaming issues)
                         "Content-Encoding": "identity",
                         # OpenAI-like headers for compatibility
-                        "x-request-id": f"req-{id(response)}",
+                        "x-request-id": f"req-{request_id}",
                     }
                 )
-                return response
             
             # Non-streaming requests with persistent HTTP client
             client = await self._get_http_client()
