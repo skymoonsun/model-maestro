@@ -561,6 +561,113 @@ async def openai_chat_completions(
     )
 
 
+# =============================================================================
+# CURSOR-SPECIFIC ENDPOINT
+# =============================================================================
+# Cursor IDE sometimes sends requests in OpenAI Responses API format (with 'input')
+# but expects responses in Chat Completions format.
+# This endpoint handles both formats.
+
+@app.post("/cursor/chat/completions", tags=["Cursor IDE"])
+async def cursor_chat_completions(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    Cursor IDE specific endpoint
+    
+    Handles Cursor's unique request format:
+    - Accepts requests in OpenAI Responses API format (input field)
+    - Returns responses in OpenAI Chat Completions format (choices, delta)
+    
+    Usage: Set Cursor Base URL to https://your-server/cursor
+    Cursor will append /chat/completions automatically
+    """
+    # Log request for debugging
+    user_agent = request.headers.get("user-agent", "unknown")
+    logger.info(f"[CURSOR ENDPOINT] User-Agent: {user_agent}")
+    
+    # Parse request body
+    body = await request.body()
+    data = json.loads(body.decode('utf-8')) if body else {}
+    
+    logger.info(f"[CURSOR ENDPOINT] Body keys: {list(data.keys())}")
+    
+    # Transform Responses API format to Chat Completions format if needed
+    if 'input' in data and 'messages' not in data:
+        logger.info("[CURSOR ENDPOINT] Detected Responses API format, transforming to Chat Completions")
+        
+        # Convert 'input' array to 'messages' array
+        input_items = data.get('input', [])
+        messages = []
+        
+        for item in input_items:
+            if isinstance(item, dict):
+                item_type = item.get('type', 'text')
+                
+                if item_type == 'text':
+                    # Simple text input
+                    messages.append({
+                        'role': 'user',
+                        'content': item.get('text', '')
+                    })
+                elif item_type == 'message':
+                    # Already a message format
+                    messages.append({
+                        'role': item.get('role', 'user'),
+                        'content': item.get('content', '')
+                    })
+            elif isinstance(item, str):
+                # Simple string input
+                messages.append({
+                    'role': 'user',
+                    'content': item
+                })
+        
+        # Replace input with messages
+        data['messages'] = messages
+        del data['input']
+        logger.info(f"[CURSOR ENDPOINT] Transformed to {len(messages)} messages")
+    
+    model_name = data.get('model', '')
+    msg_count = len(data.get('messages', []))
+    stream = data.get("stream", True)  # Default to streaming for Cursor
+    
+    logger.info(f"[CURSOR ENDPOINT] User {username} - model: {model_name}, messages: {msg_count}, stream: {stream}")
+    
+    # Check model access
+    if model_name:
+        has_access = await check_model_access(username, model_name)
+        if not has_access:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Bu modele erişim yetkiniz yok: {model_name}"
+            )
+        
+        # Check user limits
+        within_limits = await ollama_proxy.check_user_limits(username, "chat")
+        if not within_limits:
+            raise HTTPException(
+                status_code=429,
+                detail="User has exceeded their request or token limit"
+            )
+    
+    # Remove ALL unsupported parameters for maximum compatibility
+    supported_params = ['model', 'messages', 'stream', 'temperature', 'max_tokens', 'stop']
+    data = {k: v for k, v in data.items() if k in supported_params}
+    
+    # Ensure stream is set
+    data['stream'] = stream
+    
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/v1/chat/completions",
+        data=data,
+        stream=stream,
+        username=username
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
