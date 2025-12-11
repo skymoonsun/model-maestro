@@ -631,12 +631,9 @@ async def cursor_chat_completions(
     
     model_name = data.get('model', '')
     msg_count = len(data.get('messages', []))
+    stream = data.get("stream", True)
     
-    # TEMPORARY: Force non-streaming to debug Cursor issue
-    original_stream = data.get("stream", True)
-    stream = False  # Force non-streaming
-    
-    logger.info(f"[CURSOR ENDPOINT] User {username} - model: {model_name}, messages: {msg_count}, stream: {stream} (original: {original_stream})")
+    logger.info(f"[CURSOR ENDPOINT] User {username} - model: {model_name}, messages: {msg_count}, stream: {stream}")
     
     # Check model access
     if model_name:
