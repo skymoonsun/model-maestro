@@ -670,6 +670,10 @@ class OllamaProxy:
                         "X-Accel-Buffering": "no",
                         "Connection": "keep-alive",
                         "Access-Control-Allow-Origin": "*",
+                        # CRITICAL: Tell client we're not compressing (fixes axios streaming issues)
+                        "Content-Encoding": "identity",
+                        # OpenAI-like headers for compatibility
+                        "x-request-id": f"req-{id(response)}",
                     }
                 )
                 return response
