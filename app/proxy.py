@@ -543,8 +543,15 @@ class OllamaProxy:
                                                     
                                                     if not should_skip:
                                                         # SSE format: data: {...}\n\n (double newline!)
-                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        output_chunk = b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        # DEBUG: Log what we're actually sending to client
+                                                        if chunk_count <= 3:
+                                                            logger.info(f"[YIELD {chunk_count}] Sending to client: {output_chunk[:200]!r}")
+                                                        yield output_chunk
                                                         first_chunk_sent = True
+                                                    else:
+                                                        if chunk_count <= 3:
+                                                            logger.info(f"[SKIP {chunk_count}] Skipping chunk with empty content")
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
                                                     if not done_marker_sent:
