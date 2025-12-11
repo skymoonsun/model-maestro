@@ -446,6 +446,15 @@ async def openai_chat_completions(
     body = await request.body()
     data = json.loads(body.decode('utf-8')) if body else {}
     
+    # Log request body structure for debugging
+    logger.info(f"[REQUEST DEBUG] Body keys: {list(data.keys())}")
+    logger.info(f"[REQUEST DEBUG] Has 'messages': {'messages' in data}")
+    logger.info(f"[REQUEST DEBUG] Has 'input': {'input' in data}")
+    if 'input' in data:
+        logger.info(f"[REQUEST DEBUG] 'input' type: {type(data['input'])}")
+        if isinstance(data['input'], list) and len(data['input']) > 0:
+            logger.info(f"[REQUEST DEBUG] First input item keys: {list(data['input'][0].keys()) if isinstance(data['input'][0], dict) else 'not a dict'}")
+    
     model_name = data.get('model', '')
     msg_count = len(data.get('messages', []))
     stream = data.get("stream", False)
