@@ -159,18 +159,18 @@ class OllamaProxy:
                             delta = choice_copy['delta'].copy()
                             
                             # CURSOR FIX: Handle 'reasoning' field
-                            # Some models (like Gemini) send reasoning in a separate field
-                            # Cursor only reads 'content', so we need to remove reasoning
-                            # and only keep actual content
+                            # Some models (like gpt-oss, Gemini) send content in 'reasoning' field
+                            # with empty 'content'. We need to move reasoning to content.
                             if 'reasoning' in delta:
-                                # Remove reasoning - Cursor doesn't support it
-                                # Only keep the actual content
-                                del delta['reasoning']
+                                reasoning_content = delta.get('reasoning', '')
+                                current_content = delta.get('content', '')
                                 
-                                # If content is empty after removing reasoning, 
-                                # this chunk has no displayable content - set to empty string
-                                if 'content' not in delta:
-                                    delta['content'] = ''
+                                # If content is empty but reasoning has text, use reasoning as content
+                                if (not current_content or not current_content.strip()) and reasoning_content:
+                                    delta['content'] = reasoning_content
+                                
+                                # Remove reasoning field - Cursor doesn't support it
+                                del delta['reasoning']
                             
                             choice_copy['delta'] = delta
                         
@@ -178,11 +178,17 @@ class OllamaProxy:
                         if 'message' in choice_copy and isinstance(choice_copy['message'], dict):
                             message = choice_copy['message'].copy()
                             
-                            # Same reasoning removal for non-streaming
+                            # Same reasoning handling for non-streaming
                             if 'reasoning' in message:
+                                reasoning_content = message.get('reasoning', '')
+                                current_content = message.get('content', '')
+                                
+                                # If content is empty but reasoning has text, use reasoning as content
+                                if (not current_content or not current_content.strip()) and reasoning_content:
+                                    message['content'] = reasoning_content
+                                
+                                # Remove reasoning field - Cursor doesn't support it
                                 del message['reasoning']
-                                if 'content' not in message:
-                                    message['content'] = ''
                             
                             choice_copy['message'] = message
                         
