@@ -774,6 +774,26 @@ class OllamaProxy:
                                                 if json_str and json_str != '[DONE]':
                                                     json_data = json.loads(json_str)
                                                     
+                                                    # DEBUG: Log raw keys and sizes (MOVED HERE)
+                                                    if chunk_count % 1 == 0:  # Log ALL chunks
+                                                        raw_content = ""
+                                                        raw_reasoning = ""
+                                                        if 'message' in json_data:
+                                                            raw_content = json_data.get('message', {}).get('content', '')
+                                                            raw_reasoning = json_data.get('message', {}).get('reasoning', '')
+                                                        elif 'choices' in json_data and len(json_data['choices']) > 0:
+                                                            delta = json_data['choices'][0].get('delta', {})
+                                                            raw_content = delta.get('content', '')
+                                                            raw_reasoning = delta.get('reasoning', '')
+                                                        
+                                                        # Only log if interesting or periodically
+                                                        if len(raw_content or '') > 0 or len(raw_reasoning or '') > 0 or chunk_count % 50 == 0:
+                                                            logger.info(f"[RAW SSE DEBUG] Chunk {chunk_count}: content_len={len(raw_content or '')}, reasoning_len={len(raw_reasoning or '')}, keys={list(json_data.keys())}")
+
+                                                    # First map/normalize the model data
+                                                    # THIS IS CRITICAL: Moves reasoning to content
+                                                    json_data = self._map_model_from_ollama(json_data)
+                                                    
                                                     # KIMI TOOL CALL BUFFERING:
                                                     # Check if this chunk contains Kimi tool call markers
                                                     # If so, buffer the content until the section is complete
@@ -944,20 +964,6 @@ class OllamaProxy:
                                                 # Regular Ollama format (NDJSON)
                                                 json_data = json.loads(line.decode('utf-8'))
                                                 
-                                                # DEBUG: Log raw keys and sizes to understand data flow
-                                                if chunk_count % 1 == 0:  # Log ALL chunks
-                                                    raw_content = ""
-                                                    raw_reasoning = ""
-                                                    if 'message' in json_data:
-                                                        raw_content = json_data.get('message', {}).get('content', '')
-                                                        raw_reasoning = json_data.get('message', {}).get('reasoning', '')
-                                                    elif 'choices' in json_data and len(json_data['choices']) > 0:
-                                                        delta = json_data['choices'][0].get('delta', {})
-                                                        raw_content = delta.get('content', '')
-                                                        raw_reasoning = delta.get('reasoning', '')
-                                                    
-                                                    logger.info(f"[RAW DEBUG] Chunk {chunk_count}: content_len={len(raw_content or '')}, reasoning_len={len(raw_reasoning or '')}, keys={list(json_data.keys())}")
-
                                                 # First map/normalize the model data
                                                 # This ensures 'reasoning' field is moved to 'content' if needed
                                                 # IMPORTANT: Logic inside _map_model_from_ollama needs to be non-destructive
