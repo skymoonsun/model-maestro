@@ -470,8 +470,8 @@ async def openai_chat_completions(
     model_unsupported_params = {
         # Deepseek models - don't support tools
         'deepseek': ['tools', 'tool_choice'],
-        # Kimi models - don't support tools and top_p
-        'kimi': ['tools', 'tool_choice', 'top_p'],
+        # Kimi models - proxy converts tool calls to OpenAI format, only remove top_p
+        'kimi': ['top_p'],
         # Minimax models - don't support tools
         'minimax': ['tools', 'tool_choice'],
         # Gemini models - don't support tools, top_p, and some other params

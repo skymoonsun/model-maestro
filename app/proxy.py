@@ -1,9 +1,11 @@
 """Ollama proxy logic and model name manipulation"""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import httpx
 import json
 import logging
+import re
+import uuid
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
@@ -12,6 +14,158 @@ from app.user_manager import user_manager
 from app.auth import get_current_user
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# KIMI TOOL CALL CONVERTER
+# ============================================================================
+# Kimi models use a custom tool call format that needs to be converted
+# to OpenAI's standard tool_calls format for Cursor IDE compatibility.
+#
+# Kimi format:
+#   <|tool_calls_section_begin|>
+#   <|tool_call_begin|>functions.FunctionName:index<|tool_call_argument_begin|>
+#   {"arg1": "value1", ...}
+#   <|tool_call_end|>
+#   <|tool_calls_section_end|>
+#
+# OpenAI format (in delta):
+#   {"tool_calls": [{"index": 0, "id": "call_xxx", "type": "function", 
+#     "function": {"name": "FunctionName", "arguments": "{...}"}}]}
+# ============================================================================
+
+# Regex patterns for Kimi tool call format
+KIMI_TOOL_CALL_SECTION_START = r'<\|tool_calls_section_begin\|>'
+KIMI_TOOL_CALL_SECTION_END = r'<\|tool_calls_section_end\|>'
+KIMI_TOOL_CALL_PATTERN = re.compile(
+    r'<\|tool_call_begin\|>\s*'
+    r'(?:functions\.)?(\w+)(?::\d+)?\s*'
+    r'<\|tool_call_argument_begin\|>\s*'
+    r'(\{[^}]*\})\s*'
+    r'<\|tool_call_end\|>',
+    re.DOTALL
+)
+
+
+def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]:
+    """
+    Parse Kimi tool call format from content and convert to OpenAI format.
+    
+    Args:
+        content: The content string that may contain Kimi tool calls
+        
+    Returns:
+        Tuple of:
+        - clean_content: Content with tool call markers removed
+        - tool_calls: List of OpenAI-formatted tool call objects
+        - has_tool_calls: Whether any tool calls were found
+    """
+    if not content:
+        return content, [], False
+    
+    # Check if content contains Kimi tool call markers
+    if '<|tool_calls_section_begin|>' not in content:
+        return content, [], False
+    
+    tool_calls = []
+    tool_call_index = 0
+    
+    # Extract tool calls
+    for match in KIMI_TOOL_CALL_PATTERN.finditer(content):
+        function_name = match.group(1)
+        arguments_str = match.group(2)
+        
+        # Validate and clean arguments JSON
+        try:
+            # Parse to validate JSON
+            arguments = json.loads(arguments_str)
+            # Re-serialize for consistent formatting
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to parse Kimi tool call arguments: {arguments_str}")
+            continue
+        
+        tool_call = {
+            "index": tool_call_index,
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": function_name,
+                "arguments": arguments_str
+            }
+        }
+        tool_calls.append(tool_call)
+        tool_call_index += 1
+    
+    # Remove tool call section from content
+    clean_content = re.sub(
+        r'<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>',
+        '',
+        content,
+        flags=re.DOTALL
+    ).strip()
+    
+    # Also clean up any partial markers that might remain
+    clean_content = re.sub(r'<\|tool_calls_section_begin\|>.*', '', clean_content, flags=re.DOTALL).strip()
+    
+    return clean_content, tool_calls, len(tool_calls) > 0
+
+
+def convert_kimi_content_to_openai_delta(content: str, model: str) -> List[Dict[str, Any]]:
+    """
+    Convert Kimi content with tool calls to OpenAI delta format chunks.
+    
+    Args:
+        content: Content that may contain Kimi tool calls
+        model: Model name for the response
+        
+    Returns:
+        List of OpenAI-formatted delta chunks to send
+    """
+    clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+    
+    chunks = []
+    
+    # If there's clean content before/after tool calls, send it as regular content
+    if clean_content:
+        chunks.append({
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": clean_content},
+                "finish_reason": None
+            }]
+        })
+    
+    # Send tool calls if present
+    if has_tool_calls:
+        # First chunk: tool call with function name and arguments
+        chunks.append({
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": tool_calls},
+                "finish_reason": None
+            }]
+        })
+        
+        # Final chunk: finish_reason = tool_calls
+        chunks.append({
+            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls"
+            }]
+        })
+    
+    return chunks
 
 
 class OllamaProxy:
@@ -172,6 +326,24 @@ class OllamaProxy:
                                 # Remove reasoning field - Cursor doesn't support it
                                 del delta['reasoning']
                             
+                            # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
+                            # to OpenAI's standard tool_calls format
+                            content = delta.get('content', '')
+                            if content and '<|tool_calls_section_begin|>' in content:
+                                clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+                                
+                                if has_tool_calls:
+                                    logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s), converting to OpenAI format")
+                                    # Update delta with clean content and tool_calls
+                                    if clean_content:
+                                        delta['content'] = clean_content
+                                    else:
+                                        # If no clean content, remove content field entirely
+                                        delta.pop('content', None)
+                                    
+                                    # Add tool_calls to delta
+                                    delta['tool_calls'] = tool_calls
+                            
                             choice_copy['delta'] = delta
                         
                         # Handle 'message' in non-streaming responses
@@ -189,6 +361,23 @@ class OllamaProxy:
                                 
                                 # Remove reasoning field - Cursor doesn't support it
                                 del message['reasoning']
+                            
+                            # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
+                            # to OpenAI's standard tool_calls format (non-streaming)
+                            content = message.get('content', '')
+                            if content and '<|tool_calls_section_begin|>' in content:
+                                clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+                                
+                                if has_tool_calls:
+                                    logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in message, converting to OpenAI format")
+                                    # Update message with clean content and tool_calls
+                                    if clean_content:
+                                        message['content'] = clean_content
+                                    else:
+                                        message['content'] = None
+                                    
+                                    # Add tool_calls to message
+                                    message['tool_calls'] = tool_calls
                             
                             choice_copy['message'] = message
                         
@@ -500,6 +689,12 @@ class OllamaProxy:
                             chunk_count = 0
                             total_bytes = 0
                             
+                            # KIMI TOOL CALL BUFFER: Accumulate content when tool call section is detected
+                            # This is needed because tool call markers can span multiple chunks
+                            kimi_content_buffer = ""
+                            kimi_buffering_active = False
+                            current_model = data.get('model', 'unknown')
+                            
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
                                     continue
@@ -525,6 +720,90 @@ class OllamaProxy:
                                                 json_str = line[6:].decode('utf-8').strip()
                                                 if json_str and json_str != '[DONE]':
                                                     json_data = json.loads(json_str)
+                                                    
+                                                    # KIMI TOOL CALL BUFFERING:
+                                                    # Check if this chunk contains Kimi tool call markers
+                                                    # If so, buffer the content until the section is complete
+                                                    content = ""
+                                                    if isinstance(json_data, dict) and 'choices' in json_data:
+                                                        for choice in json_data.get('choices', []):
+                                                            if isinstance(choice, dict):
+                                                                delta = choice.get('delta', {})
+                                                                if isinstance(delta, dict):
+                                                                    content = delta.get('content', '') or ''
+                                                    
+                                                    # Start buffering if tool call section begins
+                                                    if '<|tool_calls_section_begin|>' in content:
+                                                        kimi_buffering_active = True
+                                                        kimi_content_buffer = content
+                                                        logger.info(f"[KIMI] Tool call section started, buffering content")
+                                                        # Don't yield this chunk yet, wait for complete section
+                                                        continue
+                                                    
+                                                    # Continue buffering if active
+                                                    if kimi_buffering_active:
+                                                        kimi_content_buffer += content
+                                                        
+                                                        # Check if section is complete
+                                                        if '<|tool_calls_section_end|>' in kimi_content_buffer:
+                                                            logger.info(f"[KIMI] Tool call section complete, processing buffer")
+                                                            
+                                                            # Parse and convert the buffered content
+                                                            clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+                                                            
+                                                            if has_tool_calls:
+                                                                logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
+                                                                
+                                                                # Send clean content if any
+                                                                if clean_content:
+                                                                    content_chunk = {
+                                                                        "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                        "object": "chat.completion.chunk",
+                                                                        "model": model_mapper.get_display_model_name(current_model),
+                                                                        "choices": [{
+                                                                            "index": 0,
+                                                                            "delta": {"content": clean_content},
+                                                                            "finish_reason": None
+                                                                        }]
+                                                                    }
+                                                                    yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                
+                                                                # Send tool calls chunk
+                                                                tool_calls_chunk = {
+                                                                    "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                    "object": "chat.completion.chunk",
+                                                                    "model": model_mapper.get_display_model_name(current_model),
+                                                                    "choices": [{
+                                                                        "index": 0,
+                                                                        "delta": {"tool_calls": tool_calls},
+                                                                        "finish_reason": None
+                                                                    }]
+                                                                }
+                                                                yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                
+                                                                # Send finish_reason chunk
+                                                                finish_chunk = {
+                                                                    "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                    "object": "chat.completion.chunk",
+                                                                    "model": model_mapper.get_display_model_name(current_model),
+                                                                    "choices": [{
+                                                                        "index": 0,
+                                                                        "delta": {},
+                                                                        "finish_reason": "tool_calls"
+                                                                    }]
+                                                                }
+                                                                yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                first_chunk_sent = True
+                                                            
+                                                            # Reset buffer
+                                                            kimi_content_buffer = ""
+                                                            kimi_buffering_active = False
+                                                            continue
+                                                        else:
+                                                            # Still buffering, don't yield yet
+                                                            continue
+                                                    
+                                                    # Normal processing (no Kimi tool call buffering)
                                                     mapped_data = self._map_model_from_ollama(json_data)
                                                     
                                                     # Extract token usage if available
