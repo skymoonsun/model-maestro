@@ -362,29 +362,32 @@ class OllamaProxy:
                         if 'delta' in choice_copy and isinstance(choice_copy['delta'], dict):
                             delta = choice_copy['delta'].copy()
                             
-                            # CURSOR FIX: Handle 'reasoning' field
-                            # Some models (like gpt-oss, Gemini) send content in 'reasoning' field
-                            # with empty 'content'. We need to move reasoning to content.
-                            if 'reasoning' in delta:
-                                reasoning_content = delta.get('reasoning', '')
-                                current_content = delta.get('content', '')
+                            # Keep 'reasoning' field as-is for clients that support it
+                            # But also check for tool calls in reasoning
+                            reasoning = delta.get('reasoning', '')
+                            if reasoning and '<|tool_calls_section_begin|>' in reasoning:
+                                clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
                                 
-                                # If content is empty but reasoning has text, use reasoning as content
-                                # UPDATE: Always append reasoning to content to avoid data loss
-                                if reasoning_content:
-                                    delta['content'] = (current_content or '') + reasoning_content
-                                
-                                # Remove reasoning field - Cursor doesn't support it
-                                del delta['reasoning']
+                                if has_tool_calls:
+                                    logger.info(f"[KIMI] Detected {len(tool_calls_from_reasoning)} tool call(s) in reasoning, converting to OpenAI format")
+                                    # Update reasoning with clean content
+                                    if clean_reasoning:
+                                        delta['reasoning'] = clean_reasoning
+                                    else:
+                                        delta.pop('reasoning', None)
+                                    
+                                    # Add tool_calls to delta (merge if already exists)
+                                    existing_tool_calls = delta.get('tool_calls', [])
+                                    delta['tool_calls'] = existing_tool_calls + tool_calls_from_reasoning
                             
                             # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
-                            # to OpenAI's standard tool_calls format
+                            # to OpenAI's standard tool_calls format (in content)
                             content = delta.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
                                 clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
                                 
                                 if has_tool_calls:
-                                    logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s), converting to OpenAI format")
+                                    logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
                                     # Update delta with clean content and tool_calls
                                     if clean_content:
                                         delta['content'] = clean_content
@@ -392,8 +395,9 @@ class OllamaProxy:
                                         # If no clean content, remove content field entirely
                                         delta.pop('content', None)
                                     
-                                    # Add tool_calls to delta
-                                    delta['tool_calls'] = tool_calls
+                                    # Add tool_calls to delta (merge if already exists from reasoning)
+                                    existing_tool_calls = delta.get('tool_calls', [])
+                                    delta['tool_calls'] = existing_tool_calls + tool_calls
                             
                             choice_copy['delta'] = delta
                         
@@ -401,35 +405,41 @@ class OllamaProxy:
                         if 'message' in choice_copy and isinstance(choice_copy['message'], dict):
                             message = choice_copy['message'].copy()
                             
-                            # Same reasoning handling for non-streaming
-                            if 'reasoning' in message:
-                                reasoning_content = message.get('reasoning', '')
-                                current_content = message.get('content', '')
+                            # Keep 'reasoning' field as-is for clients that support it
+                            # But also check for tool calls in reasoning
+                            reasoning = message.get('reasoning', '')
+                            if reasoning and '<|tool_calls_section_begin|>' in reasoning:
+                                clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
                                 
-                                # If content is empty but reasoning has text, use reasoning as content
-                                # UPDATE: Always append reasoning to content to avoid data loss
-                                if reasoning_content:
-                                    message['content'] = (current_content or '') + reasoning_content
-                                
-                                # Remove reasoning field - Cursor doesn't support it
-                                del message['reasoning']
+                                if has_tool_calls:
+                                    logger.info(f"[KIMI] Detected {len(tool_calls_from_reasoning)} tool call(s) in message reasoning, converting to OpenAI format")
+                                    # Update reasoning with clean content
+                                    if clean_reasoning:
+                                        message['reasoning'] = clean_reasoning
+                                    else:
+                                        message.pop('reasoning', None)
+                                    
+                                    # Add tool_calls to message (merge if already exists)
+                                    existing_tool_calls = message.get('tool_calls', [])
+                                    message['tool_calls'] = existing_tool_calls + tool_calls_from_reasoning
                             
                             # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
-                            # to OpenAI's standard tool_calls format (non-streaming)
+                            # to OpenAI's standard tool_calls format (non-streaming, in content)
                             content = message.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
                                 clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
                                 
                                 if has_tool_calls:
-                                    logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in message, converting to OpenAI format")
+                                    logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
                                     # Update message with clean content and tool_calls
                                     if clean_content:
                                         message['content'] = clean_content
                                     else:
                                         message['content'] = None
                                     
-                                    # Add tool_calls to message
-                                    message['tool_calls'] = tool_calls
+                                    # Add tool_calls to message (merge if already exists from reasoning)
+                                    existing_tool_calls = message.get('tool_calls', [])
+                                    message['tool_calls'] = existing_tool_calls + tool_calls
                             
                             choice_copy['message'] = message
                         
@@ -774,22 +784,6 @@ class OllamaProxy:
                                                 if json_str and json_str != '[DONE]':
                                                     json_data = json.loads(json_str)
                                                     
-                                                    # DEBUG: Log raw keys and sizes (MOVED HERE)
-                                                    if chunk_count % 1 == 0:  # Log ALL chunks
-                                                        raw_content = ""
-                                                        raw_reasoning = ""
-                                                        if 'message' in json_data:
-                                                            raw_content = json_data.get('message', {}).get('content', '')
-                                                            raw_reasoning = json_data.get('message', {}).get('reasoning', '')
-                                                        elif 'choices' in json_data and len(json_data['choices']) > 0:
-                                                            delta = json_data['choices'][0].get('delta', {})
-                                                            raw_content = delta.get('content', '')
-                                                            raw_reasoning = delta.get('reasoning', '')
-                                                        
-                                                        # Only log if interesting or periodically
-                                                        if len(raw_content or '') > 0 or len(raw_reasoning or '') > 0 or chunk_count % 50 == 0:
-                                                            logger.info(f"[RAW SSE DEBUG] Chunk {chunk_count}: content_len={len(raw_content or '')}, reasoning_len={len(raw_reasoning or '')}, keys={list(json_data.keys())}")
-
                                                     # First map/normalize the model data
                                                     # THIS IS CRITICAL: Moves reasoning to content
                                                     json_data = self._map_model_from_ollama(json_data)
@@ -797,27 +791,36 @@ class OllamaProxy:
                                                     # KIMI TOOL CALL BUFFERING:
                                                     # Check if this chunk contains Kimi tool call markers
                                                     # If so, buffer the content until the section is complete
+                                                    # Check BOTH content and reasoning fields
                                                     content = ""
+                                                    reasoning = ""
                                                     if isinstance(json_data, dict) and 'choices' in json_data:
                                                         for choice in json_data.get('choices', []):
                                                             if isinstance(choice, dict):
                                                                 delta = choice.get('delta', {})
                                                                 if isinstance(delta, dict):
                                                                     content = delta.get('content', '') or ''
+                                                                    reasoning = delta.get('reasoning', '') or ''
+                                                    
+                                                    # Combine content and reasoning for tool call detection
+                                                    # Tool calls can appear in either field
+                                                    combined_for_detection = content + reasoning
                                                     
                                                     # DEBUG LOG: Show received content (truncated)
                                                     if content:
                                                         logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                    if reasoning:
+                                                        logger.info(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
                                                     
                                                     # Combine with suspicion buffer if exists
                                                     if kimi_suspicion_buffer:
-                                                        logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current content")
-                                                        content = kimi_suspicion_buffer + content
+                                                        logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
+                                                        combined_for_detection = kimi_suspicion_buffer + combined_for_detection
                                                         kimi_suspicion_buffer = ""
 
                                                     # 1. Active Buffering State
                                                     if kimi_buffering_active:
-                                                        kimi_content_buffer += content
+                                                        kimi_content_buffer += combined_for_detection
                                                         
                                                         # Check if section is complete
                                                         if '<|tool_calls_section_end|>' in kimi_content_buffer:
@@ -894,10 +897,10 @@ class OllamaProxy:
                                                             continue
                                                     
                                                     # 2. Check for Start Marker
-                                                    if '<|tool_calls_section_begin|>' in content:
+                                                    if '<|tool_calls_section_begin|>' in combined_for_detection:
                                                         kimi_buffering_active = True
-                                                        kimi_content_buffer = content
-                                                        logger.info(f"[KIMI] Tool call section started, buffering content")
+                                                        kimi_content_buffer = combined_for_detection
+                                                        logger.info(f"[KIMI] Tool call section started, buffering (from {'content' if '<|tool_calls_section_begin|>' in content else 'reasoning'})")
                                                         # Start buffering, don't yield
                                                         continue
                                                         
@@ -908,21 +911,21 @@ class OllamaProxy:
                                                     marker_start = "<|tool_calls_section_begin|>"
                                                     is_suspicious = False
                                                     
-                                                    # Critical fix: Empty content is NOT suspicious! 
+                                                    # Critical fix: Empty combined is NOT suspicious! 
                                                     # OpenAI sends role-only chunks with empty content first.
-                                                    if content:
+                                                    if combined_for_detection:
                                                         # Check suffixes of length 1 to len(marker)-1
                                                         for i in range(1, len(marker_start)):
-                                                            if i > len(content):
+                                                            if i > len(combined_for_detection):
                                                                 break
-                                                            suffix = content[-i:]
+                                                            suffix = combined_for_detection[-i:]
                                                             if marker_start.startswith(suffix):
                                                                 is_suspicious = True
                                                                 break
                                                     
                                                     if is_suspicious:
-                                                        logger.info(f"[KIMI DEBUG] Content is suspicious (possible split marker), buffering: {content!r}")
-                                                        kimi_suspicion_buffer = content
+                                                        logger.info(f"[KIMI DEBUG] Combined content is suspicious (possible split marker), buffering: {combined_for_detection!r}")
+                                                        kimi_suspicion_buffer = combined_for_detection
                                                         # Don't yield yet, wait for next chunk to confirm
                                                         continue
                                                     
