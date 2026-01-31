@@ -370,8 +370,9 @@ class OllamaProxy:
                                 current_content = delta.get('content', '')
                                 
                                 # If content is empty but reasoning has text, use reasoning as content
-                                if (not current_content or not current_content.strip()) and reasoning_content:
-                                    delta['content'] = reasoning_content
+                                # UPDATE: Always append reasoning to content to avoid data loss
+                                if reasoning_content:
+                                    delta['content'] = (current_content or '') + reasoning_content
                                 
                                 # Remove reasoning field - Cursor doesn't support it
                                 del delta['reasoning']
@@ -406,8 +407,9 @@ class OllamaProxy:
                                 current_content = message.get('content', '')
                                 
                                 # If content is empty but reasoning has text, use reasoning as content
-                                if (not current_content or not current_content.strip()) and reasoning_content:
-                                    message['content'] = reasoning_content
+                                # UPDATE: Always append reasoning to content to avoid data loss
+                                if reasoning_content:
+                                    message['content'] = (current_content or '') + reasoning_content
                                 
                                 # Remove reasoning field - Cursor doesn't support it
                                 del message['reasoning']
@@ -942,8 +944,15 @@ class OllamaProxy:
                                                 # Regular Ollama format (NDJSON)
                                                 json_data = json.loads(line.decode('utf-8'))
                                                 
+                                                # DEBUG: Log raw keys and sizes to understand data flow
+                                                if chunk_count % 20 == 0:  # Log every 20th chunk to avoid spam, or checks specific conditions
+                                                    raw_content = json_data.get('message', {}).get('content', '')
+                                                    raw_reasoning = json_data.get('message', {}).get('reasoning', '')
+                                                    # logger.info(f"[RAW DEBUG] Chunk {chunk_count}: content_len={len(raw_content)}, reasoning_len={len(raw_reasoning)}, keys={list(json_data.keys())}")
+
                                                 # First map/normalize the model data
                                                 # This ensures 'reasoning' field is moved to 'content' if needed
+                                                # IMPORTANT: Logic inside _map_model_from_ollama needs to be non-destructive
                                                 mapped_data = self._map_model_from_ollama(json_data)
                                                 
                                                 # Extract content from MAPPED data
@@ -955,10 +964,19 @@ class OllamaProxy:
                                                             delta = choice.get('delta') or choice.get('message') or {}
                                                             if isinstance(delta, dict):
                                                                 content = delta.get('content', '') or ''
+                                                                
+                                                                # DEBUG: Check if tool calls exist natively in mapped data
+                                                                if 'tool_calls' in delta:
+                                                                    logger.info(f"[NATIVE TOOL CALL] Found native tool_calls in delta: {delta['tool_calls']}")
                                                 
                                                 # DEBUG LOG: Show received content (normalized)
                                                 if content:
-                                                    logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                     # Only log beginning of content to not spam
+                                                     pass
+                                                     # logger.info(f"[KIMI DEBUG] Received content chunk: {content[:50]!r}")
+                                                elif not content and chunk_count > 1 and chunk_count < 10:
+                                                     # Log if content is empty in early chunks (suspicious)
+                                                     logger.info(f"[KIMI DEBUG] Empty content in chunk {chunk_count} (Raw keys: {list(json_data.keys())})")
                                                 
                                                 # Combine with suspicion buffer if exists
                                                 if kimi_suspicion_buffer:
