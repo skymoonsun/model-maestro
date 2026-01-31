@@ -783,8 +783,13 @@ class OllamaProxy:
                                                                 if isinstance(delta, dict):
                                                                     content = delta.get('content', '') or ''
                                                     
+                                                    # DEBUG LOG: Show received content (truncated)
+                                                    if content:
+                                                        logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                    
                                                     # Combine with suspicion buffer if exists
                                                     if kimi_suspicion_buffer:
+                                                        logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current content")
                                                         content = kimi_suspicion_buffer + content
                                                         kimi_suspicion_buffer = ""
 
@@ -880,14 +885,21 @@ class OllamaProxy:
                                                     # Check if the end of content matches the beginning of the marker
                                                     marker_start = "<|tool_calls_section_begin|>"
                                                     is_suspicious = False
-                                                    # Check suffixes of length 1 to len(marker)-1
-                                                    for i in range(1, len(marker_start)):
-                                                        suffix = content[-i:]
-                                                        if marker_start.startswith(suffix):
-                                                            is_suspicious = True
-                                                            break
+                                                    
+                                                    # Critical fix: Empty content is NOT suspicious! 
+                                                    # OpenAI sends role-only chunks with empty content first.
+                                                    if content:
+                                                        # Check suffixes of length 1 to len(marker)-1
+                                                        for i in range(1, len(marker_start)):
+                                                            if i > len(content):
+                                                                break
+                                                            suffix = content[-i:]
+                                                            if marker_start.startswith(suffix):
+                                                                is_suspicious = True
+                                                                break
                                                     
                                                     if is_suspicious:
+                                                        logger.info(f"[KIMI DEBUG] Content is suspicious (possible split marker), buffering: {content!r}")
                                                         kimi_suspicion_buffer = content
                                                         # Don't yield yet, wait for next chunk to confirm
                                                         continue
