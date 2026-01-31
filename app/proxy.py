@@ -37,11 +37,14 @@ logger = logging.getLogger(__name__)
 # Regex patterns for Kimi tool call format
 KIMI_TOOL_CALL_SECTION_START = r'<\|tool_calls_section_begin\|>'
 KIMI_TOOL_CALL_SECTION_END = r'<\|tool_calls_section_end\|>'
+
+# More flexible pattern that handles nested JSON objects
+# Uses lazy matching to find content between markers
 KIMI_TOOL_CALL_PATTERN = re.compile(
     r'<\|tool_call_begin\|>\s*'
     r'(?:functions\.)?(\w+)(?::\d+)?\s*'
     r'<\|tool_call_argument_begin\|>\s*'
-    r'(\{[^}]*\})\s*'
+    r'(\{.*?\})\s*'  # Lazy match for JSON - handles nested objects
     r'<\|tool_call_end\|>',
     re.DOTALL
 )
@@ -64,25 +67,77 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
         return content, [], False
     
     # Check if content contains Kimi tool call markers
-    if '<|tool_calls_section_begin|>' not in content:
+    section_start = '<|tool_calls_section_begin|>'
+    section_end = '<|tool_calls_section_end|>'
+    
+    if section_start not in content:
         return content, [], False
     
     tool_calls = []
     tool_call_index = 0
     
-    # Extract tool calls
-    for match in KIMI_TOOL_CALL_PATTERN.finditer(content):
-        function_name = match.group(1)
-        arguments_str = match.group(2)
+    # Find the section boundaries
+    start_idx = content.find(section_start)
+    end_idx = content.find(section_end)
+    
+    if start_idx == -1:
+        return content, [], False
+    
+    # Extract content before and after the tool call section
+    content_before = content[:start_idx].strip()
+    content_after = content[end_idx + len(section_end):].strip() if end_idx != -1 else ""
+    
+    # Extract the tool call section
+    if end_idx != -1:
+        section_content = content[start_idx + len(section_start):end_idx]
+    else:
+        section_content = content[start_idx + len(section_start):]
+    
+    # Parse individual tool calls from the section
+    tool_call_begin = '<|tool_call_begin|>'
+    tool_call_end = '<|tool_call_end|>'
+    arg_begin = '<|tool_call_argument_begin|>'
+    
+    current_pos = 0
+    while True:
+        # Find next tool call
+        call_start = section_content.find(tool_call_begin, current_pos)
+        if call_start == -1:
+            break
         
-        # Validate and clean arguments JSON
+        call_end = section_content.find(tool_call_end, call_start)
+        if call_end == -1:
+            break
+        
+        # Extract the tool call content
+        call_content = section_content[call_start + len(tool_call_begin):call_end].strip()
+        
+        # Find the argument marker
+        arg_start = call_content.find(arg_begin)
+        if arg_start == -1:
+            current_pos = call_end + len(tool_call_end)
+            continue
+        
+        # Extract function name (everything before arg_begin)
+        func_part = call_content[:arg_start].strip()
+        # Remove "functions." prefix if present
+        if func_part.startswith('functions.'):
+            func_part = func_part[10:]
+        # Remove trailing index like ":11"
+        if ':' in func_part:
+            func_part = func_part.split(':')[0]
+        function_name = func_part.strip()
+        
+        # Extract arguments JSON (everything after arg_begin)
+        args_str = call_content[arg_start + len(arg_begin):].strip()
+        
+        # Parse JSON arguments
         try:
-            # Parse to validate JSON
-            arguments = json.loads(arguments_str)
-            # Re-serialize for consistent formatting
+            arguments = json.loads(args_str)
             arguments_str = json.dumps(arguments, ensure_ascii=False)
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse Kimi tool call arguments: {arguments_str}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse Kimi tool call arguments: {args_str[:100]}... Error: {e}")
+            current_pos = call_end + len(tool_call_end)
             continue
         
         tool_call = {
@@ -96,17 +151,12 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
         }
         tool_calls.append(tool_call)
         tool_call_index += 1
+        logger.info(f"[KIMI] Parsed tool call: {function_name}({arguments_str[:50]}...)")
+        
+        current_pos = call_end + len(tool_call_end)
     
-    # Remove tool call section from content
-    clean_content = re.sub(
-        r'<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>',
-        '',
-        content,
-        flags=re.DOTALL
-    ).strip()
-    
-    # Also clean up any partial markers that might remain
-    clean_content = re.sub(r'<\|tool_calls_section_begin\|>.*', '', clean_content, flags=re.DOTALL).strip()
+    # Combine clean content
+    clean_content = f"{content_before} {content_after}".strip()
     
     return clean_content, tool_calls, len(tool_calls) > 0
 
