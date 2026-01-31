@@ -945,10 +945,18 @@ class OllamaProxy:
                                                 json_data = json.loads(line.decode('utf-8'))
                                                 
                                                 # DEBUG: Log raw keys and sizes to understand data flow
-                                                if chunk_count % 20 == 0:  # Log every 20th chunk to avoid spam, or checks specific conditions
-                                                    raw_content = json_data.get('message', {}).get('content', '')
-                                                    raw_reasoning = json_data.get('message', {}).get('reasoning', '')
-                                                    # logger.info(f"[RAW DEBUG] Chunk {chunk_count}: content_len={len(raw_content)}, reasoning_len={len(raw_reasoning)}, keys={list(json_data.keys())}")
+                                                if chunk_count % 1 == 0:  # Log ALL chunks
+                                                    raw_content = ""
+                                                    raw_reasoning = ""
+                                                    if 'message' in json_data:
+                                                        raw_content = json_data.get('message', {}).get('content', '')
+                                                        raw_reasoning = json_data.get('message', {}).get('reasoning', '')
+                                                    elif 'choices' in json_data and len(json_data['choices']) > 0:
+                                                        delta = json_data['choices'][0].get('delta', {})
+                                                        raw_content = delta.get('content', '')
+                                                        raw_reasoning = delta.get('reasoning', '')
+                                                    
+                                                    logger.info(f"[RAW DEBUG] Chunk {chunk_count}: content_len={len(raw_content or '')}, reasoning_len={len(raw_reasoning or '')}, keys={list(json_data.keys())}")
 
                                                 # First map/normalize the model data
                                                 # This ensures 'reasoning' field is moved to 'content' if needed
