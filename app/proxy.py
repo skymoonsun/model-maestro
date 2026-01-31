@@ -1123,6 +1123,7 @@ class OllamaProxy:
                                                 # For OpenAI endpoints, convert NDJSON to SSE format
                                                 if is_openai_endpoint:
                                                     yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                else:
                                                     yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                                 first_chunk_sent = True
                                         
