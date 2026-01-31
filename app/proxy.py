@@ -1085,20 +1085,25 @@ class OllamaProxy:
                                                     continue
                                                     
                                                 # 3. Check for Suspicious Ending (Partial Marker)
-                                                marker_start = "<|tool_calls_section_begin|>"
+                                                # Check for BOTH start and end markers splitting
+                                                markers_to_check = ["<|tool_calls_section_begin|>", "<|tool_calls_section_end|>"]
                                                 is_suspicious = False
                                                 
                                                 if content:
-                                                    for i in range(1, len(marker_start)):
-                                                        if i > len(content):
-                                                            break
-                                                        suffix = content[-i:]
-                                                        if marker_start.startswith(suffix):
-                                                            is_suspicious = True
+                                                    for marker in markers_to_check:
+                                                        # Check suffixes of length 1 to len(marker)-1
+                                                        for i in range(1, len(marker)):
+                                                            if i > len(content):
+                                                                break
+                                                            suffix = content[-i:]
+                                                            if marker.startswith(suffix):
+                                                                is_suspicious = True
+                                                                break
+                                                        if is_suspicious:
                                                             break
                                                 
                                                 if is_suspicious:
-                                                    logger.info(f"[KIMI DEBUG] Content is suspicious (possible split marker), buffering: {content!r}")
+                                                    logger.info(f"[KIMI DEBUG] Content is suspicious (possible split marker), buffering: {content[-20:]!r}")
                                                     kimi_suspicion_buffer = content
                                                     # Don't yield yet, wait for next chunk to confirm
                                                     continue
@@ -1118,18 +1123,75 @@ class OllamaProxy:
                                                 # For OpenAI endpoints, convert NDJSON to SSE format
                                                 if is_openai_endpoint:
                                                     yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                else:
                                                     yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                                 first_chunk_sent = True
+                                        
                                         except (json.JSONDecodeError, UnicodeDecodeError) as e:
                                             # Log parse errors for debugging
                                             logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
-                                            # If not valid JSON, pass through as-is with proper format
-                                            if is_openai_endpoint:
-                                                yield b'data: ' + line + b'\n\n'
-                                            else:
-                                                yield line + b'\n'
-                                            first_chunk_sent = True
+                                            continue
+
+                            # FLUSH BUFFER ON STREAM END
+                            # This is outside the async for loop
+                            if kimi_content_buffer or kimi_suspicion_buffer:
+                                logger.info(f"[KIMI DEBUG] Stream ended with remaining buffer. Flushing...")
+                                final_content = kimi_content_buffer + kimi_suspicion_buffer
+                                
+                                # Try to process one last time if it looks like a tool call section
+                                if '<|tool_calls_section_begin|>' in final_content:
+                                     # Even if end marker is missing, try to parse what we have
+                                     clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(final_content)
+                                     if has_tool_calls:
+                                         # Yield remaining tools
+                                         tool_calls_chunk = {
+                                            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                            "object": "chat.completion.chunk",
+                                            "model": model_mapper.get_display_model_name(current_model),
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {"tool_calls": tool_calls},
+                                                "finish_reason": "tool_calls"
+                                            }]
+                                         }
+                                         yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                         final_content = clean_content # Update content to be yielded
+                                
+                                # Yield remaining content if any
+                                if final_content:
+                                     # Construct a final chunk
+                                     final_chunk = {
+                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                        "object": "chat.completion.chunk",
+                                        "model": model_mapper.get_display_model_name(current_model),
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {"content": final_content},
+                                            "finish_reason": None # Not verified stop, defer to [DONE]
+                                        }]
+                                     }
+                                     yield b'data: ' + json.dumps(final_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                            if not first_chunk_sent and not done_marker_sent:
+                                # If no chunks were sent (very weird), send an empty one to avoid client timeout
+                                chunk = {
+                                    "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": model_mapper.get_display_model_name(current_model),
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"role": "assistant", "content": ""},
+                                            "finish_reason": None
+                                        }
+                                    ]
+                                }
+                                yield b'data: ' + json.dumps(chunk).encode('utf-8') + b'\n\n'
+                                first_chunk_sent = True
+                            
+                            if not done_marker_sent:
+                                yield b'data: [DONE]\n\n'
+                                done_marker_sent = True
                             
                             # Process any remaining data in buffer
                             if buffer:
