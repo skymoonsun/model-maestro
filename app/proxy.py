@@ -743,6 +743,7 @@ class OllamaProxy:
                             # This is needed because tool call markers can span multiple chunks
                             kimi_content_buffer = ""
                             kimi_buffering_active = False
+                            kimi_suspicion_buffer = ""
                             current_model = data.get('model', 'unknown')
                             
                             async for chunk in resp.aiter_raw():
@@ -782,15 +783,12 @@ class OllamaProxy:
                                                                 if isinstance(delta, dict):
                                                                     content = delta.get('content', '') or ''
                                                     
-                                                    # Start buffering if tool call section begins
-                                                    if '<|tool_calls_section_begin|>' in content:
-                                                        kimi_buffering_active = True
-                                                        kimi_content_buffer = content
-                                                        logger.info(f"[KIMI] Tool call section started, buffering content")
-                                                        # Don't yield this chunk yet, wait for complete section
-                                                        continue
-                                                    
-                                                    # Continue buffering if active
+                                                    # Combine with suspicion buffer if exists
+                                                    if kimi_suspicion_buffer:
+                                                        content = kimi_suspicion_buffer + content
+                                                        kimi_suspicion_buffer = ""
+
+                                                    # 1. Active Buffering State
                                                     if kimi_buffering_active:
                                                         kimi_content_buffer += content
                                                         
@@ -806,6 +804,11 @@ class OllamaProxy:
                                                                 
                                                                 # Send clean content if any
                                                                 if clean_content:
+                                                                    # Check if clean_content still contains raw markers (double check)
+                                                                    if '<|tool_calls_' in clean_content:
+                                                                         # Force remove any remaining markers
+                                                                         clean_content = re.sub(r'<\|tool_calls_[^>]+>', '', clean_content)
+                                                                    
                                                                     content_chunk = {
                                                                         "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
                                                                         "object": "chat.completion.chunk",
@@ -844,17 +847,62 @@ class OllamaProxy:
                                                                 }
                                                                 yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                                 first_chunk_sent = True
+                                                            else:
+                                                                # No tool calls found after parsing (fake alarm?), yield original buffer
+                                                                # But first, try to convert it as regular content
+                                                                mapped_data = self._map_model_from_ollama(json.loads(json_str)) # Re-use original mapping logic
+                                                                # Override content with full buffer 
+                                                                if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                                    mapped_data['choices'][0]['delta']['content'] = kimi_content_buffer
+                                                                
+                                                                yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                first_chunk_sent = True
                                                             
                                                             # Reset buffer
                                                             kimi_content_buffer = ""
                                                             kimi_buffering_active = False
                                                             continue
                                                         else:
-                                                            # Still buffering, don't yield yet
+                                                            # Still buffering, wait for section end
                                                             continue
                                                     
-                                                    # Normal processing (no Kimi tool call buffering)
+                                                    # 2. Check for Start Marker
+                                                    if '<|tool_calls_section_begin|>' in content:
+                                                        kimi_buffering_active = True
+                                                        kimi_content_buffer = content
+                                                        logger.info(f"[KIMI] Tool call section started, buffering content")
+                                                        # Start buffering, don't yield
+                                                        continue
+                                                        
+                                                    # 3. Check for Suspicious Ending (Partial Marker)
+                                                    # If content ends with '<' or '<|' or '<|t' etc., it might be a split marker.
+                                                    # The longest marker prefix is about 26 chars.
+                                                    # Check if the end of content matches the beginning of the marker
+                                                    marker_start = "<|tool_calls_section_begin|>"
+                                                    is_suspicious = False
+                                                    # Check suffixes of length 1 to len(marker)-1
+                                                    for i in range(1, len(marker_start)):
+                                                        suffix = content[-i:]
+                                                        if marker_start.startswith(suffix):
+                                                            is_suspicious = True
+                                                            break
+                                                    
+                                                    if is_suspicious:
+                                                        kimi_suspicion_buffer = content
+                                                        # Don't yield yet, wait for next chunk to confirm
+                                                        continue
+                                                    
+                                                    # Normal processing (no Kimi detection)
                                                     mapped_data = self._map_model_from_ollama(json_data)
+                                                    
+                                                    # If we had a suspicion buffer that turned out to be false alarm (combined above),
+                                                    # we need to make sure we use the COMBINED content, not just the current chunk content.
+                                                    # But _map_model_from_ollama uses json_data which only has current chunk.
+                                                    # So we manually update the content if we combined buffers.
+                                                    if content != (delta.get('content', '') or ''):
+                                                        if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                            if isinstance(mapped_data['choices'][0], dict) and 'delta' in mapped_data['choices'][0]:
+                                                                mapped_data['choices'][0]['delta']['content'] = content
                                                     
                                                     # Extract token usage if available
                                                     if isinstance(mapped_data, dict) and 'usage' in mapped_data:
