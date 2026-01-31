@@ -702,6 +702,7 @@ class OllamaProxy:
                     # Always log streaming requests for debugging
                     logger.info(f"[STREAM START] Sending streaming request to Ollama: {url}")
                     logger.info(f"[STREAM START] Model: {data.get('model', 'unknown')}, OpenAI endpoint: {is_openai_endpoint}")
+                    logger.info(f"[STREAM START] max_tokens: {data.get('max_tokens', 'not set')}, temperature: {data.get('temperature', 'not set')}")
                     
                     try:
                         async with client.stream("POST", url, json=data) as resp:
@@ -758,6 +759,10 @@ class OllamaProxy:
                             kimi_suspicion_buffer = ""
                             current_model = data.get('model', 'unknown')
                             
+                            # Only enable Kimi tool call buffering for Kimi models
+                            # Other models (Qwen, Gemma, etc.) don't use this format
+                            is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
+                            
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
                                     continue
@@ -788,12 +793,14 @@ class OllamaProxy:
                                                     # THIS IS CRITICAL: Moves reasoning to content
                                                     json_data = self._map_model_from_ollama(json_data)
                                                     
-                                                    # KIMI TOOL CALL BUFFERING:
+                                                    # KIMI TOOL CALL BUFFERING (only for Kimi models):
                                                     # Check if this chunk contains Kimi tool call markers
                                                     # If so, buffer the content until the section is complete
                                                     # Check BOTH content and reasoning fields
                                                     content = ""
                                                     reasoning = ""
+                                                    combined_for_detection = ""
+                                                    
                                                     if isinstance(json_data, dict) and 'choices' in json_data:
                                                         for choice in json_data.get('choices', []):
                                                             if isinstance(choice, dict):
@@ -802,24 +809,26 @@ class OllamaProxy:
                                                                     content = delta.get('content', '') or ''
                                                                     reasoning = delta.get('reasoning', '') or ''
                                                     
-                                                    # Combine content and reasoning for tool call detection
-                                                    # Tool calls can appear in either field
-                                                    combined_for_detection = content + reasoning
-                                                    
-                                                    # DEBUG LOG: Show received content (truncated)
-                                                    if content:
-                                                        logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
-                                                    if reasoning:
-                                                        logger.info(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
-                                                    
-                                                    # Combine with suspicion buffer if exists
-                                                    if kimi_suspicion_buffer:
-                                                        logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
-                                                        combined_for_detection = kimi_suspicion_buffer + combined_for_detection
-                                                        kimi_suspicion_buffer = ""
+                                                    # Only do Kimi-specific buffering for Kimi models
+                                                    if is_kimi_model:
+                                                        # Combine content and reasoning for tool call detection
+                                                        # Tool calls can appear in either field
+                                                        combined_for_detection = content + reasoning
+                                                        
+                                                        # DEBUG LOG: Show received content (truncated)
+                                                        if content:
+                                                            logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                        if reasoning:
+                                                            logger.info(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
+                                                        
+                                                        # Combine with suspicion buffer if exists
+                                                        if kimi_suspicion_buffer:
+                                                            logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
+                                                            combined_for_detection = kimi_suspicion_buffer + combined_for_detection
+                                                            kimi_suspicion_buffer = ""
 
-                                                    # 1. Active Buffering State
-                                                    if kimi_buffering_active:
+                                                    # 1. Active Buffering State (only for Kimi)
+                                                    if is_kimi_model and kimi_buffering_active:
                                                         kimi_content_buffer += combined_for_detection
                                                         
                                                         # Check if section is complete
@@ -896,38 +905,39 @@ class OllamaProxy:
                                                             # Still buffering, wait for section end
                                                             continue
                                                     
-                                                    # 2. Check for Start Marker
-                                                    if '<|tool_calls_section_begin|>' in combined_for_detection:
+                                                    # 2. Check for Start Marker (only for Kimi)
+                                                    if is_kimi_model and '<|tool_calls_section_begin|>' in combined_for_detection:
                                                         kimi_buffering_active = True
                                                         kimi_content_buffer = combined_for_detection
                                                         logger.info(f"[KIMI] Tool call section started, buffering (from {'content' if '<|tool_calls_section_begin|>' in content else 'reasoning'})")
                                                         # Start buffering, don't yield
                                                         continue
                                                         
-                                                    # 3. Check for Suspicious Ending (Partial Marker)
+                                                    # 3. Check for Suspicious Ending (Partial Marker) - only for Kimi
                                                     # If content ends with '<' or '<|' or '<|t' etc., it might be a split marker.
                                                     # The longest marker prefix is about 26 chars.
                                                     # Check if the end of content matches the beginning of the marker
-                                                    marker_start = "<|tool_calls_section_begin|>"
-                                                    is_suspicious = False
-                                                    
-                                                    # Critical fix: Empty combined is NOT suspicious! 
-                                                    # OpenAI sends role-only chunks with empty content first.
-                                                    if combined_for_detection:
-                                                        # Check suffixes of length 1 to len(marker)-1
-                                                        for i in range(1, len(marker_start)):
-                                                            if i > len(combined_for_detection):
-                                                                break
-                                                            suffix = combined_for_detection[-i:]
-                                                            if marker_start.startswith(suffix):
-                                                                is_suspicious = True
-                                                                break
-                                                    
-                                                    if is_suspicious:
-                                                        logger.info(f"[KIMI DEBUG] Combined content is suspicious (possible split marker), buffering: {combined_for_detection!r}")
-                                                        kimi_suspicion_buffer = combined_for_detection
-                                                        # Don't yield yet, wait for next chunk to confirm
-                                                        continue
+                                                    if is_kimi_model:
+                                                        marker_start = "<|tool_calls_section_begin|>"
+                                                        is_suspicious = False
+                                                        
+                                                        # Critical fix: Empty combined is NOT suspicious! 
+                                                        # OpenAI sends role-only chunks with empty content first.
+                                                        if combined_for_detection:
+                                                            # Check suffixes of length 1 to len(marker)-1
+                                                            for i in range(1, len(marker_start)):
+                                                                if i > len(combined_for_detection):
+                                                                    break
+                                                                suffix = combined_for_detection[-i:]
+                                                                if marker_start.startswith(suffix):
+                                                                    is_suspicious = True
+                                                                    break
+                                                        
+                                                        if is_suspicious:
+                                                            logger.info(f"[KIMI DEBUG] Combined content is suspicious (possible split marker), buffering: {combined_for_detection!r}")
+                                                            kimi_suspicion_buffer = combined_for_detection
+                                                            # Don't yield yet, wait for next chunk to confirm
+                                                            continue
                                                     
                                                     # Normal processing (no Kimi detection)
                                                     mapped_data = self._map_model_from_ollama(json_data)
