@@ -941,7 +941,155 @@ class OllamaProxy:
                                             else:
                                                 # Regular Ollama format (NDJSON)
                                                 json_data = json.loads(line.decode('utf-8'))
+                                                
+                                                # First map/normalize the model data
+                                                # This ensures 'reasoning' field is moved to 'content' if needed
                                                 mapped_data = self._map_model_from_ollama(json_data)
+                                                
+                                                # Extract content from MAPPED data
+                                                content = ""
+                                                if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                    for choice in mapped_data.get('choices', []):
+                                                        if isinstance(choice, dict):
+                                                            # Non-streaming 'message' or streaming 'delta'
+                                                            delta = choice.get('delta') or choice.get('message') or {}
+                                                            if isinstance(delta, dict):
+                                                                content = delta.get('content', '') or ''
+                                                
+                                                # DEBUG LOG: Show received content (normalized)
+                                                if content:
+                                                    logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                
+                                                # Combine with suspicion buffer if exists
+                                                if kimi_suspicion_buffer:
+                                                    logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current content")
+                                                    content = kimi_suspicion_buffer + content
+                                                    kimi_suspicion_buffer = ""
+
+                                                # 1. Active Buffering State
+                                                if kimi_buffering_active:
+                                                    kimi_content_buffer += content
+                                                    
+                                                    # Check if section is complete
+                                                    if '<|tool_calls_section_end|>' in kimi_content_buffer:
+                                                        logger.info(f"[KIMI] Tool call section complete, processing buffer")
+                                                        
+                                                        # Parse and convert the buffered content
+                                                        clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+                                                        
+                                                        if has_tool_calls:
+                                                            logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
+                                                            
+                                                            # Send clean content if any
+                                                            if clean_content:
+                                                                # Check if clean_content still contains raw markers (double check)
+                                                                if '<|tool_calls_' in clean_content:
+                                                                     # Force remove any remaining markers
+                                                                     clean_content = re.sub(r'<\|tool_calls_[^>]+>', '', clean_content)
+                                                                
+                                                                content_chunk = {
+                                                                    "id": mapped_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                    "object": "chat.completion.chunk",
+                                                                    "model": model_mapper.get_display_model_name(current_model),
+                                                                    "choices": [{
+                                                                        "index": 0,
+                                                                        "delta": {"content": clean_content},
+                                                                        "finish_reason": None
+                                                                    }]
+                                                                }
+                                                                
+                                                                if is_openai_endpoint:
+                                                                    yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                else:
+                                                                    yield json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                            
+                                                            # Send tool calls chunk
+                                                            tool_calls_chunk = {
+                                                                "id": mapped_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                "object": "chat.completion.chunk",
+                                                                "model": model_mapper.get_display_model_name(current_model),
+                                                                "choices": [{
+                                                                    "index": 0,
+                                                                    "delta": {"tool_calls": tool_calls},
+                                                                    "finish_reason": None
+                                                                }]
+                                                            }
+                                                            
+                                                            if is_openai_endpoint:
+                                                                yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            else:
+                                                                yield json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                            
+                                                            # Send finish_reason chunk
+                                                            finish_chunk = {
+                                                                "id": mapped_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                "object": "chat.completion.chunk",
+                                                                "model": model_mapper.get_display_model_name(current_model),
+                                                                "choices": [{
+                                                                    "index": 0,
+                                                                    "delta": {},
+                                                                    "finish_reason": "tool_calls"
+                                                                }]
+                                                            }
+                                                            
+                                                            if is_openai_endpoint:
+                                                                yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            else:
+                                                                yield json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                                
+                                                            first_chunk_sent = True
+                                                        else:
+                                                            # No tool calls found after parsing (fake alarm?), yield original buffer
+                                                            # Update content in mapped_data
+                                                            if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                                mapped_data['choices'][0]['delta']['content'] = kimi_content_buffer
+                                                            
+                                                            if is_openai_endpoint:
+                                                                yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            else:
+                                                                yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                            first_chunk_sent = True
+                                                        
+                                                        # Reset buffer
+                                                        kimi_content_buffer = ""
+                                                        kimi_buffering_active = False
+                                                        continue
+                                                    else:
+                                                        # Still buffering, wait for section end
+                                                        continue
+                                                
+                                                # 2. Check for Start Marker
+                                                if '<|tool_calls_section_begin|>' in content:
+                                                    kimi_buffering_active = True
+                                                    kimi_content_buffer = content
+                                                    logger.info(f"[KIMI] Tool call section started, buffering content")
+                                                    # Start buffering, don't yield
+                                                    continue
+                                                    
+                                                # 3. Check for Suspicious Ending (Partial Marker)
+                                                marker_start = "<|tool_calls_section_begin|>"
+                                                is_suspicious = False
+                                                
+                                                if content:
+                                                    for i in range(1, len(marker_start)):
+                                                        if i > len(content):
+                                                            break
+                                                        suffix = content[-i:]
+                                                        if marker_start.startswith(suffix):
+                                                            is_suspicious = True
+                                                            break
+                                                
+                                                if is_suspicious:
+                                                    logger.info(f"[KIMI DEBUG] Content is suspicious (possible split marker), buffering: {content!r}")
+                                                    kimi_suspicion_buffer = content
+                                                    # Don't yield yet, wait for next chunk to confirm
+                                                    continue
+                                                
+                                                # Normal processing (no Kimi detection)
+                                                # If we had a suspicion buffer that turned out to be false alarm (combined above),
+                                                # we need to make sure we use the COMBINED content.
+                                                if content != (mapped_data['choices'][0]['delta'].get('content', '') or ''):
+                                                    mapped_data['choices'][0]['delta']['content'] = content
                                                 
                                                 # Extract token usage if available
                                                 if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
