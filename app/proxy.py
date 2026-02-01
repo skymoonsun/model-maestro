@@ -255,7 +255,7 @@ class OllamaProxy:
             self._http_client = httpx.AsyncClient(
                 timeout=1200.0,  # 20 minutes (for long reasoning/tools)
                 limits=limits,
-                http2=False  # Disabled to prevent connection stability issues
+                http2=True  # Disabled to prevent connection stability issues
             )
         
         return self._http_client
