@@ -618,8 +618,8 @@ async def cursor_chat_completions(
                 detail="User has exceeded their request or token limit"
             )
     
-    # Remove ALL unsupported parameters for maximum compatibility
-    supported_params = ['model', 'messages', 'stream', 'temperature', 'max_tokens', 'stop']
+    # Remove unsupported parameters but keep tools for Cursor agent functionality
+    supported_params = ['model', 'messages', 'stream', 'temperature', 'max_tokens', 'stop', 'tools', 'tool_choice']
     data = {k: v for k, v in data.items() if k in supported_params}
     
     # Ensure stream is set
