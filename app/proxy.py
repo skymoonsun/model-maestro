@@ -161,122 +161,6 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
     return clean_content, tool_calls, len(tool_calls) > 0
 
 
-def parse_xml_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]:
-    """
-    Parse generic XML-style tool calls from content.
-    Used by models like Devstral/Mistral when native tool calling is disabled/unstable.
-    
-    Supported Formats:
-    1. <tool_call>{"name": "...", "arguments": {...}}</tool_call>
-    2. <function_calls>
-       <invoke name="tool_name">
-       <parameter name="arg_name">arg_value</parameter>
-       </invoke>
-       </function_calls>
-    
-    Args:
-        content: The content string
-        
-    Returns:
-        Tuple of (clean_content, tool_calls, has_tool_calls)
-    """
-    if not content:
-        return content, [], False
-        
-    tool_calls = []
-    clean_content = content
-    has_matches = False
-    
-    # --- Format 1: <tool_call> JSON </tool_call> ---
-    if '<tool_call>' in content:
-        pattern1 = re.compile(r'<tool_call>\s*({.*?})\s*</tool_call>', re.DOTALL)
-        matches1 = list(pattern1.finditer(content))
-        
-        if matches1:
-            has_matches = True
-            clean_content = pattern1.sub('', clean_content).strip()
-            
-            for i, match in enumerate(matches1):
-                json_str = match.group(1)
-                try:
-                    tool_data = json.loads(json_str)
-                    
-                    name = tool_data.get('name') or tool_data.get('function') or tool_data.get('tool_name')
-                    args = tool_data.get('arguments') or tool_data.get('args') or tool_data.get('parameters') or {}
-                    
-                    if isinstance(args, dict):
-                        args_str = json.dumps(args, ensure_ascii=False)
-                    else:
-                        args_str = str(args)
-                        
-                    if name:
-                        tool_call = {
-                            "index": len(tool_calls),
-                            "id": f"call_{uuid.uuid4().hex[:24]}",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": args_str
-                            }
-                        }
-                        tool_calls.append(tool_call)
-                        logger.info(f"[XML-PARSER] Parsed tool_call format: {name}")
-                except json.JSONDecodeError:
-                    pass
-
-    # --- Format 2: <function_calls><invoke>...</invoke></function_calls> ---
-    # This format is trickier as it uses XML tags for parameters
-    if '<function_calls>' in content or '<invoke' in content:
-        # Remove the outer <function_calls> tags first
-        clean_content = clean_content.replace('<function_calls>', '').replace('</function_calls>', '').strip()
-        
-        # Regex for <invoke> block
-        invoke_pattern = re.compile(r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>', re.DOTALL)
-        matches2 = list(invoke_pattern.finditer(content))
-        
-        if matches2:
-            has_matches = True
-            # Remove invoke blocks from clean content
-            clean_content = invoke_pattern.sub('', clean_content).strip()
-            
-            for match in matches2:
-                name = match.group(1)
-                inner_xml = match.group(2)
-                args = {}
-                
-                # Parse parameters from inner XML: <parameter name="foo">bar</parameter>
-                param_pattern = re.compile(r'<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>', re.DOTALL)
-                
-                for param_match in param_pattern.finditer(inner_xml):
-                    param_name = param_match.group(1)
-                    param_value = param_match.group(2).strip()
-                    args[param_name] = param_value
-                
-                # If no parameters found but there is content, maybe it's raw text or JSON
-                if not args and inner_xml.strip():
-                    try:
-                        # Try parsing as JSON first
-                        args = json.loads(inner_xml.strip())
-                    except:
-                        # Fallback: treat as 'input' or similar generic arg if needed, 
-                        # but for now we essentially rely on <parameter> tags.
-                        pass
-
-                tool_call = {
-                    "index": len(tool_calls),
-                    "id": f"call_{uuid.uuid4().hex[:24]}",
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(args, ensure_ascii=False)
-                    }
-                }
-                tool_calls.append(tool_call)
-                logger.info(f"[XML-PARSER] Parsed invoke format: {name}")
-
-    return clean_content, tool_calls, len(tool_calls) > 0
-
-
 def convert_kimi_content_to_openai_delta(content: str, model: str) -> List[Dict[str, Any]]:
     """
     Convert Kimi content with tool calls to OpenAI delta format chunks.
@@ -381,8 +265,7 @@ class OllamaProxy:
     
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Map model names in request data from client format to Ollama format.
-        Also handles downgrading tool calls to text/XML if tools are not supported.
+        Map model names in request data from client format to Ollama format
         
         Args:
             data: Request data with potential model field
@@ -408,74 +291,6 @@ class OllamaProxy:
             data_copy['source'] = model_mapper.get_real_model_name(data_copy['source'])
         if 'destination' in data_copy:
             data_copy['destination'] = model_mapper.get_real_model_name(data_copy['destination'])
-
-        # ============================================================
-        # TOOL CALL DOWNGRADE: Convert OpenAI tool format to XML/Text
-        # ============================================================
-        # If 'tools' is NOT in data (meaning filtered out or not supported),
-        # we must convert any tool_calls in history to text to avoid 500 errors.
-        if 'tools' not in data_copy and 'messages' in data_copy:
-            messages = data_copy['messages']
-            new_messages = []
-            
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    new_messages.append(msg)
-                    continue
-                
-                msg_copy = msg.copy()
-                role = msg_copy.get('role')
-                
-                # Check for assistant message with tool_calls
-                if role == 'assistant' and 'tool_calls' in msg_copy:
-                    tool_calls = msg_copy.pop('tool_calls')
-                    content = msg_copy.get('content') or ''
-                    
-                    # Convert tool calls to XML
-                    for tc in tool_calls:
-                        if isinstance(tc, dict) and 'function' in tc:
-                            fn = tc['function']
-                            name = fn.get('name')
-                            args = fn.get('arguments')
-                            
-                            # Try to ensure arguments is a dict for cleaner JSON
-                            if isinstance(args, str):
-                                try:
-                                    args_dict = json.loads(args)
-                                    args_str = json.dumps(args_dict, ensure_ascii=False)
-                                except:
-                                    args_str = args
-                            else:
-                                args_str = json.dumps(args, ensure_ascii=False) if args else "{}"
-                            
-                            # Append to content in generic XML format
-                            # Using the format we parse: <tool_call>{"name":..., "arguments":...}</tool_call>
-                            tool_xml = {
-                                "name": name,
-                                "arguments": json.loads(args_str) if isinstance(args_str, str) and args_str.startswith('{') else args_str
-                            }
-                            content += f"\n\n<tool_call>{json.dumps(tool_xml, ensure_ascii=False)}</tool_call>"
-                    
-                    msg_copy['content'] = content
-                
-                # Check for tool result message
-                elif role == 'tool':
-                    # Convert 'tool' role to 'user' role with explicit output marker
-                    # This prevents Ollama from choking on unknown 'tool' role or missing tool_call_id
-                    msg_copy['role'] = 'user'
-                    original_content = msg_copy.get('content', '')
-                    tool_name = "unknown_tool" 
-                    # Note: We lose the tool name mapping here as we don't have the id-to-name map easily
-                    # But usually the model knows context from previous message
-                    
-                    msg_copy['content'] = f"<tool_output>\n{original_content}\n</tool_output>"
-                    # Remove tool_call_id and name if present (Ollama strict user message format)
-                    msg_copy.pop('tool_call_id', None)
-                    msg_copy.pop('name', None)
-                
-                new_messages.append(msg_copy)
-            
-            data_copy['messages'] = new_messages
         
         return data_copy
     
@@ -583,29 +398,7 @@ class OllamaProxy:
                                     # Add tool_calls to delta (merge if already exists from reasoning)
                                     existing_tool_calls = delta.get('tool_calls', [])
                                     delta['tool_calls'] = existing_tool_calls + tool_calls
-                                    # Add tool_calls to delta (merge if already exists from reasoning)
-                                    existing_tool_calls = delta.get('tool_calls', [])
-                                    delta['tool_calls'] = existing_tool_calls + tool_calls
-
-                            # XML TOOL CALL FIX (Devstral/Generic):
-                            # Convert generic <tool_call> format to OpenAI format
-                            # This handles models explicitly instructed to use XML tags
-                            content = delta.get('content', '')
-                            if content and '<tool_call>' in content:
-                                clean_content, tool_calls, has_tool_calls = parse_xml_tool_calls(content)
-                                
-                                if has_tool_calls:
-                                    logger.info(f"[XML] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
-                                    # Update delta with clean content
-                                    if clean_content:
-                                        delta['content'] = clean_content
-                                    else:
-                                        # If no clean content, remove content field entirely
-                                        delta.pop('content', None)
-                                    
-                                    # Add tool_calls to delta
-                                    existing_tool_calls = delta.get('tool_calls', [])
-                                    delta['tool_calls'] = existing_tool_calls + tool_calls
+                            
                             choice_copy['delta'] = delta
                         
                         # Handle 'message' in non-streaming responses
@@ -645,24 +438,6 @@ class OllamaProxy:
                                         message['content'] = None
                                     
                                     # Add tool_calls to message (merge if already exists from reasoning)
-                                    existing_tool_calls = message.get('tool_calls', [])
-                                    message['tool_calls'] = existing_tool_calls + tool_calls
-
-                            # XML TOOL CALL FIX (Devstral/Generic):
-                            # Convert generic <tool_call> format to OpenAI format
-                            content = message.get('content', '')
-                            if content and '<tool_call>' in content:
-                                clean_content, tool_calls, has_tool_calls = parse_xml_tool_calls(content)
-                                
-                                if has_tool_calls:
-                                    logger.info(f"[XML] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
-                                    # Update message with clean content
-                                    if clean_content:
-                                        message['content'] = clean_content
-                                    else:
-                                        message['content'] = None
-                                    
-                                    # Add tool_calls to message
                                     existing_tool_calls = message.get('tool_calls', [])
                                     message['tool_calls'] = existing_tool_calls + tool_calls
                             
@@ -984,9 +759,9 @@ class OllamaProxy:
                             kimi_suspicion_buffer = ""
                             current_model = data.get('model', 'unknown')
                             
-                            # Only enable XML tool call buffering for models that use XML/custom formats
-                            # This includes Kimi (custom markers) and Devstral/Mistral (generic XML)
-                            is_xml_tool_model = any(k in current_model.lower() for k in ['kimi', 'moonshot', 'devstral', 'mistral'])
+                            # Only enable Kimi tool call buffering for Kimi models
+                            # Other models (Qwen, Gemma, etc.) don't use this format
+                            is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
                             
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
@@ -1034,8 +809,8 @@ class OllamaProxy:
                                                                     content = delta.get('content', '') or ''
                                                                     reasoning = delta.get('reasoning', '') or ''
                                                     
-                                                    # Only do XML-specific buffering for supported models
-                                                    if is_xml_tool_model:
+                                                    # Only do Kimi-specific buffering for Kimi models
+                                                    if is_kimi_model:
                                                         # Combine content and reasoning for tool call detection
                                                         # Tool calls can appear in either field
                                                         combined_for_detection = content + reasoning
@@ -1052,34 +827,16 @@ class OllamaProxy:
                                                             combined_for_detection = kimi_suspicion_buffer + combined_for_detection
                                                             kimi_suspicion_buffer = ""
 
-                                                    # 1. Active Buffering State (for XML models)
-                                                    if is_xml_tool_model and kimi_buffering_active:
+                                                    # 1. Active Buffering State (only for Kimi)
+                                                    if is_kimi_model and kimi_buffering_active:
                                                         kimi_content_buffer += combined_for_detection
                                                         
                                                         # Check if section is complete
-                                                        # Check if section is complete (Kimi or Generic XML)
-                                                        is_complete = False
                                                         if '<|tool_calls_section_end|>' in kimi_content_buffer:
-                                                            is_complete = True
-                                                        elif '</function_calls>' in kimi_content_buffer:
-                                                            is_complete = True
-                                                        elif '</tool_call>' in kimi_content_buffer:
-                                                            # For multiple <tool_call> tags, we might want to wait for more?
-                                                            # But usually they come one by one or in a block. 
-                                                            # Let's assume </tool_call> ends a call, but check if loop continues?
-                                                            # Safer to wait for </tool_call>
-                                                            is_complete = True
-                                                            
-                                                        if is_complete:
-                                                            logger.info(f"[XML-BUFFER] Tool call section complete, processing buffer")
+                                                            logger.info(f"[KIMI] Tool call section complete, processing buffer")
                                                             
                                                             # Parse and convert the buffered content
-                                                            # Try Kimi parser first
                                                             clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
-                                                            
-                                                            # If not Kimi, try generic XML parser
-                                                            if not has_tool_calls:
-                                                                clean_content, tool_calls, has_tool_calls = parse_xml_tool_calls(kimi_content_buffer)
                                                             
                                                             if has_tool_calls:
                                                                 logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
@@ -1148,19 +905,19 @@ class OllamaProxy:
                                                             # Still buffering, wait for section end
                                                             continue
                                                     
-                                                    # 2. Check for Start Marker (for XML models)
-                                                    # Triggers: Kimi marker, or generic XML start tags
-                                                    start_markers = ['<|tool_calls_section_begin|>', '<function_calls>', '<tool_call>', '<invoke']
-                                                    if is_xml_tool_model and any(m in combined_for_detection for m in start_markers):
+                                                    # 2. Check for Start Marker (only for Kimi)
+                                                    if is_kimi_model and '<|tool_calls_section_begin|>' in combined_for_detection:
                                                         kimi_buffering_active = True
                                                         kimi_content_buffer = combined_for_detection
-                                                        logger.info(f"[XML-BUFFER] Tool call section started, buffering (from content/reasoning)")
+                                                        logger.info(f"[KIMI] Tool call section started, buffering (from {'content' if '<|tool_calls_section_begin|>' in content else 'reasoning'})")
                                                         # Start buffering, don't yield
                                                         continue
                                                         
-                                                    # 3. Check for Suspicious Ending (Partial Marker) - for XML models
+                                                    # 3. Check for Suspicious Ending (Partial Marker) - only for Kimi
                                                     # If content ends with '<' or '<|' or '<|t' etc., it might be a split marker.
-                                                    if is_xml_tool_model:
+                                                    # The longest marker prefix is about 26 chars.
+                                                    # Check if the end of content matches the beginning of the marker
+                                                    if is_kimi_model:
                                                         marker_start = "<|tool_calls_section_begin|>"
                                                         is_suspicious = False
                                                         
