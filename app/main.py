@@ -111,10 +111,30 @@ async def get_open_api_endpoint(username: str = Depends(verify_docs_credentials)
 # Disable response buffering for streaming
 @app.on_event("startup")
 async def startup_event():
+    import asyncio
+    from sqlalchemy import text
+    from app.database import async_session_maker
+    
     logger.info("Starting Ollama Proxy API with streaming support and PostgreSQL")
     
     # Connect to Redis
     await redis_manager.connect()
+    
+    # Wait for Database
+    logger.info("Waiting for database connection...")
+    retries = 30
+    for i in range(retries):
+        try:
+            async with async_session_maker() as session:
+                await session.execute(text("SELECT 1"))
+            logger.info("Database connection established")
+            break
+        except Exception as e:
+            if i == retries - 1:
+                logger.error(f"Failed to connect to database after {retries} attempts: {e}")
+                raise e
+            logger.warning(f"Database not ready yet, retrying in 1s... ({i+1}/{retries})")
+            await asyncio.sleep(1)
     
     # Start background tasks
     from app.background_tasks import start_background_tasks
