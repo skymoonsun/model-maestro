@@ -984,9 +984,9 @@ class OllamaProxy:
                             kimi_suspicion_buffer = ""
                             current_model = data.get('model', 'unknown')
                             
-                            # Only enable Kimi tool call buffering for Kimi models
-                            # Other models (Qwen, Gemma, etc.) don't use this format
-                            is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
+                            # Only enable XML tool call buffering for models that use XML/custom formats
+                            # This includes Kimi (custom markers) and Devstral/Mistral (generic XML)
+                            is_xml_tool_model = any(k in current_model.lower() for k in ['kimi', 'moonshot', 'devstral', 'mistral'])
                             
                             async for chunk in resp.aiter_raw():
                                 if not chunk:
@@ -1034,8 +1034,8 @@ class OllamaProxy:
                                                                     content = delta.get('content', '') or ''
                                                                     reasoning = delta.get('reasoning', '') or ''
                                                     
-                                                    # Only do Kimi-specific buffering for Kimi models
-                                                    if is_kimi_model:
+                                                    # Only do XML-specific buffering for supported models
+                                                    if is_xml_tool_model:
                                                         # Combine content and reasoning for tool call detection
                                                         # Tool calls can appear in either field
                                                         combined_for_detection = content + reasoning
@@ -1052,16 +1052,34 @@ class OllamaProxy:
                                                             combined_for_detection = kimi_suspicion_buffer + combined_for_detection
                                                             kimi_suspicion_buffer = ""
 
-                                                    # 1. Active Buffering State (only for Kimi)
-                                                    if is_kimi_model and kimi_buffering_active:
+                                                    # 1. Active Buffering State (for XML models)
+                                                    if is_xml_tool_model and kimi_buffering_active:
                                                         kimi_content_buffer += combined_for_detection
                                                         
                                                         # Check if section is complete
+                                                        # Check if section is complete (Kimi or Generic XML)
+                                                        is_complete = False
                                                         if '<|tool_calls_section_end|>' in kimi_content_buffer:
-                                                            logger.info(f"[KIMI] Tool call section complete, processing buffer")
+                                                            is_complete = True
+                                                        elif '</function_calls>' in kimi_content_buffer:
+                                                            is_complete = True
+                                                        elif '</tool_call>' in kimi_content_buffer:
+                                                            # For multiple <tool_call> tags, we might want to wait for more?
+                                                            # But usually they come one by one or in a block. 
+                                                            # Let's assume </tool_call> ends a call, but check if loop continues?
+                                                            # Safer to wait for </tool_call>
+                                                            is_complete = True
+                                                            
+                                                        if is_complete:
+                                                            logger.info(f"[XML-BUFFER] Tool call section complete, processing buffer")
                                                             
                                                             # Parse and convert the buffered content
+                                                            # Try Kimi parser first
                                                             clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+                                                            
+                                                            # If not Kimi, try generic XML parser
+                                                            if not has_tool_calls:
+                                                                clean_content, tool_calls, has_tool_calls = parse_xml_tool_calls(kimi_content_buffer)
                                                             
                                                             if has_tool_calls:
                                                                 logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
@@ -1130,19 +1148,19 @@ class OllamaProxy:
                                                             # Still buffering, wait for section end
                                                             continue
                                                     
-                                                    # 2. Check for Start Marker (only for Kimi)
-                                                    if is_kimi_model and '<|tool_calls_section_begin|>' in combined_for_detection:
+                                                    # 2. Check for Start Marker (for XML models)
+                                                    # Triggers: Kimi marker, or generic XML start tags
+                                                    start_markers = ['<|tool_calls_section_begin|>', '<function_calls>', '<tool_call>', '<invoke']
+                                                    if is_xml_tool_model and any(m in combined_for_detection for m in start_markers):
                                                         kimi_buffering_active = True
                                                         kimi_content_buffer = combined_for_detection
-                                                        logger.info(f"[KIMI] Tool call section started, buffering (from {'content' if '<|tool_calls_section_begin|>' in content else 'reasoning'})")
+                                                        logger.info(f"[XML-BUFFER] Tool call section started, buffering (from content/reasoning)")
                                                         # Start buffering, don't yield
                                                         continue
                                                         
-                                                    # 3. Check for Suspicious Ending (Partial Marker) - only for Kimi
+                                                    # 3. Check for Suspicious Ending (Partial Marker) - for XML models
                                                     # If content ends with '<' or '<|' or '<|t' etc., it might be a split marker.
-                                                    # The longest marker prefix is about 26 chars.
-                                                    # Check if the end of content matches the beginning of the marker
-                                                    if is_kimi_model:
+                                                    if is_xml_tool_model:
                                                         marker_start = "<|tool_calls_section_begin|>"
                                                         is_suspicious = False
                                                         
