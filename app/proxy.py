@@ -201,7 +201,7 @@ def parse_xml_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]
                 try:
                     tool_data = json.loads(json_str)
                     
-                    name = tool_data.get('name') or tool_data.get('function')
+                    name = tool_data.get('name') or tool_data.get('function') or tool_data.get('tool_name')
                     args = tool_data.get('arguments') or tool_data.get('args') or tool_data.get('parameters') or {}
                     
                     if isinstance(args, dict):
