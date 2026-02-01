@@ -242,17 +242,20 @@ class OllamaProxy:
             Configured AsyncClient with HTTP/2 support
         """
         if self._http_client is None:
-            # Configure connection limits
+            # Connection limits
+            # Increased for agentic workflows (Cursor Agent can spawn multiple requests)
             limits = httpx.Limits(
-                max_keepalive_connections=20,
-                max_connections=50,
+                max_keepalive_connections=40,
+                max_connections=100,
                 keepalive_expiry=300  # 5 minutes
             )
             
+            # Async HTTP client
+            # HTTP/2 disabled for better compatibility with Ollama
             self._http_client = httpx.AsyncClient(
-                timeout=600.0,
+                timeout=1200.0,  # 20 minutes (for long reasoning/tools)
                 limits=limits,
-                http2=True  # Enable HTTP/2
+                http2=False  # Disabled to prevent connection stability issues
             )
         
         return self._http_client
