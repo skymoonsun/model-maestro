@@ -161,6 +161,75 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
     return clean_content, tool_calls, len(tool_calls) > 0
 
 
+def parse_xml_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]:
+    """
+    Parse generic XML-style tool calls from content.
+    Used by models like Devstral/Mistral when native tool calling is disabled/unstable.
+    
+    Format:
+    <tool_call>
+    {"name": "function_name", "arguments": {"arg": "val"}}
+    </tool_call>
+    
+    Args:
+        content: The content string
+        
+    Returns:
+        Tuple of (clean_content, tool_calls, has_tool_calls)
+    """
+    if not content or '<tool_call>' not in content:
+        return content, [], False
+        
+    tool_calls = []
+    
+    # Pattern to match <tool_call>...json...</tool_call>
+    # Uses DOTALL to match across newlines
+    pattern = re.compile(r'<tool_call>\s*({.*?})\s*</tool_call>', re.DOTALL)
+    
+    matches = list(pattern.finditer(content))
+    if not matches:
+        return content, [], False
+        
+    # Remove tool calls from content to get clean content
+    clean_content = pattern.sub('', content).strip()
+    
+    for i, match in enumerate(matches):
+        json_str = match.group(1)
+        try:
+            tool_data = json.loads(json_str)
+            
+            # Normalize structure
+            # Case 1: {"name": "...", "arguments": {...}} (Standard)
+            # Case 2: {"function": "...", "args": ...} (Variant)
+            
+            name = tool_data.get('name') or tool_data.get('function')
+            args = tool_data.get('arguments') or tool_data.get('args') or tool_data.get('parameters') or {}
+            
+            if isinstance(args, dict):
+                args_str = json.dumps(args, ensure_ascii=False)
+            else:
+                args_str = str(args)
+                
+            if name:
+                tool_call = {
+                    "index": i,
+                    "id": f"call_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": args_str
+                    }
+                }
+                tool_calls.append(tool_call)
+                logger.info(f"[XML-PARSER] Parsed tool call: {name}")
+                
+        except json.JSONDecodeError:
+            logger.warning(f"[XML-PARSER] Failed to parse JSON in tool_call: {json_str[:50]}...")
+            continue
+            
+    return clean_content, tool_calls, len(tool_calls) > 0
+
+
 def convert_kimi_content_to_openai_delta(content: str, model: str) -> List[Dict[str, Any]]:
     """
     Convert Kimi content with tool calls to OpenAI delta format chunks.
@@ -398,7 +467,29 @@ class OllamaProxy:
                                     # Add tool_calls to delta (merge if already exists from reasoning)
                                     existing_tool_calls = delta.get('tool_calls', [])
                                     delta['tool_calls'] = existing_tool_calls + tool_calls
-                            
+                                    # Add tool_calls to delta (merge if already exists from reasoning)
+                                    existing_tool_calls = delta.get('tool_calls', [])
+                                    delta['tool_calls'] = existing_tool_calls + tool_calls
+
+                            # XML TOOL CALL FIX (Devstral/Generic):
+                            # Convert generic <tool_call> format to OpenAI format
+                            # This handles models explicitly instructed to use XML tags
+                            content = delta.get('content', '')
+                            if content and '<tool_call>' in content:
+                                clean_content, tool_calls, has_tool_calls = parse_xml_tool_calls(content)
+                                
+                                if has_tool_calls:
+                                    logger.info(f"[XML] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
+                                    # Update delta with clean content
+                                    if clean_content:
+                                        delta['content'] = clean_content
+                                    else:
+                                        # If no clean content, remove content field entirely
+                                        delta.pop('content', None)
+                                    
+                                    # Add tool_calls to delta
+                                    existing_tool_calls = delta.get('tool_calls', [])
+                                    delta['tool_calls'] = existing_tool_calls + tool_calls
                             choice_copy['delta'] = delta
                         
                         # Handle 'message' in non-streaming responses
@@ -438,6 +529,24 @@ class OllamaProxy:
                                         message['content'] = None
                                     
                                     # Add tool_calls to message (merge if already exists from reasoning)
+                                    existing_tool_calls = message.get('tool_calls', [])
+                                    message['tool_calls'] = existing_tool_calls + tool_calls
+
+                            # XML TOOL CALL FIX (Devstral/Generic):
+                            # Convert generic <tool_call> format to OpenAI format
+                            content = message.get('content', '')
+                            if content and '<tool_call>' in content:
+                                clean_content, tool_calls, has_tool_calls = parse_xml_tool_calls(content)
+                                
+                                if has_tool_calls:
+                                    logger.info(f"[XML] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
+                                    # Update message with clean content
+                                    if clean_content:
+                                        message['content'] = clean_content
+                                    else:
+                                        message['content'] = None
+                                    
+                                    # Add tool_calls to message
                                     existing_tool_calls = message.get('tool_calls', [])
                                     message['tool_calls'] = existing_tool_calls + tool_calls
                             
