@@ -381,7 +381,8 @@ class OllamaProxy:
     
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Map model names in request data from client format to Ollama format
+        Map model names in request data from client format to Ollama format.
+        Also handles downgrading tool calls to text/XML if tools are not supported.
         
         Args:
             data: Request data with potential model field
@@ -407,6 +408,73 @@ class OllamaProxy:
             data_copy['source'] = model_mapper.get_real_model_name(data_copy['source'])
         if 'destination' in data_copy:
             data_copy['destination'] = model_mapper.get_real_model_name(data_copy['destination'])
+
+        # ============================================================
+        # TOOL CALL DOWNGRADE: Convert OpenAI tool format to XML/Text
+        # ============================================================
+        # If 'tools' is NOT in data (meaning filtered out or not supported),
+        # we must convert any tool_calls in history to text to avoid 500 errors.
+        if 'tools' not in data_copy and 'messages' in data_copy:
+            messages = data_copy['messages']
+            new_messages = []
+            
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    new_messages.append(msg)
+                    continue
+                
+                msg_copy = msg.copy()
+                role = msg_copy.get('role')
+                
+                # Check for assistant message with tool_calls
+                if role == 'assistant' and 'tool_calls' in msg_copy:
+                    tool_calls = msg_copy.pop('tool_calls')
+                    content = msg_copy.get('content') or ''
+                    
+                    # Convert tool calls to XML
+                    for tc in tool_calls:
+                        if isinstance(tc, dict) and 'function' in tc:
+                            fn = tc['function']
+                            name = fn.get('name')
+                            args = fn.get('arguments')
+                            
+                            # Try to ensure arguments is a dict for cleaner JSON
+                            if isinstance(args, str):
+                                try:
+                                    args_dict = json.loads(args)
+                                    args_str = json.dumps(args_dict, ensure_ascii=False)
+                                except:
+                                    args_str = args
+                            else:
+                                args_str = json.dumps(args, ensure_ascii=False) if args else "{}"
+                            
+                            # Append to content in generic XML format
+                            # Using the format we parse: <tool_call>{"name":..., "arguments":...}</tool_call>
+                            tool_xml = {
+                                "name": name,
+                                "arguments": json.loads(args_str) if isinstance(args_str, str) and args_str.startswith('{') else args_str
+                            }
+                            content += f"\n\n<tool_call>{json.dumps(tool_xml, ensure_ascii=False)}</tool_call>"
+                    
+                    msg_copy['content'] = content
+                
+                # Check for tool result message
+                elif role == 'tool':
+                    # Convert 'tool' role to 'user' role with explicit output marker
+                    # This prevents Ollama from choking on unknown 'tool' role or missing tool_call_id
+                    msg_copy['role'] = 'user'
+                    original_content = msg_copy.get('content', '')
+                    tool_name = "unknown_tool" 
+                    # Note: We lose the tool name mapping here as we don't have the id-to-name map easily
+                    # But usually the model knows context from previous message
+                    
+                    msg_copy['content'] = f"<tool_output>\n{original_content}\n</tool_output>"
+                    # Remove tool_call_id if present
+                    msg_copy.pop('tool_call_id', None)
+                
+                new_messages.append(msg_copy)
+            
+            data_copy['messages'] = new_messages
         
         return data_copy
     
