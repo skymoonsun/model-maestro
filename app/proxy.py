@@ -469,8 +469,9 @@ class OllamaProxy:
                     # But usually the model knows context from previous message
                     
                     msg_copy['content'] = f"<tool_output>\n{original_content}\n</tool_output>"
-                    # Remove tool_call_id if present
+                    # Remove tool_call_id and name if present (Ollama strict user message format)
                     msg_copy.pop('tool_call_id', None)
+                    msg_copy.pop('name', None)
                 
                 new_messages.append(msg_copy)
             
