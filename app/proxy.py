@@ -166,10 +166,13 @@ def parse_xml_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]
     Parse generic XML-style tool calls from content.
     Used by models like Devstral/Mistral when native tool calling is disabled/unstable.
     
-    Format:
-    <tool_call>
-    {"name": "function_name", "arguments": {"arg": "val"}}
-    </tool_call>
+    Supported Formats:
+    1. <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    2. <function_calls>
+       <invoke name="tool_name">
+       <parameter name="arg_name">arg_value</parameter>
+       </invoke>
+       </function_calls>
     
     Args:
         content: The content string
@@ -177,56 +180,100 @@ def parse_xml_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]
     Returns:
         Tuple of (clean_content, tool_calls, has_tool_calls)
     """
-    if not content or '<tool_call>' not in content:
+    if not content:
         return content, [], False
         
     tool_calls = []
+    clean_content = content
+    has_matches = False
     
-    # Pattern to match <tool_call>...json...</tool_call>
-    # Uses DOTALL to match across newlines
-    pattern = re.compile(r'<tool_call>\s*({.*?})\s*</tool_call>', re.DOTALL)
-    
-    matches = list(pattern.finditer(content))
-    if not matches:
-        return content, [], False
+    # --- Format 1: <tool_call> JSON </tool_call> ---
+    if '<tool_call>' in content:
+        pattern1 = re.compile(r'<tool_call>\s*({.*?})\s*</tool_call>', re.DOTALL)
+        matches1 = list(pattern1.finditer(content))
         
-    # Remove tool calls from content to get clean content
-    clean_content = pattern.sub('', content).strip()
-    
-    for i, match in enumerate(matches):
-        json_str = match.group(1)
-        try:
-            tool_data = json.loads(json_str)
+        if matches1:
+            has_matches = True
+            clean_content = pattern1.sub('', clean_content).strip()
             
-            # Normalize structure
-            # Case 1: {"name": "...", "arguments": {...}} (Standard)
-            # Case 2: {"function": "...", "args": ...} (Variant)
+            for i, match in enumerate(matches1):
+                json_str = match.group(1)
+                try:
+                    tool_data = json.loads(json_str)
+                    
+                    name = tool_data.get('name') or tool_data.get('function')
+                    args = tool_data.get('arguments') or tool_data.get('args') or tool_data.get('parameters') or {}
+                    
+                    if isinstance(args, dict):
+                        args_str = json.dumps(args, ensure_ascii=False)
+                    else:
+                        args_str = str(args)
+                        
+                    if name:
+                        tool_call = {
+                            "index": len(tool_calls),
+                            "id": f"call_{uuid.uuid4().hex[:24]}",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": args_str
+                            }
+                        }
+                        tool_calls.append(tool_call)
+                        logger.info(f"[XML-PARSER] Parsed tool_call format: {name}")
+                except json.JSONDecodeError:
+                    pass
+
+    # --- Format 2: <function_calls><invoke>...</invoke></function_calls> ---
+    # This format is trickier as it uses XML tags for parameters
+    if '<function_calls>' in content or '<invoke' in content:
+        # Remove the outer <function_calls> tags first
+        clean_content = clean_content.replace('<function_calls>', '').replace('</function_calls>', '').strip()
+        
+        # Regex for <invoke> block
+        invoke_pattern = re.compile(r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>', re.DOTALL)
+        matches2 = list(invoke_pattern.finditer(content))
+        
+        if matches2:
+            has_matches = True
+            # Remove invoke blocks from clean content
+            clean_content = invoke_pattern.sub('', clean_content).strip()
             
-            name = tool_data.get('name') or tool_data.get('function')
-            args = tool_data.get('arguments') or tool_data.get('args') or tool_data.get('parameters') or {}
-            
-            if isinstance(args, dict):
-                args_str = json.dumps(args, ensure_ascii=False)
-            else:
-                args_str = str(args)
+            for match in matches2:
+                name = match.group(1)
+                inner_xml = match.group(2)
+                args = {}
                 
-            if name:
+                # Parse parameters from inner XML: <parameter name="foo">bar</parameter>
+                param_pattern = re.compile(r'<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>', re.DOTALL)
+                
+                for param_match in param_pattern.finditer(inner_xml):
+                    param_name = param_match.group(1)
+                    param_value = param_match.group(2).strip()
+                    args[param_name] = param_value
+                
+                # If no parameters found but there is content, maybe it's raw text or JSON
+                if not args and inner_xml.strip():
+                    try:
+                        # Try parsing as JSON first
+                        args = json.loads(inner_xml.strip())
+                    except:
+                        # Fallback: treat as 'input' or similar generic arg if needed, 
+                        # but for now we essentially rely on <parameter> tags.
+                        pass
+
                 tool_call = {
-                    "index": i,
+                    "index": len(tool_calls),
                     "id": f"call_{uuid.uuid4().hex[:24]}",
                     "type": "function",
                     "function": {
                         "name": name,
-                        "arguments": args_str
+                        "arguments": json.dumps(args, ensure_ascii=False)
                     }
                 }
                 tool_calls.append(tool_call)
-                logger.info(f"[XML-PARSER] Parsed tool call: {name}")
-                
-        except json.JSONDecodeError:
-            logger.warning(f"[XML-PARSER] Failed to parse JSON in tool_call: {json_str[:50]}...")
-            continue
-            
+                logger.info(f"[XML-PARSER] Parsed invoke format: {name}")
+
     return clean_content, tool_calls, len(tool_calls) > 0
 
 
