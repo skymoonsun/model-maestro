@@ -468,37 +468,14 @@ async def openai_chat_completions(
     # Key: model name prefix (matches any tag like :latest, :671b etc.)
     # Value: list of parameters that should be removed for this model
     model_unsupported_params = {
-        # Deepseek models - don't support tools
+        # Deepseek models - known issues with Ollama tool calling stability
         'deepseek': ['tools', 'tool_choice'],
-        # Kimi models - proxy converts tool calls to OpenAI format, only remove top_p
+        # Kimi models - natively supports tools, but proxy handles conversion.
+        # Removing top_p as it might not be compatible.
         'kimi': ['top_p'],
-        # Minimax models - don't support tools
-        'minimax': ['tools', 'tool_choice'],
-        # Gemini models - don't support tools, top_p, and some other params
-        'gemini': ['tools', 'tool_choice', 'top_p', 'presence_penalty', 'frequency_penalty'],
-        'gemma': ['tools', 'tool_choice'],
-        # Qwen models - generally good but may have issues with some params
-        'qwen': ['tools', 'tool_choice'],
-        # Claude models via Ollama - limited tool support
-        'claude': ['tools', 'tool_choice'],
-        # Llama models - varying tool support
-        'llama': ['tools', 'tool_choice'],
-        # Mistral models
-        'mistral': ['tools', 'tool_choice'],
-        'ministral': ['tools', 'tool_choice'],
-        # Phi models
-        'phi': ['tools', 'tool_choice'],
-        # CodeLlama
-        'codellama': ['tools', 'tool_choice'],
-        # Starcoder
-        'starcoder': ['tools', 'tool_choice'],
-        # User defined specific models
-        'rnj': ['tools', 'tool_choice'],
-        'devstral': ['tools', 'tool_choice'],
-        'nemotron': ['tools', 'tool_choice'],
-        'glm': ['tools', 'tool_choice'],
-        'gpt-oss': ['tools', 'tool_choice'],
-        'cogito': ['tools', 'tool_choice'],
+        # Gemini models - natively supports tools in Ollama.
+        # Removing specific params that might cause issues.
+        'gemini': ['top_p', 'presence_penalty', 'frequency_penalty'],
     }
     
     # Find unsupported params for this model using prefix matching
