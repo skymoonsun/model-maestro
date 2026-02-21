@@ -806,6 +806,7 @@ class OllamaProxy:
                                                 # Extract JSON after "data: "
                                                 json_str = line[6:].decode('utf-8').strip()
                                                 if json_str and json_str != '[DONE]':
+                                                    logger.debug(f"[OLLAMA IN] {json_str}")
                                                     json_data = json.loads(json_str)
                                                     
                                                     # First map/normalize the model data
@@ -1174,11 +1175,14 @@ class OllamaProxy:
                                                     # ========================================
                                                     
                                                     if not should_skip:
-                                                        if has_reasoning and content_str:
-                                                            # Split into two chunks, preservation of 'role' and other fields is important
+                                                        if reasoning_str and content_str:
+                                                            # Split into two chunks
                                                             r_chunk = json.loads(json.dumps(mapped_data))
-                                                            # Keep fields like 'role' from the original delta
                                                             r_delta = r_chunk['choices'][0].get('delta', {})
+                                                            # Strip role from subsequent chunks
+                                                            if first_chunk_sent:
+                                                                r_delta.pop('role', None)
+                                                            
                                                             new_r_delta = {k: v for k, v in r_delta.items() if k not in ('content', 'tool_calls')}
                                                             new_r_delta['reasoning_content'] = reasoning_str
                                                             r_chunk['choices'][0]['delta'] = new_r_delta
@@ -1188,8 +1192,9 @@ class OllamaProxy:
                                                             
                                                             c_chunk = json.loads(json.dumps(mapped_data))
                                                             c_delta = c_chunk['choices'][0].get('delta', {})
-                                                            # For the second chunk, we usually don't need 'role' again, but keeping it is safer than losing it.
-                                                            # Actually, OpenAI only sends 'role' in the first chunk.
+                                                            # Second chunk is always subsequent
+                                                            c_delta.pop('role', None)
+                                                            
                                                             new_c_delta = {k: v for k, v in c_delta.items() if k not in ('reasoning_content', 'tool_calls')}
                                                             new_c_delta['content'] = content_str
                                                             c_chunk['choices'][0]['delta'] = new_c_delta
@@ -1200,6 +1205,10 @@ class OllamaProxy:
                                                             # Normal yield - update delta with our intercepted values
                                                             if isinstance(mapped_data.get('choices'), list) and len(mapped_data['choices']) > 0:
                                                                 m_delta = mapped_data['choices'][0].get('delta', {})
+                                                                # Strip role from subsequent chunks
+                                                                if first_chunk_sent:
+                                                                    m_delta.pop('role', None)
+                                                                
                                                                 if content_str is not None: m_delta['content'] = content_str
                                                                 if has_reasoning: m_delta['reasoning_content'] = reasoning_str
                                                                 # If it had reasoning field (Ollama), ensure it's removed in favor of reasoning_content
