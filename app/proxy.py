@@ -382,6 +382,10 @@ class OllamaProxy:
                                     # Add tool_calls to delta (merge if already exists)
                                     existing_tool_calls = delta.get('tool_calls', [])
                                     delta['tool_calls'] = existing_tool_calls + tool_calls_from_reasoning
+                                    
+                            # CURSOR COMPATIBILITY: Cursor expects 'reasoning_content' instead of 'reasoning'
+                            if 'reasoning' in delta:
+                                delta['reasoning_content'] = delta.pop('reasoning')
                             
                             # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
                             # to OpenAI's standard tool_calls format (in content)
@@ -425,6 +429,10 @@ class OllamaProxy:
                                     # Add tool_calls to message (merge if already exists)
                                     existing_tool_calls = message.get('tool_calls', [])
                                     message['tool_calls'] = existing_tool_calls + tool_calls_from_reasoning
+                            
+                            # CURSOR COMPATIBILITY: Cursor expects 'reasoning_content' instead of 'reasoning'
+                            if 'reasoning' in message:
+                                message['reasoning_content'] = message.pop('reasoning')
                             
                             # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
                             # to OpenAI's standard tool_calls format (non-streaming, in content)
