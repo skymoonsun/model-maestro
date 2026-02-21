@@ -718,6 +718,10 @@ class OllamaProxy:
                     logger.info(f"[STREAM START] max_tokens: {data.get('max_tokens', 'not set')}, temperature: {data.get('temperature', 'not set')}")
                     
                     try:
+                        # Log tools if present
+                        if data.get("tools"):
+                            logger.info(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in data['tools']]}")
+                        
                         async with client.stream("POST", url, json=data) as resp:
                             logger.info(f"[STREAM] Ollama response status: {resp.status_code}")
                             logger.info(f"[STREAM] Ollama response headers: {dict(resp.headers)}")
@@ -809,11 +813,8 @@ class OllamaProxy:
                                                 json_str = line[6:].decode('utf-8').strip()
                                                 if json_str and json_str != '[DONE]':
                                                     logger.info(f"[OLLAMA IN] {json_str}")
-                                                    json_data = json.loads(json_str)
-                                                    
-                                                    # First map/normalize the model data
-                                                    # THIS IS CRITICAL: Moves reasoning to content
-                                                    json_data = self._map_model_from_ollama(json_data)
+                                                    json_data = json.loads(json_str) 
+                                                    # Don't map yet, we'll map below after Kimi check or in normal path
                                                     
                                                     # KIMI TOOL CALL BUFFERING (only for Kimi models):
                                                     # Check if this chunk contains Kimi tool call markers
@@ -963,6 +964,10 @@ class OllamaProxy:
                                                     
                                                     # Normal processing (no Kimi detection)
                                                     mapped_data = self._map_model_from_ollama(json_data)
+                                                    # Extract delta for convenience
+                                                    delta_obj = {}
+                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                        delta_obj = mapped_data['choices'][0].get('delta', {})
                                                     
                                                     # If we had a suspicion buffer that turned out to be false alarm (combined above),
                                                     # we need to make sure we use the COMBINED content, not just the current chunk content.
@@ -1183,6 +1188,7 @@ class OllamaProxy:
                                                             r_chunk = json.loads(json.dumps(mapped_data))
                                                             r_delta = r_chunk['choices'][0].get('delta', {})
                                                             # Strip role from subsequent chunks
+                                                            has_role = 'role' in r_delta
                                                             if first_chunk_sent:
                                                                 r_delta.pop('role', None)
                                                             
@@ -1190,7 +1196,7 @@ class OllamaProxy:
                                                             new_r_delta['reasoning_content'] = reasoning_str
                                                             r_chunk['choices'][0]['delta'] = new_r_delta
                                                             
-                                                            logger.info(f"[PROXY YIELD REASONING SPLIT] {json.dumps(r_chunk, ensure_ascii=False)}")
+                                                            logger.info(f"[PROXY YIELD REASONING SPLIT] (Role: {has_role and not first_chunk_sent}) {json.dumps(r_chunk, ensure_ascii=False)}")
                                                             yield b'data: ' + json.dumps(r_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             first_chunk_sent = True
                                                             
