@@ -776,6 +776,7 @@ class OllamaProxy:
                             
                             # State for capturing <think> tag generated natively by models like DeepSeek-R1 or GLM-5
                             in_thinking = False
+                            think_suspicion = ""
                             
                             # Only enable Kimi tool call buffering for Kimi models
                             # Other models (Qwen, Gemma, etc.) don't use this format
@@ -990,27 +991,57 @@ class OllamaProxy:
                                                         # FIX: Cursor also crashes if we omit `reasoning_content` which might be passed by `_map_model_from_ollama` 
                                                         # when thinking models are used. We shouldn't skip chunks that strictly have reasoning!
                                                         has_reasoning = 'reasoning_content' in delta_obj
-                                                        reasoning_str = delta_obj.get('reasoning_content')
+                                                        reasoning_str = delta_obj.get('reasoning_content', "") or ""
                                                         
                                                         # DYNAMIC <think> TAG INTERCEPTION
                                                         # Some models stream out <think> tags. Cursor expects these to be in reasoning_content.
                                                         if content_str is not None:
-                                                            if "<think>" in content_str:
-                                                                in_thinking = True
-                                                                content_str = content_str.replace("<think>", "")
+                                                            if think_suspicion:
+                                                                content_str = think_suspicion + content_str
+                                                                think_suspicion = ""
                                                             
-                                                            if "</think>" in content_str:
-                                                                parts = content_str.split("</think>")
-                                                                think_part = parts[0]
-                                                                content_str = "</think>".join(parts[1:])
-                                                                
-                                                                reasoning_str = (reasoning_str or "") + think_part
-                                                                has_reasoning = True
-                                                                in_thinking = False
-                                                            elif in_thinking:
-                                                                reasoning_str = (reasoning_str or "") + content_str
-                                                                has_reasoning = True
-                                                                content_str = ""
+                                                            _was_not_in_thinking = not in_thinking
+                                                            if _was_not_in_thinking:
+                                                                if "<think>" in content_str:
+                                                                    parts = content_str.split("<think>")
+                                                                    before_think = parts[0]
+                                                                    after_think = "<think>".join(parts[1:])
+                                                                    in_thinking = True
+                                                                    
+                                                                    if "</think>" in after_think:
+                                                                        sub_parts = after_think.split("</think>")
+                                                                        reasoning_str += sub_parts[0]
+                                                                        has_reasoning = True
+                                                                        content_str = before_think + "</think>".join(sub_parts[1:])
+                                                                        in_thinking = False
+                                                                    else:
+                                                                        reasoning_str += after_think
+                                                                        has_reasoning = True
+                                                                        content_str = before_think
+                                                                else:
+                                                                    for i in range(1, 7):
+                                                                        if content_str.endswith("<think>"[:i]):
+                                                                            think_suspicion = content_str[-i:]
+                                                                            content_str = content_str[:-i]
+                                                                            break
+                                                            
+                                                            if in_thinking and not _was_not_in_thinking:
+                                                                if "</think>" in content_str:
+                                                                    parts = content_str.split("</think>")
+                                                                    reasoning_str += parts[0]
+                                                                    has_reasoning = True
+                                                                    content_str = "</think>".join(parts[1:])
+                                                                    in_thinking = False
+                                                                else:
+                                                                    for i in range(1, 8):
+                                                                        if content_str.endswith("</think>"[:i]):
+                                                                            think_suspicion = content_str[-i:]
+                                                                            content_str = content_str[:-i]
+                                                                            break
+                                                                    if content_str:
+                                                                        reasoning_str += content_str
+                                                                        has_reasoning = True
+                                                                        content_str = ""
                                                         
                                                         # Apply mapped content/reasoning back to mapped_data in case we yield it directly
                                                         if isinstance(mapped_data, dict) and 'choices' in mapped_data:
