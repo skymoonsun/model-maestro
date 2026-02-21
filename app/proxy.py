@@ -774,6 +774,9 @@ class OllamaProxy:
                             kimi_suspicion_buffer = ""
                             current_model = data.get('model', 'unknown')
                             
+                            # State for capturing <think> tag generated natively by models like DeepSeek-R1 or GLM-5
+                            in_thinking = False
+                            
                             # Only enable Kimi tool call buffering for Kimi models
                             # Other models (Qwen, Gemma, etc.) don't use this format
                             is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
@@ -988,6 +991,32 @@ class OllamaProxy:
                                                         # when thinking models are used. We shouldn't skip chunks that strictly have reasoning!
                                                         has_reasoning = 'reasoning_content' in delta_obj
                                                         reasoning_str = delta_obj.get('reasoning_content')
+                                                        
+                                                        # DYNAMIC <think> TAG INTERCEPTION
+                                                        # Some models stream out <think> tags. Cursor expects these to be in reasoning_content.
+                                                        if content_str is not None:
+                                                            if "<think>" in content_str:
+                                                                in_thinking = True
+                                                                content_str = content_str.replace("<think>", "")
+                                                            
+                                                            if "</think>" in content_str:
+                                                                parts = content_str.split("</think>")
+                                                                think_part = parts[0]
+                                                                content_str = "</think>".join(parts[1:])
+                                                                
+                                                                reasoning_str = (reasoning_str or "") + think_part
+                                                                has_reasoning = True
+                                                                in_thinking = False
+                                                            elif in_thinking:
+                                                                reasoning_str = (reasoning_str or "") + content_str
+                                                                has_reasoning = True
+                                                                content_str = ""
+                                                        
+                                                        # Apply mapped content/reasoning back to mapped_data in case we yield it directly
+                                                        if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                            mapped_data['choices'][0]['delta']['content'] = content_str
+                                                            if has_reasoning:
+                                                                mapped_data['choices'][0]['delta']['reasoning_content'] = reasoning_str
                                                         
                                                         if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
                                                             should_skip = True
