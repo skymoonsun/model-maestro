@@ -1026,34 +1026,48 @@ class OllamaProxy:
                                                             first_chunk_sent = True
                                                             
                                                         # When the tool call stream finishes, yield the fully assembled tool calls
-                                                        if fr == 'tool_calls' or (fr == 'stop' and pending_tool_calls):
-                                                            if pending_tool_calls:
-                                                                assembled_calls = []
-                                                                for idx in sorted(pending_tool_calls.keys()):
-                                                                    t = pending_tool_calls[idx]
-                                                                    assembled_calls.append({
-                                                                        "index": idx,
-                                                                        "id": t['id'],
-                                                                        "type": t['type'],
-                                                                        "function": {
-                                                                            "name": t['function']['name'],
-                                                                            "arguments": t['function']['arguments']
-                                                                        }
-                                                                    })
-                                                                
-                                                                tool_chunk = json.loads(json.dumps(mapped_data))
-                                                                tool_chunk['choices'][0]['delta'] = {'tool_calls': assembled_calls}
-                                                                tool_chunk['choices'][0]['finish_reason'] = None
-                                                                yield b'data: ' + json.dumps(tool_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                first_chunk_sent = True
-                                                                pending_tool_calls = {}
-                                                                
-                                                                # After yielding fully assembled tool calls, yield the finish_reason chunk
-                                                                finish_chunk = json.loads(json.dumps(mapped_data))
-                                                                finish_chunk['choices'][0]['delta'] = {}
-                                                                finish_chunk['choices'][0]['finish_reason'] = fr
-                                                                yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                should_skip = True
+                                                        # Flushing happens if we receive a finish_reason OR if the stream transitioned away from tool_calls to something else (content etc.)
+                                                        flush_tools = False
+                                                        if pending_tool_calls:
+                                                            if fr in ('tool_calls', 'stop'):
+                                                                flush_tools = True
+                                                            elif not ('tool_calls' in delta_obj and delta_obj['tool_calls']):
+                                                                flush_tools = True
+
+                                                        if flush_tools:
+                                                            assembled_calls = []
+                                                            for idx in sorted(pending_tool_calls.keys()):
+                                                                t = pending_tool_calls[idx]
+                                                                assembled_calls.append({
+                                                                    "index": idx,
+                                                                    "id": t['id'],
+                                                                    "type": t['type'],
+                                                                    "function": {
+                                                                        "name": t['function']['name'],
+                                                                        "arguments": t['function']['arguments']
+                                                                    }
+                                                                })
+                                                            
+                                                            tool_chunk = json.loads(json.dumps(mapped_data))
+                                                            tool_chunk['choices'][0]['delta'] = {'tool_calls': assembled_calls}
+                                                            tool_chunk['choices'][0]['finish_reason'] = None
+                                                            yield b'data: ' + json.dumps(tool_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
+                                                            pending_tool_calls = {}
+                                                            
+                                                            # After yielding fully assembled tool calls, yield the finish_reason chunk
+                                                            finish_chunk = json.loads(json.dumps(mapped_data))
+                                                            finish_chunk['choices'][0]['delta'] = {}
+                                                            # Use the actual finish reason if it was provided, otherwise default to 'tool_calls'
+                                                            finish_chunk['choices'][0]['finish_reason'] = fr if fr else 'tool_calls'
+                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            
+                                                            # If this chunk ONLY contained a finish_reason (we skip it).
+                                                            # But if it contained content (because it was a transition chunk), we MUST NOT skip it!
+                                                            if not (content_str or reasoning_str) and not fr:
+                                                                 should_skip = True
+                                                            if fr:
+                                                                 should_skip = True
                                                     # ========================================
                                                     
                                                     if not should_skip:
