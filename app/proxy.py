@@ -748,6 +748,10 @@ class OllamaProxy:
                             
                             # Buffer to accumulate partial lines
                             buffer = b""
+                            
+                            # Pending tool calls buffer for handling broken JSON streams from Cursor
+                            pending_tool_calls: Dict[int, Dict[str, Any]] = {}
+                            
                             prompt_tokens = 0
                             completion_tokens = 0
                             first_chunk_sent = False
@@ -965,6 +969,70 @@ class OllamaProxy:
                                                     # Cursor needs these chunks to understand the response structure
                                                     should_skip = False
                                                     
+                                                    # ========= TOOL CALL BUFFERING =========
+                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data and len(mapped_data['choices']) > 0:
+                                                        choice = mapped_data['choices'][0]
+                                                        delta_obj = choice.get('delta', {})
+                                                        content_str = delta_obj.get('content')
+                                                        fr = choice.get('finish_reason')
+                                                        
+                                                        if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
+                                                            should_skip = True
+                                                            for tc in delta_obj['tool_calls']:
+                                                                idx = tc.get('index', 0)
+                                                                if idx not in pending_tool_calls:
+                                                                    # Initialize pending tool call
+                                                                    pending_tool_calls[idx] = {
+                                                                        "id": tc.get('id', f"call_{uuid.uuid4().hex[:8]}"),
+                                                                        "type": tc.get('type', 'function'),
+                                                                        "function": {"name": "", "arguments": ""}
+                                                                    }
+                                                                # Accumulate name and arguments
+                                                                tc_func = tc.get('function', {})
+                                                                if tc_func.get('name'):
+                                                                    pending_tool_calls[idx]["function"]["name"] += tc_func['name']
+                                                                if tc_func.get('arguments'):
+                                                                    pending_tool_calls[idx]["function"]["arguments"] += tc_func['arguments']
+                                                        
+                                                        # If chunk has pure content but also buffered a tool call, yield the content only
+                                                        if content_str and should_skip:
+                                                            content_chunk = json.loads(json.dumps(mapped_data))
+                                                            content_chunk['choices'][0]['delta'] = {'content': content_str}
+                                                            content_chunk['choices'][0]['finish_reason'] = None
+                                                            yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
+                                                            
+                                                        # When the tool call stream finishes, yield the fully assembled tool calls
+                                                        if fr == 'tool_calls' or (fr == 'stop' and pending_tool_calls):
+                                                            if pending_tool_calls:
+                                                                assembled_calls = []
+                                                                for idx in sorted(pending_tool_calls.keys()):
+                                                                    t = pending_tool_calls[idx]
+                                                                    assembled_calls.append({
+                                                                        "index": idx,
+                                                                        "id": t['id'],
+                                                                        "type": t['type'],
+                                                                        "function": {
+                                                                            "name": t['function']['name'],
+                                                                            "arguments": t['function']['arguments']
+                                                                        }
+                                                                    })
+                                                                
+                                                                tool_chunk = json.loads(json.dumps(mapped_data))
+                                                                tool_chunk['choices'][0]['delta'] = {'tool_calls': assembled_calls}
+                                                                tool_chunk['choices'][0]['finish_reason'] = None
+                                                                yield b'data: ' + json.dumps(tool_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                first_chunk_sent = True
+                                                                pending_tool_calls = {}
+                                                                
+                                                                # After yielding fully assembled tool calls, yield the finish_reason chunk
+                                                                finish_chunk = json.loads(json.dumps(mapped_data))
+                                                                finish_chunk['choices'][0]['delta'] = {}
+                                                                finish_chunk['choices'][0]['finish_reason'] = fr
+                                                                yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                should_skip = True
+                                                    # ========================================
+                                                    
                                                     if not should_skip:
                                                         # SSE format: data: {...}\n\n (double newline!)
                                                         yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
@@ -1139,23 +1207,90 @@ class OllamaProxy:
                                                     continue
                                                 
                                                 # Normal processing (no Kimi detection)
-                                                # If we had a suspicion buffer that turned out to be false alarm (combined above),
-                                                # we need to make sure we use the COMBINED content.
-                                                if content != (mapped_data['choices'][0]['delta'].get('content', '') or ''):
-                                                    mapped_data['choices'][0]['delta']['content'] = content
+                                                if content != (mapped_data.get('message', {}).get('content', '') or ''):
+                                                    if 'message' in mapped_data:
+                                                        mapped_data['message']['content'] = content
+                                                if 'choices' in mapped_data and mapped_data['choices']:
+                                                    if content != (mapped_data['choices'][0].get('delta', {}).get('content', '') or ''):
+                                                        mapped_data['choices'][0]['delta']['content'] = content
                                                 
-                                                # Extract token usage if available
                                                 if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
                                                     prompt_tokens += mapped_data.get('prompt_eval_count', 0)
                                                 if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
                                                     completion_tokens += mapped_data.get('eval_count', 0)
                                                 
-                                                # For OpenAI endpoints, convert NDJSON to SSE format
-                                                if is_openai_endpoint:
-                                                    yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                else:
-                                                    yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                first_chunk_sent = True
+                                                should_skip = False
+                                                
+                                                # TOOL CALL BUFFERING FOR OLLAMA NDJSON
+                                                if isinstance(mapped_data, dict):
+                                                    msg = mapped_data.get('message', {})
+                                                    if 'tool_calls' in msg and msg['tool_calls']:
+                                                        should_skip = True
+                                                        for tc in msg['tool_calls']:
+                                                            # native ollama might not use index, use function name as hash or index if present
+                                                            idx = tc.get('index', len(pending_tool_calls))
+                                                            if idx not in pending_tool_calls:
+                                                                pending_tool_calls[idx] = {
+                                                                    "function": {"name": "", "arguments": ""}
+                                                                }
+                                                            tc_func = tc.get('function', {})
+                                                            if tc_func.get('name'):
+                                                                pending_tool_calls[idx]["function"]["name"] += tc_func['name']
+                                                            if 'arguments' in tc_func:
+                                                                # If arguments is already a dict, stringify it so we can accumulate properly
+                                                                # or if it's string, just accumulate.
+                                                                arg_val = tc_func['arguments']
+                                                                if isinstance(arg_val, dict):
+                                                                    arg_val = json.dumps(arg_val)
+                                                                pending_tool_calls[idx]["function"]["arguments"] += arg_val
+                                                    
+                                                    content_str = msg.get('content', '')
+                                                    is_done = mapped_data.get('done', False)
+
+                                                    if content_str and should_skip:
+                                                        # yield just content
+                                                        content_chunk = json.loads(json.dumps(mapped_data))
+                                                        content_chunk['message'] = {'role': 'assistant', 'content': content_str}
+                                                        content_chunk['done'] = False
+                                                        yield json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                        first_chunk_sent = True
+                                                    
+                                                    if is_done and pending_tool_calls:
+                                                        # parse arguments back into Object as Cursor requires for NDJSON
+                                                        formatted_calls = []
+                                                        for idx in sorted(pending_tool_calls.keys()):
+                                                            t = pending_tool_calls[idx]
+                                                            args_str = t['function']['arguments']
+                                                            try:
+                                                                parsed_args = json.loads(args_str) if args_str else {}
+                                                            except json.JSONDecodeError:
+                                                                parsed_args = {}
+                                                                
+                                                            formatted_calls.append({
+                                                                "function": {
+                                                                    "name": t['function']['name'],
+                                                                    "arguments": parsed_args
+                                                                }
+                                                            })
+                                                            
+                                                        tool_chunk = json.loads(json.dumps(mapped_data))
+                                                        tool_chunk['message'] = {
+                                                            'role': 'assistant', 
+                                                            'content': '', 
+                                                            'tool_calls': formatted_calls
+                                                        }
+                                                        tool_chunk['done'] = True
+                                                        yield json.dumps(tool_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                        first_chunk_sent = True
+                                                        pending_tool_calls = {}
+                                                        should_skip = True
+
+                                                if not should_skip:
+                                                    if is_openai_endpoint:
+                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                    else:
+                                                        yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                    first_chunk_sent = True
                                         
                                         except (json.JSONDecodeError, UnicodeDecodeError) as e:
                                             # Log parse errors for debugging
