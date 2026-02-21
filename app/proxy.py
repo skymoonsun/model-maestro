@@ -976,6 +976,11 @@ class OllamaProxy:
                                                         content_str = delta_obj.get('content')
                                                         fr = choice.get('finish_reason')
                                                         
+                                                        # FIX: Cursor also crashes if we omit `reasoning_content` which might be passed by `_map_model_from_ollama` 
+                                                        # when thinking models are used. We shouldn't skip chunks that strictly have reasoning!
+                                                        has_reasoning = 'reasoning_content' in delta_obj
+                                                        reasoning_str = delta_obj.get('reasoning_content')
+                                                        
                                                         if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
                                                             should_skip = True
                                                             for tc in delta_obj['tool_calls']:
@@ -995,10 +1000,20 @@ class OllamaProxy:
                                                                     pending_tool_calls[idx]["function"]["arguments"] += tc_func['arguments']
                                                         
                                                         # If chunk has pure content but also buffered a tool call, yield the content only
-                                                        if content_str and should_skip:
+                                                        if (content_str or reasoning_str) and should_skip:
                                                             content_chunk = json.loads(json.dumps(mapped_data))
-                                                            content_chunk['choices'][0]['delta'] = {'content': content_str}
+                                                            content_chunk['choices'][0]['delta'] = {}
+                                                            if content_str is not None:
+                                                                content_chunk['choices'][0]['delta']['content'] = content_str
+                                                            if has_reasoning:
+                                                                content_chunk['choices'][0]['delta']['reasoning_content'] = reasoning_str
+                                                                
                                                             content_chunk['choices'][0]['finish_reason'] = None
+                                                            
+                                                            # Keep tool_calls empty
+                                                            if 'tool_calls' in content_chunk['choices'][0].get('delta', {}):
+                                                                del content_chunk['choices'][0]['delta']['tool_calls']
+                                                                
                                                             yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             first_chunk_sent = True
                                                             
