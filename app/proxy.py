@@ -385,7 +385,9 @@ class OllamaProxy:
                                     
                             # CURSOR COMPATIBILITY: Cursor expects 'reasoning_content' instead of 'reasoning'
                             if 'reasoning' in delta:
-                                delta['reasoning_content'] = delta.pop('reasoning')
+                                r_val = delta.pop('reasoning')
+                                if r_val: # Only map if not empty
+                                    delta['reasoning_content'] = r_val
                             
                             # KIMI TOOL CALL FIX: Convert Kimi's custom tool call format
                             # to OpenAI's standard tool_calls format (in content)
@@ -806,7 +808,7 @@ class OllamaProxy:
                                                 # Extract JSON after "data: "
                                                 json_str = line[6:].decode('utf-8').strip()
                                                 if json_str and json_str != '[DONE]':
-                                                    logger.debug(f"[OLLAMA IN] {json_str}")
+                                                    logger.info(f"[OLLAMA IN] {json_str}")
                                                     json_data = json.loads(json_str)
                                                     
                                                     # First map/normalize the model data
@@ -989,10 +991,9 @@ class OllamaProxy:
                                                         content_str = delta_obj.get('content')
                                                         fr = choice.get('finish_reason')
                                                         
-                                                        # FIX: Cursor also crashes if we omit `reasoning_content` which might be passed by `_map_model_from_ollama` 
-                                                        # when thinking models are used. We shouldn't skip chunks that strictly have reasoning!
-                                                        has_reasoning = 'reasoning_content' in delta_obj
+                                                        # FIX: Only set has_reasoning if it's truthy to avoid empty reasoning_content: ""
                                                         reasoning_str = delta_obj.get('reasoning_content', "") or ""
+                                                        has_reasoning = bool(reasoning_str)
                                                         
                                                         # DYNAMIC <think> TAG INTERCEPTION
                                                         # Some models stream out <think> tags or partial tags.
@@ -1224,6 +1225,9 @@ class OllamaProxy:
                                                                     final_delta.pop('role', None)
                                                                 
                                                                 # 2. Handle reasoning vs content
+                                                                if final_delta.get('reasoning_content') == "":
+                                                                    final_delta.pop('reasoning_content', None)
+                                                                
                                                                 if 'reasoning_content' in final_delta:
                                                                     # If we have reasoning, usually we don't want empty content
                                                                     if final_delta.get('content') == "":
@@ -1662,9 +1666,8 @@ class OllamaProxy:
             if method.upper() == "GET":
                 response = await client.get(url)
             elif method.upper() == "POST":
-                # Log request data for debugging (only in development)
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Sending request to Ollama: {url}, data: {json.dumps(data, ensure_ascii=False)}")
+                # Log request data for debugging
+                logger.info(f"Sending request to Ollama: {url}")
                 response = await client.post(url, json=data)
             elif method.upper() == "DELETE":
                 response = await client.delete(url, json=data)
