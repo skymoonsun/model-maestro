@@ -1106,6 +1106,8 @@ class OllamaProxy:
                                                             if has_reasoning:
                                                                 reasoning_chunk = json.loads(json.dumps(mapped_data))
                                                                 r_delta = reasoning_chunk['choices'][0].get('delta', {})
+                                                                if first_chunk_sent:
+                                                                    r_delta.pop('role', None)
                                                                 new_r_delta = {k: v for k, v in r_delta.items() if k not in ('content', 'tool_calls')}
                                                                 new_r_delta['reasoning_content'] = reasoning_str
                                                                 reasoning_chunk['choices'][0]['delta'] = new_r_delta
@@ -1113,10 +1115,13 @@ class OllamaProxy:
                                                                 
                                                                 logger.info(f"[PROXY YIELD REASONING + TC SKIP] {json.dumps(reasoning_chunk, ensure_ascii=False)}")
                                                                 yield b'data: ' + json.dumps(reasoning_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                first_chunk_sent = True
                                                             
                                                             if content_str:
                                                                 content_chunk = json.loads(json.dumps(mapped_data))
                                                                 c_delta = content_chunk['choices'][0].get('delta', {})
+                                                                if first_chunk_sent:
+                                                                    c_delta.pop('role', None)
                                                                 new_c_delta = {k: v for k, v in c_delta.items() if k not in ('reasoning_content', 'tool_calls')}
                                                                 new_c_delta['content'] = content_str
                                                                 content_chunk['choices'][0]['delta'] = new_c_delta
@@ -1124,8 +1129,7 @@ class OllamaProxy:
                                                                 
                                                                 logger.info(f"[PROXY YIELD CONTENT + TC SKIP] {json.dumps(content_chunk, ensure_ascii=False)}")
                                                                 yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                            
-                                                            first_chunk_sent = True
+                                                                first_chunk_sent = True
                                                             
                                                         # When the tool call stream finishes, yield the fully assembled tool calls
                                                         # Flushing happens if we receive a finish_reason OR if the stream transitioned away from tool_calls to something else (content etc.)
@@ -1168,9 +1172,7 @@ class OllamaProxy:
                                                             
                                                             # If this chunk ONLY contained a finish_reason (we skip it).
                                                             # But if it contained content (because it was a transition chunk), we MUST NOT skip it!
-                                                            if not (content_str or reasoning_str) and not fr:
-                                                                 should_skip = True
-                                                            if fr:
+                                                                                                                         if flush_tools:
                                                                  should_skip = True
                                                     # ========================================
                                                     
@@ -1189,6 +1191,7 @@ class OllamaProxy:
                                                             
                                                             logger.info(f"[PROXY YIELD REASONING SPLIT] {json.dumps(r_chunk, ensure_ascii=False)}")
                                                             yield b'data: ' + json.dumps(r_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
                                                             
                                                             c_chunk = json.loads(json.dumps(mapped_data))
                                                             c_delta = c_chunk['choices'][0].get('delta', {})
@@ -1202,21 +1205,38 @@ class OllamaProxy:
                                                             logger.info(f"[PROXY YIELD CONTENT SPLIT] {json.dumps(c_chunk, ensure_ascii=False)}")
                                                             yield b'data: ' + json.dumps(c_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                         else:
-                                                            # Normal yield - update delta with our intercepted values
+                                                            # FINAL CLEANUP FOR CURSOR COMPATIBILITY
                                                             if isinstance(mapped_data.get('choices'), list) and len(mapped_data['choices']) > 0:
-                                                                m_delta = mapped_data['choices'][0].get('delta', {})
-                                                                # Strip role from subsequent chunks
-                                                                if first_chunk_sent:
-                                                                    m_delta.pop('role', None)
+                                                                choice = mapped_data['choices'][0]
+                                                                final_delta = choice.get('delta', {})
                                                                 
-                                                                if content_str is not None: m_delta['content'] = content_str
-                                                                if has_reasoning: m_delta['reasoning_content'] = reasoning_str
-                                                                # If it had reasoning field (Ollama), ensure it's removed in favor of reasoning_content
-                                                                if 'reasoning' in m_delta: del m_delta['reasoning']
+                                                                # Update with intercepted values
+                                                                if has_reasoning:
+                                                                    final_delta['reasoning_content'] = reasoning_str
+                                                                    if 'reasoning' in final_delta: del final_delta['reasoning']
+                                                                if content_str is not None:
+                                                                    final_delta['content'] = content_str
+
+                                                                final_fr = choice.get('finish_reason')
+                                                                
+                                                                # 1. Strip role if already sent
+                                                                if first_chunk_sent:
+                                                                    final_delta.pop('role', None)
+                                                                
+                                                                # 2. Handle reasoning vs content
+                                                                if 'reasoning_content' in final_delta:
+                                                                    # If we have reasoning, usually we don't want empty content
+                                                                    if final_delta.get('content') == "":
+                                                                        final_delta.pop('content', None)
+                                                                
+                                                                # 3. Handle stop chunks - OpenAI requires empty delta
+                                                                if final_fr is not None:
+                                                                    choice['delta'] = {}
                                                             
                                                             logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
                                                             yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                        first_chunk_sent = True
+                                                            first_chunk_sent = True
+                                                        pass # Removed redundant first_chunk_sent = True
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
                                                     if not done_marker_sent:
