@@ -1135,9 +1135,9 @@ class OllamaProxy:
                                                         # Flushing happens if we receive a finish_reason OR if the stream transitioned away from tool_calls to something else (content etc.)
                                                         flush_tools = False
                                                         if pending_tool_calls:
-                                                            if fr in ('tool_calls', 'stop'):
+                                                            if fr in ("tool_calls", "stop"):
                                                                 flush_tools = True
-                                                            elif not ('tool_calls' in delta_obj and delta_obj['tool_calls']):
+                                                            elif not ("tool_calls" in delta_obj and delta_obj["tool_calls"]):
                                                                 flush_tools = True
 
                                                         if flush_tools:
@@ -1146,34 +1146,34 @@ class OllamaProxy:
                                                                 t = pending_tool_calls[idx]
                                                                 assembled_calls.append({
                                                                     "index": idx,
-                                                                    "id": t['id'],
-                                                                    "type": t['type'],
+                                                                    "id": t["id"],
+                                                                    "type": t["type"],
                                                                     "function": {
-                                                                        "name": t['function']['name'],
-                                                                        "arguments": t['function']['arguments']
+                                                                        "name": t["function"]["name"],
+                                                                        "arguments": t["function"]["arguments"]
                                                                     }
                                                                 })
                                                             
                                                             tool_chunk = json.loads(json.dumps(mapped_data))
-                                                            tool_chunk['choices'][0]['delta'] = {'tool_calls': assembled_calls}
-                                                            tool_chunk['choices'][0]['finish_reason'] = None
+                                                            tool_chunk["choices"][0]["delta"] = {"tool_calls": assembled_calls}
+                                                            tool_chunk["choices"][0]["finish_reason"] = None
                                                             logger.info(f"[PROXY YIELD ASSEMBLED TOOLS] {json.dumps(tool_chunk, ensure_ascii=False)}")
-                                                            yield b'data: ' + json.dumps(tool_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b"data: " + json.dumps(tool_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
                                                             first_chunk_sent = True
                                                             pending_tool_calls = {}
                                                             
                                                             # After yielding fully assembled tool calls, yield the finish_reason chunk
                                                             finish_chunk = json.loads(json.dumps(mapped_data))
-                                                            finish_chunk['choices'][0]['delta'] = {}
-                                                            # Use the actual finish reason if it was provided, otherwise default to 'tool_calls'
-                                                            finish_chunk['choices'][0]['finish_reason'] = fr if fr else 'tool_calls'
+                                                            f_delta = finish_chunk["choices"][0].get("delta", {})
+                                                            if first_chunk_sent:
+                                                                f_delta.pop("role", None)
+                                                            finish_chunk["choices"][0]["delta"] = {}
+                                                            finish_chunk["choices"][0]["finish_reason"] = fr if fr else "tool_calls"
                                                             logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
-                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
                                                             
-                                                            # If this chunk ONLY contained a finish_reason (we skip it).
-                                                            # But if it contained content (because it was a transition chunk), we MUST NOT skip it!
-                                                                                                                         if flush_tools:
-                                                                 should_skip = True
+                                                            # We just flushed tool calls, skip the normal yield
+                                                            should_skip = True
                                                     # ========================================
                                                     
                                                     if not should_skip:
