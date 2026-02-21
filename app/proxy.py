@@ -752,6 +752,9 @@ class OllamaProxy:
                             # Pending tool calls buffer for handling broken JSON streams from Cursor
                             pending_tool_calls: Dict[int, Dict[str, Any]] = {}
                             
+                            # State for reasoning (Thinking) blocks
+                            in_thinking = False
+                            
                             prompt_tokens = 0
                             completion_tokens = 0
                             first_chunk_sent = False
@@ -1032,6 +1035,38 @@ class OllamaProxy:
                                                                 yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                                 should_skip = True
                                                     # ========================================
+                                                    
+                                                    # ========= REASONING (THINKING) MAPPING =========
+                                                    if not should_skip and isinstance(mapped_data, dict) and 'choices' in mapped_data and len(mapped_data['choices']) > 0:
+                                                        delta_ref = mapped_data['choices'][0].get('delta', {})
+                                                        if 'content' in delta_ref and isinstance(delta_ref['content'], str):
+                                                            content_text = delta_ref['content']
+                                                            
+                                                            if "<think>" in content_text:
+                                                                in_thinking = True
+                                                                content_text = content_text.replace("<think>", "")
+                                                                
+                                                            if "</think>" in content_text:
+                                                                parts = content_text.split("</think>")
+                                                                think_part = parts[0]
+                                                                text_part = "</think>".join(parts[1:])
+                                                                
+                                                                if think_part:
+                                                                    think_chunk = json.loads(json.dumps(mapped_data))
+                                                                    think_chunk['choices'][0]['delta'] = {'reasoning_content': think_part}
+                                                                    yield b'data: ' + json.dumps(think_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                    first_chunk_sent = True
+                                                                
+                                                                in_thinking = False
+                                                                content_text = text_part
+                                                            
+                                                            # If 'content_text' is empty after stripping tags, and no other fields are present, it might be an empty chunk
+                                                            # but Cursor requires we still send it according to the structure.
+                                                            if in_thinking:
+                                                                mapped_data['choices'][0]['delta'] = {'reasoning_content': content_text}
+                                                            else:
+                                                                mapped_data['choices'][0]['delta'] = {'content': content_text}
+                                                    # ================================================
                                                     
                                                     if not should_skip:
                                                         # SSE format: data: {...}\n\n (double newline!)
