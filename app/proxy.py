@@ -994,60 +994,93 @@ class OllamaProxy:
                                                         reasoning_str = delta_obj.get('reasoning_content', "") or ""
                                                         
                                                         # DYNAMIC <think> TAG INTERCEPTION
-                                                        # Some models stream out <think> tags. Cursor expects these to be in reasoning_content.
+                                                        # Some models stream out <think> tags or partial tags.
                                                         if content_str is not None:
-                                                            if think_suspicion:
-                                                                content_str = think_suspicion + content_str
-                                                                think_suspicion = ""
+                                                            _temp_text = think_suspicion + content_str
+                                                            think_suspicion = ""
+                                                            content_str = ""
                                                             
-                                                            _was_not_in_thinking = not in_thinking
-                                                            if _was_not_in_thinking:
-                                                                if "<think>" in content_str:
-                                                                    parts = content_str.split("<think>")
-                                                                    before_think = parts[0]
-                                                                    after_think = "<think>".join(parts[1:])
-                                                                    in_thinking = True
+                                                            _proc_text = _temp_text
+                                                            while _proc_text:
+                                                                if not in_thinking:
+                                                                    # Try to find start of thinking
+                                                                    idx_start = _proc_text.find("<think>")
+                                                                    if idx_start != -1:
+                                                                        content_str += _proc_text[:idx_start]
+                                                                        in_thinking = True
+                                                                        _proc_text = _proc_text[idx_start+7:]
+                                                                        continue
                                                                     
-                                                                    if "</think>" in after_think:
-                                                                        sub_parts = after_think.split("</think>")
-                                                                        reasoning_str += sub_parts[0]
+                                                                    # Also check for unexpected end tag (recovery)
+                                                                    idx_end = _proc_text.find("</think>")
+                                                                    if idx_end != -1:
+                                                                        reasoning_str += _proc_text[:idx_end]
                                                                         has_reasoning = True
-                                                                        content_str = before_think + "</think>".join(sub_parts[1:])
+                                                                        _proc_text = _proc_text[idx_end+8:]
+                                                                        continue
+
+                                                                    # Check for partial tags at the end of string
+                                                                    found_partial = False
+                                                                    for tag in ["<think>", "</think>"]:
+                                                                        for i in range(len(tag)-1, 0, -1):
+                                                                            if _proc_text.endswith(tag[:i]):
+                                                                                think_suspicion = _proc_text[-i:]
+                                                                                content_str += _proc_text[:-i]
+                                                                                _proc_text = ""
+                                                                                found_partial = True
+                                                                                break
+                                                                        if found_partial: break
+                                                                    
+                                                                    if not found_partial:
+                                                                        content_str += _proc_text
+                                                                        _proc_text = ""
+                                                                else:
+                                                                    # Try to find end of thinking
+                                                                    idx_end = _proc_text.find("</think>")
+                                                                    if idx_end != -1:
+                                                                        reasoning_str += _proc_text[:idx_end]
+                                                                        has_reasoning = True
                                                                         in_thinking = False
-                                                                    else:
-                                                                        reasoning_str += after_think
+                                                                        _proc_text = _proc_text[idx_end+8:]
+                                                                        continue
+
+                                                                    # Also check for another start tag (unexpected but handleable)
+                                                                    idx_start = _proc_text.find("<think>")
+                                                                    if idx_start != -1:
+                                                                        reasoning_str += _proc_text[:idx_start]
                                                                         has_reasoning = True
-                                                                        content_str = before_think
-                                                                else:
-                                                                    for i in range(1, 7):
-                                                                        if content_str.endswith("<think>"[:i]):
-                                                                            think_suspicion = content_str[-i:]
-                                                                            content_str = content_str[:-i]
-                                                                            break
-                                                            
-                                                            if in_thinking and not _was_not_in_thinking:
-                                                                if "</think>" in content_str:
-                                                                    parts = content_str.split("</think>")
-                                                                    reasoning_str += parts[0]
-                                                                    has_reasoning = True
-                                                                    content_str = "</think>".join(parts[1:])
-                                                                    in_thinking = False
-                                                                else:
-                                                                    for i in range(1, 8):
-                                                                        if content_str.endswith("</think>"[:i]):
-                                                                            think_suspicion = content_str[-i:]
-                                                                            content_str = content_str[:-i]
-                                                                            break
-                                                                    if content_str:
-                                                                        reasoning_str += content_str
+                                                                        in_thinking = True
+                                                                        _proc_text = _proc_text[idx_start+7:]
+                                                                        continue
+
+                                                                    # Check for partial tags
+                                                                    found_partial = False
+                                                                    for tag in ["</think>", "<think>"]:
+                                                                        for i in range(len(tag)-1, 0, -1):
+                                                                            if _proc_text.endswith(tag[:i]):
+                                                                                think_suspicion = _proc_text[-i:]
+                                                                                reasoning_str += _proc_text[:-i]
+                                                                                has_reasoning = True
+                                                                                _proc_text = ""
+                                                                                found_partial = True
+                                                                                break
+                                                                        if found_partial: break
+                                                                    
+                                                                    if not found_partial:
+                                                                        reasoning_str += _proc_text
                                                                         has_reasoning = True
-                                                                        content_str = ""
+                                                                        _proc_text = ""
                                                         
                                                         # Apply mapped content/reasoning back to mapped_data in case we yield it directly
+                                                        # It's safer to separate reasoning and content into two chunks if both exist!
                                                         if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                            mapped_data['choices'][0]['delta']['content'] = content_str
-                                                            if has_reasoning:
-                                                                mapped_data['choices'][0]['delta']['reasoning_content'] = reasoning_str
+                                                            if has_reasoning and content_str:
+                                                                # We will handle this by yielding two chunks below!
+                                                                pass
+                                                            else:
+                                                                mapped_data['choices'][0]['delta']['content'] = content_str
+                                                                if has_reasoning:
+                                                                    mapped_data['choices'][0]['delta']['reasoning_content'] = reasoning_str
                                                         
                                                         if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
                                                             should_skip = True
@@ -1069,20 +1102,28 @@ class OllamaProxy:
                                                         
                                                         # If chunk has pure content but also buffered a tool call, yield the content only
                                                         if (content_str or reasoning_str) and should_skip:
-                                                            content_chunk = json.loads(json.dumps(mapped_data))
-                                                            content_chunk['choices'][0]['delta'] = {}
-                                                            if content_str is not None:
-                                                                content_chunk['choices'][0]['delta']['content'] = content_str
                                                             if has_reasoning:
-                                                                content_chunk['choices'][0]['delta']['reasoning_content'] = reasoning_str
+                                                                reasoning_chunk = json.loads(json.dumps(mapped_data))
+                                                                r_delta = reasoning_chunk['choices'][0].get('delta', {})
+                                                                new_r_delta = {k: v for k, v in r_delta.items() if k not in ('content', 'tool_calls')}
+                                                                new_r_delta['reasoning_content'] = reasoning_str
+                                                                reasoning_chunk['choices'][0]['delta'] = new_r_delta
+                                                                reasoning_chunk['choices'][0]['finish_reason'] = None
                                                                 
-                                                            content_chunk['choices'][0]['finish_reason'] = None
+                                                                logger.info(f"[PROXY YIELD REASONING + TC SKIP] {json.dumps(reasoning_chunk, ensure_ascii=False)}")
+                                                                yield b'data: ' + json.dumps(reasoning_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             
-                                                            # Keep tool_calls empty
-                                                            if 'tool_calls' in content_chunk['choices'][0].get('delta', {}):
-                                                                del content_chunk['choices'][0]['delta']['tool_calls']
+                                                            if content_str:
+                                                                content_chunk = json.loads(json.dumps(mapped_data))
+                                                                c_delta = content_chunk['choices'][0].get('delta', {})
+                                                                new_c_delta = {k: v for k, v in c_delta.items() if k not in ('reasoning_content', 'tool_calls')}
+                                                                new_c_delta['content'] = content_str
+                                                                content_chunk['choices'][0]['delta'] = new_c_delta
+                                                                content_chunk['choices'][0]['finish_reason'] = None
                                                                 
-                                                            yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                logger.info(f"[PROXY YIELD CONTENT + TC SKIP] {json.dumps(content_chunk, ensure_ascii=False)}")
+                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            
                                                             first_chunk_sent = True
                                                             
                                                         # When the tool call stream finishes, yield the fully assembled tool calls
@@ -1111,6 +1152,7 @@ class OllamaProxy:
                                                             tool_chunk = json.loads(json.dumps(mapped_data))
                                                             tool_chunk['choices'][0]['delta'] = {'tool_calls': assembled_calls}
                                                             tool_chunk['choices'][0]['finish_reason'] = None
+                                                            logger.info(f"[PROXY YIELD ASSEMBLED TOOLS] {json.dumps(tool_chunk, ensure_ascii=False)}")
                                                             yield b'data: ' + json.dumps(tool_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             first_chunk_sent = True
                                                             pending_tool_calls = {}
@@ -1120,6 +1162,7 @@ class OllamaProxy:
                                                             finish_chunk['choices'][0]['delta'] = {}
                                                             # Use the actual finish reason if it was provided, otherwise default to 'tool_calls'
                                                             finish_chunk['choices'][0]['finish_reason'] = fr if fr else 'tool_calls'
+                                                            logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
                                                             yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             
                                                             # If this chunk ONLY contained a finish_reason (we skip it).
@@ -1131,8 +1174,39 @@ class OllamaProxy:
                                                     # ========================================
                                                     
                                                     if not should_skip:
-                                                        # SSE format: data: {...}\n\n (double newline!)
-                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        if has_reasoning and content_str:
+                                                            # Split into two chunks, preservation of 'role' and other fields is important
+                                                            r_chunk = json.loads(json.dumps(mapped_data))
+                                                            # Keep fields like 'role' from the original delta
+                                                            r_delta = r_chunk['choices'][0].get('delta', {})
+                                                            new_r_delta = {k: v for k, v in r_delta.items() if k not in ('content', 'tool_calls')}
+                                                            new_r_delta['reasoning_content'] = reasoning_str
+                                                            r_chunk['choices'][0]['delta'] = new_r_delta
+                                                            
+                                                            logger.info(f"[PROXY YIELD REASONING SPLIT] {json.dumps(r_chunk, ensure_ascii=False)}")
+                                                            yield b'data: ' + json.dumps(r_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            
+                                                            c_chunk = json.loads(json.dumps(mapped_data))
+                                                            c_delta = c_chunk['choices'][0].get('delta', {})
+                                                            # For the second chunk, we usually don't need 'role' again, but keeping it is safer than losing it.
+                                                            # Actually, OpenAI only sends 'role' in the first chunk.
+                                                            new_c_delta = {k: v for k, v in c_delta.items() if k not in ('reasoning_content', 'tool_calls')}
+                                                            new_c_delta['content'] = content_str
+                                                            c_chunk['choices'][0]['delta'] = new_c_delta
+                                                            
+                                                            logger.info(f"[PROXY YIELD CONTENT SPLIT] {json.dumps(c_chunk, ensure_ascii=False)}")
+                                                            yield b'data: ' + json.dumps(c_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        else:
+                                                            # Normal yield - update delta with our intercepted values
+                                                            if isinstance(mapped_data.get('choices'), list) and len(mapped_data['choices']) > 0:
+                                                                m_delta = mapped_data['choices'][0].get('delta', {})
+                                                                if content_str is not None: m_delta['content'] = content_str
+                                                                if has_reasoning: m_delta['reasoning_content'] = reasoning_str
+                                                                # If it had reasoning field (Ollama), ensure it's removed in favor of reasoning_content
+                                                                if 'reasoning' in m_delta: del m_delta['reasoning']
+                                                            
+                                                            logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
+                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                         first_chunk_sent = True
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
