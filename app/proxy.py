@@ -17,6 +17,43 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# TOOL CALL VALIDATION (LiteLLM-inspired)
+# ============================================================================
+def _is_tool_call_valid(tool_call: Dict[str, Any]) -> bool:
+    """
+    Check if a tool call has valid and complete arguments.
+
+    This is critical for Cursor compatibility - incomplete or invalid tool calls
+    should not be buffered/yielded as they cause Cursor to hang.
+
+    Args:
+        tool_call: Tool call object with function.name and function.arguments
+
+    Returns:
+        True if tool call is complete and valid, False otherwise
+    """
+    if not isinstance(tool_call, dict):
+        return False
+
+    func = tool_call.get('function', {})
+    if not isinstance(func, dict):
+        return False
+
+    args = func.get('arguments', '')
+
+    # Empty arguments is valid (no-arg function)
+    if not args:
+        return True
+
+    # Check if arguments is valid JSON
+    try:
+        json.loads(args)
+        return True
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
+# ============================================================================
 # KIMI TOOL CALL CONVERTER
 # ============================================================================
 # Kimi models use a custom tool call format that needs to be converted
@@ -1089,8 +1126,11 @@ class OllamaProxy:
                                                                 if has_reasoning:
                                                                     mapped_data['choices'][0]['delta']['reasoning_content'] = reasoning_str
                                                         
+                                                        # CURSOR FIX: Always yield content/reasoning, even if tool_calls are present
+                                                        # This prevents chat from being cut off when tool calls are incomplete/invalid
+
+                                                        # Buffer tool calls for assembly, but DON'T skip content
                                                         if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
-                                                            should_skip = True
                                                             for tc in delta_obj['tool_calls']:
                                                                 idx = tc.get('index', 0)
                                                                 if idx not in pending_tool_calls:
@@ -1106,9 +1146,9 @@ class OllamaProxy:
                                                                     pending_tool_calls[idx]["function"]["name"] += tc_func['name']
                                                                 if tc_func.get('arguments'):
                                                                     pending_tool_calls[idx]["function"]["arguments"] += tc_func['arguments']
-                                                        
-                                                        # If chunk has pure content but also buffered a tool call, yield the content only
-                                                        if (content_str or reasoning_str) and should_skip:
+
+                                                        # Yield content/reasoning if present (regardless of tool_calls)
+                                                        if content_str or reasoning_str:
                                                             if has_reasoning:
                                                                 reasoning_chunk = json.loads(json.dumps(mapped_data))
                                                                 r_delta = reasoning_chunk['choices'][0].get('delta', {})
@@ -1118,11 +1158,11 @@ class OllamaProxy:
                                                                 new_r_delta['reasoning_content'] = reasoning_str
                                                                 reasoning_chunk['choices'][0]['delta'] = new_r_delta
                                                                 reasoning_chunk['choices'][0]['finish_reason'] = None
-                                                                
-                                                                logger.info(f"[PROXY YIELD REASONING + TC SKIP] {json.dumps(reasoning_chunk, ensure_ascii=False)}")
+
+                                                                logger.info(f"[PROXY YIELD REASONING] {json.dumps(reasoning_chunk, ensure_ascii=False)}")
                                                                 yield b'data: ' + json.dumps(reasoning_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                                 first_chunk_sent = True
-                                                            
+
                                                             if content_str:
                                                                 content_chunk = json.loads(json.dumps(mapped_data))
                                                                 c_delta = content_chunk['choices'][0].get('delta', {})
@@ -1132,11 +1172,11 @@ class OllamaProxy:
                                                                 new_c_delta['content'] = content_str
                                                                 content_chunk['choices'][0]['delta'] = new_c_delta
                                                                 content_chunk['choices'][0]['finish_reason'] = None
-                                                                
-                                                                logger.info(f"[PROXY YIELD CONTENT + TC SKIP] {json.dumps(content_chunk, ensure_ascii=False)}")
+
+                                                                logger.info(f"[PROXY YIELD CONTENT] {json.dumps(content_chunk, ensure_ascii=False)}")
                                                                 yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                                 first_chunk_sent = True
-                                                            
+
                                                         # When the tool call stream finishes, yield the fully assembled tool calls
                                                         # Flushing happens if we receive a finish_reason OR if the stream transitioned away from tool_calls to something else (content etc.)
                                                         flush_tools = False
@@ -1173,16 +1213,15 @@ class OllamaProxy:
                                                             f_delta = finish_chunk["choices"][0].get("delta", {})
                                                             if first_chunk_sent:
                                                                 f_delta.pop("role", None)
-                                                            finish_chunk["choices"][0]["delta"] = {}
                                                             finish_chunk["choices"][0]["finish_reason"] = fr if fr else "tool_calls"
                                                             logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
                                                             yield b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
-                                                            
-                                                            # We just flushed tool calls, skip the normal yield
-                                                            should_skip = True
+
                                                     # ========================================
-                                                    
-                                                    if not should_skip:
+
+                                                    # Yield remaining content/reasoning (if not already yielded above)
+                                                    # This handles cases where content came WITHOUT tool_calls in this chunk
+                                                    if not (content_str or reasoning_str):
                                                         if reasoning_str and content_str:
                                                             # Split into two chunks
                                                             r_chunk = json.loads(json.dumps(mapped_data))

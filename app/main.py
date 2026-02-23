@@ -638,9 +638,11 @@ async def cursor_chat_completions(
                 detail="User has exceeded their request or token limit"
             )
     
-    # Remove ALL unsupported parameters for maximum compatibility
-    supported_params = ['model', 'messages', 'stream', 'temperature', 'max_tokens', 'stop']
-    data = {k: v for k, v in data.items() if k in supported_params}
+    # Keep most parameters, remove only problematic ones
+    # NOTE: 'tools' parameter is CRITICAL for Cursor compatibility!
+    # Removing it causes models to generate malformed tool calls
+    problematic_params = ['user', 'n', 'logprobs', 'top_logprobs', 'presence_penalty', 'frequency_penalty']
+    data = {k: v for k, v in data.items() if k not in problematic_params}
     
     # Ensure stream is set
     data['stream'] = stream
