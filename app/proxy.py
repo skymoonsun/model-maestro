@@ -950,10 +950,12 @@ class OllamaProxy:
                                                                 # No tool calls found after parsing (fake alarm?), yield original buffer
                                                                 # But first, try to convert it as regular content
                                                                 mapped_data = self._map_model_from_ollama(json.loads(json_str)) # Re-use original mapping logic
-                                                                # Override content with full buffer 
+                                                                # Override content with full buffer
                                                                 if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                                    mapped_data['choices'][0]['delta']['content'] = kimi_content_buffer
-                                                                
+                                                                    choices = mapped_data.get('choices', [])
+                                                                    if choices and len(choices) > 0:
+                                                                        choices[0]['delta']['content'] = kimi_content_buffer
+
                                                                 yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                                 first_chunk_sent = True
                                                             
@@ -1001,19 +1003,24 @@ class OllamaProxy:
                                                     
                                                     # Normal processing (no Kimi detection)
                                                     mapped_data = self._map_model_from_ollama(json_data)
-                                                    # Extract delta for convenience
+
+                                                    # Extract delta for convenience (with safety check for empty choices)
                                                     delta_obj = {}
                                                     if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                        delta_obj = mapped_data['choices'][0].get('delta', {})
-                                                    
+                                                        choices = mapped_data.get('choices', [])
+                                                        if choices and len(choices) > 0:
+                                                            delta_obj = choices[0].get('delta', {})
+
                                                     # If we had a suspicion buffer that turned out to be false alarm (combined above),
                                                     # we need to make sure we use the COMBINED content, not just the current chunk content.
                                                     # But _map_model_from_ollama uses json_data which only has current chunk.
                                                     # So we manually update the content if we combined buffers.
                                                     if content != (delta.get('content', '') or ''):
                                                         if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                            if isinstance(mapped_data['choices'][0], dict) and 'delta' in mapped_data['choices'][0]:
-                                                                mapped_data['choices'][0]['delta']['content'] = content
+                                                            choices = mapped_data.get('choices', [])
+                                                            if choices and len(choices) > 0:
+                                                                if isinstance(choices[0], dict) and 'delta' in choices[0]:
+                                                                    choices[0]['delta']['content'] = content
                                                     
                                                     # Extract token usage if available
                                                     if isinstance(mapped_data, dict) and 'usage' in mapped_data:
@@ -1407,7 +1414,9 @@ class OllamaProxy:
                                                             # No tool calls found after parsing (fake alarm?), yield original buffer
                                                             # Update content in mapped_data
                                                             if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                                mapped_data['choices'][0]['delta']['content'] = kimi_content_buffer
+                                                                choices = mapped_data.get('choices', [])
+                                                                if choices and len(choices) > 0:
+                                                                    choices[0]['delta']['content'] = kimi_content_buffer
                                                             
                                                             if is_openai_endpoint:
                                                                 yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
@@ -1460,8 +1469,10 @@ class OllamaProxy:
                                                     if 'message' in mapped_data:
                                                         mapped_data['message']['content'] = content
                                                 if 'choices' in mapped_data and mapped_data['choices']:
-                                                    if content != (mapped_data['choices'][0].get('delta', {}).get('content', '') or ''):
-                                                        mapped_data['choices'][0]['delta']['content'] = content
+                                                    choices = mapped_data['choices']
+                                                    if choices and len(choices) > 0:
+                                                        if content != (choices[0].get('delta', {}).get('content', '') or ''):
+                                                            choices[0]['delta']['content'] = content
                                                 
                                                 if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
                                                     prompt_tokens += mapped_data.get('prompt_eval_count', 0)
