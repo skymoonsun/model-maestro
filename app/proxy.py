@@ -800,8 +800,8 @@ class OllamaProxy:
                             # Buffer to accumulate partial lines
                             buffer = b""
                             
-                            # Pending tool calls buffer for handling broken JSON streams from Cursor
-                            pending_tool_calls: Dict[int, Dict[str, Any]] = {}
+                            # Pending tool calls: key by id (Ollama sends each tool call with index 0 in separate chunks)
+                            pending_tool_calls: Dict[str, Dict[str, Any]] = {}  # id -> {idx, id, type, function}
                             
                             prompt_tokens = 0
                             completion_tokens = 0
@@ -1136,23 +1136,28 @@ class OllamaProxy:
                                                         # CURSOR FIX: Always yield content/reasoning, even if tool_calls are present
                                                         # This prevents chat from being cut off when tool calls are incomplete/invalid
 
-                                                        # Buffer tool calls for assembly, but DON'T skip content
+                                                        # Buffer tool calls for assembly
+                                                        # CRITICAL: Ollama/GLM sends each tool call in SEPARATE chunks, all with index 0.
+                                                        # Use id as key - same id = accumulate (streaming partial), different id = new tool call.
                                                         if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
                                                             for tc in delta_obj['tool_calls']:
-                                                                idx = tc.get('index', 0)
-                                                                if idx not in pending_tool_calls:
-                                                                    # Initialize pending tool call
-                                                                    pending_tool_calls[idx] = {
-                                                                        "id": tc.get('id', f"call_{uuid.uuid4().hex[:8]}"),
-                                                                        "type": tc.get('type', 'function'),
-                                                                        "function": {"name": "", "arguments": ""}
-                                                                    }
-                                                                # Accumulate name and arguments
+                                                                tc_id = tc.get('id') or f"call_{uuid.uuid4().hex[:8]}"
                                                                 tc_func = tc.get('function', {})
-                                                                if tc_func.get('name'):
-                                                                    pending_tool_calls[idx]["function"]["name"] += tc_func['name']
-                                                                if tc_func.get('arguments'):
-                                                                    pending_tool_calls[idx]["function"]["arguments"] += tc_func['arguments']
+                                                                
+                                                                if tc_id not in pending_tool_calls:
+                                                                    # New tool call - assign next sequential index
+                                                                    pending_tool_calls[tc_id] = {
+                                                                        "idx": len(pending_tool_calls),
+                                                                        "id": tc_id,
+                                                                        "type": tc.get('type', 'function'),
+                                                                        "function": {"name": tc_func.get('name', ''), "arguments": tc_func.get('arguments', '')}
+                                                                    }
+                                                                else:
+                                                                    # Same id = streaming partial data, accumulate
+                                                                    if tc_func.get('name'):
+                                                                        pending_tool_calls[tc_id]["function"]["name"] += tc_func['name']
+                                                                    if tc_func.get('arguments'):
+                                                                        pending_tool_calls[tc_id]["function"]["arguments"] += tc_func['arguments']
 
                                                         # Yield content/reasoning if present (regardless of tool_calls)
                                                         if content_str or reasoning_str:
@@ -1195,10 +1200,9 @@ class OllamaProxy:
 
                                                         if flush_tools:
                                                             assembled_calls = []
-                                                            for idx in sorted(pending_tool_calls.keys()):
-                                                                t = pending_tool_calls[idx]
+                                                            for t in sorted(pending_tool_calls.values(), key=lambda x: x["idx"]):
                                                                 assembled_calls.append({
-                                                                    "index": idx,
+                                                                    "index": t["idx"],
                                                                     "id": t["id"],
                                                                     "type": t["type"],
                                                                     "function": {
