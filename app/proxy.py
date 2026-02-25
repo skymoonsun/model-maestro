@@ -876,6 +876,7 @@ class OllamaProxy:
                             completion_tokens = 0
                             first_chunk_sent = False
                             done_marker_sent = False  # Track if [DONE] was already sent
+                            just_yielded_assembled_tools = False  # Persist across chunks - skip duplicate finish_reason:tool_calls
                             chunk_count = 0
                             total_bytes = 0
                             
@@ -1267,7 +1268,6 @@ class OllamaProxy:
                                                             elif not ("tool_calls" in delta_obj and delta_obj["tool_calls"]):
                                                                 flush_tools = True
 
-                                                        just_yielded_assembled_tools = False
                                                         if flush_tools:
                                                             # CURSOR FIX: Sanitize and validate tool calls - invalid arguments
                                                             # (e.g. offset:-100) cause "Unexpected non-whitespace character after JSON"
