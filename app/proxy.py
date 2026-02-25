@@ -1267,6 +1267,7 @@ class OllamaProxy:
                                                             elif not ("tool_calls" in delta_obj and delta_obj["tool_calls"]):
                                                                 flush_tools = True
 
+                                                        just_yielded_assembled_tools = False
                                                         if flush_tools:
                                                             # CURSOR FIX: Sanitize and validate tool calls - invalid arguments
                                                             # (e.g. offset:-100) cause "Unexpected non-whitespace character after JSON"
@@ -1305,6 +1306,7 @@ class OllamaProxy:
                                                                 finish_chunk["choices"][0]["finish_reason"] = fr if fr else "tool_calls"
                                                                 logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
                                                                 yield b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
+                                                                just_yielded_assembled_tools = True
                                                             pending_tool_calls = {}
 
                                                     # ========================================
@@ -1383,6 +1385,12 @@ class OllamaProxy:
                                                                 # (avoids sending empty chunks that confuse Cursor)
                                                                 if not final_delta and pending_tool_calls:
                                                                     pass  # Don't yield, wait for ASSEMBLED TOOLS
+                                                                # 5. CURSOR FIX: Skip duplicate finish_reason:tool_calls chunk.
+                                                                # We already yield ASSEMBLED TOOLS + FINISH TOOLS. Sending another
+                                                                # chunk with finish_reason causes "Unexpected \"{\" at position \"0\"
+                                                                # in state ENDED" - parser thinks stream ended, then sees new JSON.
+                                                                elif just_yielded_assembled_tools and final_fr == "tool_calls":
+                                                                    pass  # Already sent via PROXY YIELD FINISH TOOLS
                                                                 else:
                                                                     logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
                                                                     yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
