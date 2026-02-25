@@ -655,7 +655,13 @@ async def cursor_chat_completions(
     # Keep most parameters, remove only problematic ones
     # NOTE: 'tools' parameter is CRITICAL for Cursor compatibility!
     # Removing it causes models to generate malformed tool calls
-    problematic_params = ['user', 'n', 'logprobs', 'top_logprobs', 'presence_penalty', 'frequency_penalty']
+    problematic_params = [
+        'user', 'n', 'logprobs', 'top_logprobs', 'presence_penalty', 'frequency_penalty',
+        # Ollama-specific unsupported params (minimax 500 hatası için kritik)
+        'stream_options',  # OpenAI specific streaming options - minimax 500 fix
+        'parallel_tool_calls',  # OpenAI specific
+        'service_tier',  # OpenAI specific
+    ]
     data = {k: v for k, v in data.items() if k not in problematic_params}
     
     # Model-specific tool filtering (minimax vb. - Ollama 500 önlemek için)
