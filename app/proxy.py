@@ -1346,6 +1346,13 @@ class OllamaProxy:
                                                                 choice = mapped_data['choices'][0]
                                                                 final_delta = choice.get('delta', {})
                                                                 
+                                                                # CURSOR FIX: Never yield tool_calls here - we buffer and yield
+                                                                # ASSEMBLED TOOLS separately. Sending partial tool_calls causes
+                                                                # "Unexpected "{" at position "0" in state ENDED" JSON parse errors.
+                                                                if pending_tool_calls and 'tool_calls' in final_delta:
+                                                                    final_delta = {k: v for k, v in final_delta.items() if k != 'tool_calls'}
+                                                                    choice['delta'] = final_delta
+                                                                
                                                                 # Update with intercepted values
                                                                 if has_reasoning:
                                                                     final_delta['reasoning_content'] = reasoning_str
@@ -1371,10 +1378,19 @@ class OllamaProxy:
                                                                 # 3. Handle stop chunks - OpenAI requires empty delta
                                                                 if final_fr is not None:
                                                                     choice['delta'] = {}
-                                                            
-                                                            logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                            first_chunk_sent = True
+                                                                
+                                                                # 4. Skip yielding if delta is empty and we're buffering tool_calls
+                                                                # (avoids sending empty chunks that confuse Cursor)
+                                                                if not final_delta and pending_tool_calls:
+                                                                    pass  # Don't yield, wait for ASSEMBLED TOOLS
+                                                                else:
+                                                                    logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
+                                                                    yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                    first_chunk_sent = True
+                                                            else:
+                                                                logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
+                                                                yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                first_chunk_sent = True
                                                         pass # Removed redundant first_chunk_sent = True
                                                     # BUGFIX: Do NOT yield again when we have content/reasoning - we already
                                                     # yielded them in the block above (PROXY YIELD REASONING/CONTENT).
