@@ -1199,34 +1199,42 @@ class OllamaProxy:
                                                                 flush_tools = True
 
                                                         if flush_tools:
+                                                            # CURSOR FIX: Validate tool calls - invalid JSON arguments cause
+                                                            # "Unexpected non-whitespace character after JSON" on client
                                                             assembled_calls = []
-                                                            for t in sorted(pending_tool_calls.values(), key=lambda x: x["idx"]):
-                                                                assembled_calls.append({
-                                                                    "index": t["idx"],
+                                                            for idx, t in enumerate(sorted(pending_tool_calls.values(), key=lambda x: x["idx"])):
+                                                                tc = {
+                                                                    "index": idx,
                                                                     "id": t["id"],
                                                                     "type": t["type"],
                                                                     "function": {
                                                                         "name": t["function"]["name"],
                                                                         "arguments": t["function"]["arguments"]
                                                                     }
-                                                                })
+                                                                }
+                                                                if _is_tool_call_valid(tc):
+                                                                    assembled_calls.append(tc)
+                                                                else:
+                                                                    logger.warning(f"[CURSOR FIX] Skipping invalid tool call: {t['function']['name']} - invalid JSON arguments")
                                                             
-                                                            tool_chunk = json.loads(json.dumps(mapped_data))
-                                                            tool_chunk["choices"][0]["delta"] = {"tool_calls": assembled_calls}
-                                                            tool_chunk["choices"][0]["finish_reason"] = None
-                                                            logger.info(f"[PROXY YIELD ASSEMBLED TOOLS] {json.dumps(tool_chunk, ensure_ascii=False)}")
-                                                            yield b"data: " + json.dumps(tool_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
-                                                            first_chunk_sent = True
+                                                            # Only yield if we have valid tool calls (avoid Cursor JSON parse errors)
+                                                            if assembled_calls:
+                                                                tool_chunk = json.loads(json.dumps(mapped_data))
+                                                                tool_chunk["choices"][0]["delta"] = {"tool_calls": assembled_calls}
+                                                                tool_chunk["choices"][0]["finish_reason"] = None
+                                                                logger.info(f"[PROXY YIELD ASSEMBLED TOOLS] {json.dumps(tool_chunk, ensure_ascii=False)}")
+                                                                yield b"data: " + json.dumps(tool_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
+                                                                first_chunk_sent = True
+                                                                
+                                                                # After yielding fully assembled tool calls, yield the finish_reason chunk
+                                                                finish_chunk = json.loads(json.dumps(mapped_data))
+                                                                f_delta = finish_chunk["choices"][0].get("delta", {})
+                                                                if first_chunk_sent:
+                                                                    f_delta.pop("role", None)
+                                                                finish_chunk["choices"][0]["finish_reason"] = fr if fr else "tool_calls"
+                                                                logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
+                                                                yield b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
                                                             pending_tool_calls = {}
-                                                            
-                                                            # After yielding fully assembled tool calls, yield the finish_reason chunk
-                                                            finish_chunk = json.loads(json.dumps(mapped_data))
-                                                            f_delta = finish_chunk["choices"][0].get("delta", {})
-                                                            if first_chunk_sent:
-                                                                f_delta.pop("role", None)
-                                                            finish_chunk["choices"][0]["finish_reason"] = fr if fr else "tool_calls"
-                                                            logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
-                                                            yield b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
 
                                                     # ========================================
 
@@ -1297,6 +1305,12 @@ class OllamaProxy:
                                                             yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             first_chunk_sent = True
                                                         pass # Removed redundant first_chunk_sent = True
+                                                    else:
+                                                        # Usage chunk (choices=[]) - forward as-is, OpenAI format
+                                                        if isinstance(mapped_data, dict):
+                                                            logger.info(f"[PROXY YIELD USAGE] {json.dumps(mapped_data, ensure_ascii=False)}")
+                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
                                                     if not done_marker_sent:
@@ -1711,13 +1725,12 @@ class OllamaProxy:
                 
                 return StreamingResponse(
                     stream_generator(),
-                    media_type=media_type,
+                    media_type=f"{media_type}; charset=utf-8" if media_type == "text/event-stream" else media_type,
                     headers={
-                        # Standard SSE headers
-                        "Cache-Control": "no-cache",
+                        # Standard SSE headers - Cursor compatibility
+                        "Cache-Control": "no-cache, no-transform",
                         "X-Accel-Buffering": "no",
-                        # Don't override Connection - let client decide
-                        # "Connection": "keep-alive",
+                        "Connection": "keep-alive",
                     }
                 )
             
