@@ -1305,12 +1305,11 @@ class OllamaProxy:
                                                             yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
                                                             first_chunk_sent = True
                                                         pass # Removed redundant first_chunk_sent = True
-                                                    else:
-                                                        # Usage chunk (choices=[]) - forward as-is, OpenAI format
-                                                        if isinstance(mapped_data, dict):
-                                                            logger.info(f"[PROXY YIELD USAGE] {json.dumps(mapped_data, ensure_ascii=False)}")
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                            first_chunk_sent = True
+                                                    # BUGFIX: Do NOT yield again when we have content/reasoning - we already
+                                                    # yielded them in the block above (PROXY YIELD REASONING/CONTENT).
+                                                    # The else block was causing DUPLICATE output (same text appearing twice).
+                                                    # True usage chunks (choices=[]) are rare and would be handled by
+                                                    # the "if not (content_str or reasoning_str)" branch above.
                                                 elif json_str == '[DONE]':
                                                     # [DONE] marker - only send once!
                                                     if not done_marker_sent:
