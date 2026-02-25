@@ -54,6 +54,74 @@ def _is_tool_call_valid(tool_call: Dict[str, Any]) -> bool:
 
 
 # ============================================================================
+# TOOL CALL ARGUMENT SANITIZATION (Cursor compatibility)
+# ============================================================================
+# LLMs (e.g. qwen3-coder) sometimes generate invalid tool arguments that cause
+# "Unexpected non-whitespace character after JSON" or tool execution failures.
+# Example: Read(path="x", offset=-100) - Cursor expects offset as positive line number.
+# ============================================================================
+def _sanitize_tool_call_arguments(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Sanitize tool call arguments for Cursor IDE compatibility.
+    Fixes common model mistakes (e.g. offset:-100 for "last N lines") that cause errors.
+
+    Args:
+        tool_call: Tool call dict with function.name and function.arguments
+
+    Returns:
+        Tool call with sanitized arguments (modified in-place, also returned)
+    """
+    func = tool_call.get('function', {})
+    if not isinstance(func, dict):
+        return tool_call
+
+    args_str = func.get('arguments', '')
+    if not args_str:
+        return tool_call
+
+    try:
+        args = json.loads(args_str)
+    except (json.JSONDecodeError, TypeError):
+        return tool_call
+
+    if not isinstance(args, dict):
+        return tool_call
+
+    changed = False
+    tool_name = func.get('name', '')
+
+    # Read tool: offset must be positive integer (line number, 1-based)
+    # Models often use offset:-100 thinking "last 100 lines" - Cursor doesn't support that
+    if tool_name == 'Read':
+        if 'offset' in args:
+            offset_val = args['offset']
+            if isinstance(offset_val, (int, float)):
+                if offset_val < 1:
+                    args['offset'] = 1
+                    changed = True
+                    logger.info(f"[SANITIZE] Read tool: offset {offset_val} -> 1 (Cursor requires positive line number)")
+            else:
+                # Non-numeric offset, remove it
+                del args['offset']
+                changed = True
+        if 'limit' in args:
+            limit_val = args['limit']
+            if isinstance(limit_val, (int, float)):
+                if limit_val < 1:
+                    args['limit'] = min(500, max(100, abs(int(limit_val))))  # e.g. -100 -> 100
+                    changed = True
+                    logger.info(f"[SANITIZE] Read tool: limit {limit_val} -> {args['limit']}")
+            else:
+                del args['limit']
+                changed = True
+
+    if changed:
+        func['arguments'] = json.dumps(args, ensure_ascii=False)
+
+    return tool_call
+
+
+# ============================================================================
 # KIMI TOOL CALL CONVERTER
 # ============================================================================
 # Kimi models use a custom tool call format that needs to be converted
@@ -186,6 +254,7 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
                 "arguments": arguments_str
             }
         }
+        _sanitize_tool_call_arguments(tool_call)
         tool_calls.append(tool_call)
         tool_call_index += 1
         logger.info(f"[KIMI] Parsed tool call: {function_name}({arguments_str[:50]}...)")
@@ -1199,8 +1268,8 @@ class OllamaProxy:
                                                                 flush_tools = True
 
                                                         if flush_tools:
-                                                            # CURSOR FIX: Validate tool calls - invalid JSON arguments cause
-                                                            # "Unexpected non-whitespace character after JSON" on client
+                                                            # CURSOR FIX: Sanitize and validate tool calls - invalid arguments
+                                                            # (e.g. offset:-100) cause "Unexpected non-whitespace character after JSON"
                                                             assembled_calls = []
                                                             for idx, t in enumerate(sorted(pending_tool_calls.values(), key=lambda x: x["idx"])):
                                                                 tc = {
@@ -1212,6 +1281,8 @@ class OllamaProxy:
                                                                         "arguments": t["function"]["arguments"]
                                                                     }
                                                                 }
+                                                                # Sanitize invalid args (e.g. Read offset:-100 -> 1)
+                                                                _sanitize_tool_call_arguments(tc)
                                                                 if _is_tool_call_valid(tc):
                                                                     assembled_calls.append(tc)
                                                                 else:
