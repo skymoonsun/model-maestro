@@ -30,6 +30,79 @@ def get_settings() -> Settings:
     return Settings()
 
 
+# =============================================================================
+# MODEL-SPECIFIC TOOL FILTERING
+# =============================================================================
+# Bazı modeller (örn. minimax) tam Cursor tool seti ile Ollama 500 hatası veriyor.
+# Bu modeller için sadece temel tool'lar gönderilir.
+#
+# Yeni sorunlu model eklemek için: prefix -> izin verilen tool isimleri
+# Örnek: 'minimax-m2.5:cloud' -> 'minimax' prefix'i ile eşleşir
+MODEL_REDUCED_TOOLS: Dict[str, List[str]] = {
+    "minimax": [
+        "Read",
+        "Write",
+        "Shell",
+        "Glob",
+        "Grep",
+        "StrReplace",
+        "Delete",
+        "TodoWrite",
+        "WebSearch",
+        "WebFetch",
+        "SemanticSearch",
+        "ReadLints",
+    ],
+    # Örnek - yeni model eklemek için:
+    # "basaka-model": ["Read", "Write", "Shell", ...],
+}
+
+
+def filter_tools_for_model(model_name: str, tools: List[dict]) -> List[dict]:
+    """
+    Model için tanımlı reduced tools config varsa tools listesini filtreler.
+
+    Args:
+        model_name: İstekteki model adı (örn. minimax-m2.5:cloud)
+        tools: Orijinal tools listesi
+
+    Returns:
+        Filtrelenmiş tools listesi (config yoksa orijinal döner)
+    """
+    if not tools:
+        return tools
+
+    model_lower = model_name.lower()
+    for prefix, allowed_names in MODEL_REDUCED_TOOLS.items():
+        if model_lower.startswith(prefix):
+            allowed_set = set(allowed_names)
+            filtered = []
+            for t in tools:
+                if t.get("type") == "function":
+                    name = t.get("function", {}).get("name")
+                    if name and name in allowed_set:
+                        filtered.append(t)
+                else:
+                    filtered.append(t)  # Bilinmeyen tipi olduğu gibi bırak
+            return filtered
+
+    return tools
+
+
+def get_allowed_tools_for_model(model_name: str) -> Optional[List[str]]:
+    """
+    Model için reduced tools config var mı döner.
+    None = tüm tool'lar kullanılır.
+    """
+    if not model_name:
+        return None
+    model_lower = model_name.lower()
+    for prefix, allowed in MODEL_REDUCED_TOOLS.items():
+        if model_lower.startswith(prefix):
+            return allowed
+    return None
+
+
 class ModelMappingManager:
     """
     Manage model name mappings

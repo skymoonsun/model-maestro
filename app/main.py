@@ -12,7 +12,7 @@ import json
 
 from app.auth import get_current_user, check_model_access
 from app.proxy import ollama_proxy
-from app.config import get_settings, model_mapper
+from app.config import get_settings, model_mapper, filter_tools_for_model
 from app.redis import RedisManager
 from app.models import (
     OllamaGenerateRequest,
@@ -514,6 +514,20 @@ async def openai_chat_completions(
             data = {k: v for k, v in data.items() if k not in removed_params}
             logger.info(f"Removed {', '.join(removed_params)} for model {model_name} (not supported)")
     
+    # Model-specific tool filtering (minimax vb. - Ollama 500 önlemek için)
+    if "tools" in data and data["tools"]:
+        filtered_tools = filter_tools_for_model(model_name, data["tools"])
+        if len(filtered_tools) != len(data["tools"]):
+            data["tools"] = filtered_tools
+            allowed_names = {t.get("function", {}).get("name") for t in filtered_tools if t.get("type") == "function"}
+            # tool_choice: filtrelenmiş listede olmayan bir fonksiyon seçilmişse "auto" yap
+            tool_choice = data.get("tool_choice")
+            if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+                fn_name = tool_choice.get("function", {}).get("name")
+                if fn_name and fn_name not in allowed_names:
+                    data["tool_choice"] = "auto"
+            logger.info(f"Filtered tools for {model_name}: {len(data['tools'])} tools (reduced set)")
+    
     # Ollama's /v1/chat/completions endpoint may not support all OpenAI parameters
     # Remove parameters that Ollama doesn't recognize to avoid parsing errors
     # These are Cursor/OpenAI specific parameters that Ollama doesn't handle
@@ -643,6 +657,19 @@ async def cursor_chat_completions(
     # Removing it causes models to generate malformed tool calls
     problematic_params = ['user', 'n', 'logprobs', 'top_logprobs', 'presence_penalty', 'frequency_penalty']
     data = {k: v for k, v in data.items() if k not in problematic_params}
+    
+    # Model-specific tool filtering (minimax vb. - Ollama 500 önlemek için)
+    if "tools" in data and data["tools"]:
+        filtered_tools = filter_tools_for_model(model_name, data["tools"])
+        if len(filtered_tools) != len(data["tools"]):
+            data["tools"] = filtered_tools
+            allowed_names = {t.get("function", {}).get("name") for t in filtered_tools if t.get("type") == "function"}
+            tool_choice = data.get("tool_choice")
+            if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+                fn_name = tool_choice.get("function", {}).get("name")
+                if fn_name and fn_name not in allowed_names:
+                    data["tool_choice"] = "auto"
+            logger.info(f"Filtered tools for {model_name}: {len(data['tools'])} tools (reduced set)")
     
     # Ensure stream is set
     data['stream'] = stream
