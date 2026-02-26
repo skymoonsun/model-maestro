@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.auth import verify_admin
 from app.user_manager import user_manager
-from app.config import model_mapper
+from app.config import model_mapper, parse_context_length, format_context_length
 
 router = APIRouter(prefix="/admin")
 
@@ -256,35 +256,56 @@ async def revoke_model(
 # Model Mapping Management Endpoints
 # ============================================================================
 
-@router.post("/model-mappings", response_model=ModelMappingResponse, status_code=201, tags=["Admin - Model Mapping"])
-async def create_model_mapping(
+@router.post("/model-mappings", response_model=ModelMappingResponse, tags=["Admin - Model Mapping"])
+async def create_or_update_model_mapping(
     request: CreateMappingRequest,
     admin: str = Depends(verify_admin)
 ):
     """
-    Create a new model mapping (Admin only).
+    Create or update a model mapping (Admin only).
+    
+    Eğer display_name zaten mevcutsa günceller, yoksa yeni oluşturur.
     
     Request body:
     {
-        "display_name": "gpt-oss:120b",
-        "real_name": "gpt-oss:120b-cloud"
+        "display_name": "glm-5:cloud",
+        "real_name": "glm-5:cloud",
+        "context_length": "198K"  // Opsiyonel: "128K", "256K", "1M", "32768"
     }
     
-    Cache is automatically reloaded after creation.
+    Cache is automatically reloaded after creation/update.
     """
     try:
-        mapping = await model_mapper.create_mapping(
+        # Parse context_length if provided
+        ctx_length_tokens = None
+        if request.context_length:
+            try:
+                ctx_length_tokens = parse_context_length(request.context_length)
+            except (ValueError, TypeError) as e:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Geçersiz context_length formatı: '{request.context_length}'. "
+                           f"Desteklenen formatlar: '198K', '128K', '1M', '32768'. Hata: {str(e)}"
+                )
+        
+        mapping = await model_mapper.create_or_update_mapping(
             request.display_name,
-            request.real_name
+            request.real_name,
+            ctx_length_tokens
         )
         
-               # Cache is automatically updated in create_mapping
+        # Format context_length for display
+        ctx_display = format_context_length(mapping.get("context_length")) if mapping.get("context_length") else None
         
         return ModelMappingResponse(
             display_name=mapping["display_name"],
             real_name=mapping["real_name"],
+            context_length=mapping.get("context_length"),
+            context_length_display=ctx_display,
             created_at=mapping.get("created_at")
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -300,6 +321,8 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
         ModelMappingResponse(
             display_name=m["display_name"],
             real_name=m["real_name"],
+            context_length=m.get("context_length"),
+            context_length_display=format_context_length(m.get("context_length")) if m.get("context_length") else None,
             created_at=m.get("created_at")
         )
         for m in mappings

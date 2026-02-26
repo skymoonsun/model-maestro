@@ -844,6 +844,8 @@ class OllamaProxy:
                                         error_detail = error_json['error']
                                         if isinstance(error_detail, dict) and 'message' in error_detail:
                                             error_msg = error_detail['message']
+                                        elif isinstance(error_detail, str):
+                                            error_msg = error_detail
                                 except (json.JSONDecodeError, KeyError, TypeError):
                                     # If not JSON or doesn't have expected structure, use as-is
                                     pass
@@ -854,12 +856,36 @@ class OllamaProxy:
                                 logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
                                 logger.error(f"Full error response: {error_text.decode()}")
                                 
+                                # CONTEXT FIX: Detect context length exceeded errors
+                                # Ollama returns errors like: "context length exceeded" or
+                                # "model requires more context" or mentions "num_ctx"
+                                error_msg_lower = error_msg.lower()
+                                is_context_error = any(phrase in error_msg_lower for phrase in [
+                                    'context length', 'context_length', 'num_ctx',
+                                    'context window', 'token limit', 'too long',
+                                    'maximum context', 'exceeds the model',
+                                ])
+                                
+                                if is_context_error:
+                                    error_type = "context_length_exceeded"
+                                    error_code = "context_length_exceeded"
+                                    friendly_msg = (
+                                        f"Context limiti aşıldı. Model'in context penceresi doldu. "
+                                        f"Lütfen yeni bir chat başlatın veya context'i temizleyin. "
+                                        f"Detay: {error_msg}"
+                                    )
+                                    logger.warning(f"[CONTEXT OVERFLOW] Model context limit reached: {error_msg}")
+                                else:
+                                    error_type = "api_error"
+                                    error_code = resp.status_code
+                                    friendly_msg = f"Ollama upstream error: {error_msg}"
+                                
                                 # Send error in SSE format for OpenAI compatibility
                                 error_response = {
                                     "error": {
-                                        "message": f"Ollama upstream error: {error_msg}",
-                                        "type": "api_error",
-                                        "code": resp.status_code
+                                        "message": friendly_msg,
+                                        "type": error_type,
+                                        "code": error_code
                                     }
                                 }
                                 yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
@@ -876,6 +902,7 @@ class OllamaProxy:
                             completion_tokens = 0
                             first_chunk_sent = False
                             done_marker_sent = False  # Track if [DONE] was already sent
+                            usage_chunk_received = False  # Track if upstream sent a usage chunk
                             just_yielded_assembled_tools = False  # Persist across chunks - skip duplicate finish_reason:tool_calls
                             chunk_count = 0
                             total_bytes = 0
@@ -1102,6 +1129,24 @@ class OllamaProxy:
                                                     # OpenAI API sends role-only chunks first (content: "")
                                                     # Cursor needs these chunks to understand the response structure
                                                     should_skip = False
+                                                    
+                                                    # ========= USAGE CHUNK HANDLING =========
+                                                    # When stream_options.include_usage is true, Ollama sends a final
+                                                    # chunk with choices=[] and usage={...}. Forward it to Cursor!
+                                                    if isinstance(mapped_data, dict) and 'usage' in mapped_data:
+                                                        usage_data = mapped_data['usage']
+                                                        if isinstance(usage_data, dict):
+                                                            prompt_tokens = usage_data.get('prompt_tokens', prompt_tokens)
+                                                            completion_tokens = usage_data.get('completion_tokens', completion_tokens)
+                                                        
+                                                        choices_list = mapped_data.get('choices', [])
+                                                        if not choices_list or len(choices_list) == 0:
+                                                            # This is a pure usage chunk (choices=[]) - forward to Cursor
+                                                            logger.info(f"[PROXY YIELD USAGE] prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            usage_chunk_received = True
+                                                            first_chunk_sent = True
+                                                            continue
                                                     
                                                     # ========= TOOL CALL BUFFERING =========
                                                     if isinstance(mapped_data, dict) and 'choices' in mapped_data and len(mapped_data['choices']) > 0:
@@ -1728,6 +1773,24 @@ class OllamaProxy:
                                 first_chunk_sent = True
                             
                             if not done_marker_sent:
+                                # CONTEXT FIX: Inject usage chunk before [DONE] if not received from upstream
+                                # This ensures Cursor ALWAYS gets token usage info for context % display
+                                if not usage_chunk_received and (prompt_tokens > 0 or completion_tokens > 0):
+                                    total_toks = prompt_tokens + completion_tokens
+                                    usage_chunk = {
+                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                        "object": "chat.completion.chunk",
+                                        "model": model_mapper.get_display_model_name(current_model),
+                                        "choices": [],
+                                        "usage": {
+                                            "prompt_tokens": prompt_tokens,
+                                            "completion_tokens": completion_tokens,
+                                            "total_tokens": total_toks
+                                        }
+                                    }
+                                    logger.info(f"[PROXY INJECT USAGE] No upstream usage chunk received, injecting: prompt={prompt_tokens}, completion={completion_tokens}, total={total_toks}")
+                                    yield b'data: ' + json.dumps(usage_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                
                                 yield b'data: [DONE]\n\n'
                                 done_marker_sent = True
                             
@@ -1763,6 +1826,23 @@ class OllamaProxy:
                             
                             # For OpenAI endpoints, send [DONE] marker if not already sent
                             if is_openai_endpoint and not done_marker_sent:
+                                # CONTEXT FIX: Inject usage chunk here too, before [DONE]
+                                if not usage_chunk_received and (prompt_tokens > 0 or completion_tokens > 0):
+                                    total_toks = prompt_tokens + completion_tokens
+                                    usage_chunk = {
+                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                        "object": "chat.completion.chunk",
+                                        "model": model_mapper.get_display_model_name(current_model),
+                                        "choices": [],
+                                        "usage": {
+                                            "prompt_tokens": prompt_tokens,
+                                            "completion_tokens": completion_tokens,
+                                            "total_tokens": total_toks
+                                        }
+                                    }
+                                    logger.info(f"[PROXY INJECT USAGE] (end-of-stream) prompt={prompt_tokens}, completion={completion_tokens}, total={total_toks}")
+                                    yield b'data: ' + json.dumps(usage_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                
                                 logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream). Total chunks: {chunk_count}, bytes: {total_bytes}")
                                 yield b'data: [DONE]\n\n'
                             elif is_openai_endpoint:

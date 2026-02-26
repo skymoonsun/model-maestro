@@ -12,7 +12,7 @@ import json
 
 from app.auth import get_current_user, check_model_access
 from app.proxy import ollama_proxy
-from app.config import get_settings, model_mapper, filter_tools_for_model
+from app.config import get_settings, model_mapper, filter_tools_for_model, get_context_length_for_model
 from app.redis import RedisManager
 from app.models import (
     OllamaGenerateRequest,
@@ -540,7 +540,8 @@ async def openai_chat_completions(
         'user',  # OpenAI tracking field
         'service_tier',  # OpenAI specific
         'parallel_tool_calls',  # OpenAI specific
-        'stream_options',  # OpenAI specific streaming options
+        # NOT: stream_options ARTIK SİLİNMİYOR! Ollama bunu destekliyor.
+        # Cursor'ın token kullanımını (context %) görmesi için gerekli.
         'store',  # OpenAI specific
         'metadata',  # OpenAI specific
         'prediction',  # OpenAI specific
@@ -557,6 +558,20 @@ async def openai_chat_completions(
     # Ensure stream parameter is set (Cursor might not always send it)
     if 'stream' not in data:
         data['stream'] = stream
+    
+    # CONTEXT FIX: Streaming'de token kullanımını Cursor'a bildirmek için
+    # stream_options inject et (Cursor context % göstergesi için gerekli)
+    if stream and 'stream_options' not in data:
+        data['stream_options'] = {'include_usage': True}
+    
+    # CONTEXT FIX: Model bazlı num_ctx ayarla (Ollama varsayılanı 4096 - çok düşük)
+    # Bu, context limit hatalarını önler
+    ctx_length = get_context_length_for_model(model_name)
+    if 'options' not in data:
+        data['options'] = {}
+    if isinstance(data['options'], dict) and 'num_ctx' not in data['options']:
+        data['options']['num_ctx'] = ctx_length
+        logger.info(f"Injected num_ctx={ctx_length} for model {model_name}")
     
     return await ollama_proxy.proxy_request(
         method="POST",
@@ -657,8 +672,7 @@ async def cursor_chat_completions(
     # Removing it causes models to generate malformed tool calls
     problematic_params = [
         'user', 'n', 'logprobs', 'top_logprobs', 'presence_penalty', 'frequency_penalty',
-        # Ollama-specific unsupported params (minimax 500 hatası için kritik)
-        'stream_options',  # OpenAI specific streaming options - minimax 500 fix
+        # NOT: stream_options ARTIK SİLİNMİYOR! Context kullanımı göstergesi için gerekli.
         'parallel_tool_calls',  # OpenAI specific
         'service_tier',  # OpenAI specific
     ]
@@ -679,6 +693,19 @@ async def cursor_chat_completions(
     
     # Ensure stream is set
     data['stream'] = stream
+    
+    # CONTEXT FIX: Streaming'de token kullanımını Cursor'a bildirmek için
+    # stream_options inject et (Cursor context % göstergesi için gerekli)
+    if stream and 'stream_options' not in data:
+        data['stream_options'] = {'include_usage': True}
+    
+    # CONTEXT FIX: Model bazlı num_ctx ayarla (Ollama varsayılanı 4096 - çok düşük)
+    ctx_length = get_context_length_for_model(model_name)
+    if 'options' not in data:
+        data['options'] = {}
+    if isinstance(data['options'], dict) and 'num_ctx' not in data['options']:
+        data['options']['num_ctx'] = ctx_length
+        logger.info(f"Injected num_ctx={ctx_length} for model {model_name}")
     
     return await ollama_proxy.proxy_request(
         method="POST",

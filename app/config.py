@@ -103,6 +103,97 @@ def get_allowed_tools_for_model(model_name: str) -> Optional[List[str]]:
     return None
 
 
+# =============================================================================
+# CONTEXT LENGTH UTILITIES
+# =============================================================================
+# Ollama'nın varsayılan num_ctx değeri 4096 token - bu çoğu kullanım için
+# yetersiz. Context uzunlukları artık DB'de model_mappings tablosunda saklanır
+# ve /admin/model-mappings endpoint'i üzerinden yönetilir.
+#
+# Cursor bu bilgiyi kullanarak:
+# 1. Context kullanım yüzdesini gösterir (ör. "40% - 80K/200K")
+# 2. Auto-summarize tetikler (context %90'a ulaşınca)
+# 3. Daha verimli context yönetimi yapar
+
+# Varsayılan context uzunluğu (DB'de tanımlı olmayan modeller için)
+DEFAULT_CONTEXT_LENGTH = 32768
+
+
+def parse_context_length(value: str) -> int:
+    """
+    İnsan-dostu context length formatını token sayısına çevirir.
+    
+    Desteklenen formatlar:
+    - "198K" veya "198k" -> 198 * 1024 = 202752
+    - "1M" veya "1m" -> 1 * 1024 * 1024 = 1048576
+    - "128K" -> 131072
+    - "32768" -> 32768 (düz sayı)
+    - "32.5K" -> 33280 (ondalıklı)
+    """
+    if not value:
+        raise ValueError("Context length boş olamaz")
+    
+    value = value.strip().upper()
+    
+    if value.endswith('K'):
+        num = float(value[:-1])
+        return int(num * 1024)
+    elif value.endswith('M'):
+        num = float(value[:-1])
+        return int(num * 1024 * 1024)
+    else:
+        # Düz sayı
+        return int(value)
+
+
+def format_context_length(tokens: int) -> str:
+    """
+    Token sayısını insan-dostu formata çevirir.
+    
+    Örnekler:
+    - 202752 -> "198K"
+    - 131072 -> "128K"
+    - 1048576 -> "1M"
+    - 32768 -> "32K"
+    """
+    if not tokens:
+        return None
+    
+    if tokens >= 1024 * 1024 and tokens % (1024 * 1024) == 0:
+        return f"{tokens // (1024 * 1024)}M"
+    elif tokens >= 1024:
+        k_val = tokens / 1024
+        if k_val == int(k_val):
+            return f"{int(k_val)}K"
+        else:
+            return f"{k_val:.1f}K"
+    else:
+        return str(tokens)
+
+
+def get_context_length_for_model(model_name: str) -> int:
+    """
+    Model için yapılandırılmış context uzunluğunu döner.
+    Önce DB'deki (cache'deki) tam eşleşmeye bakar,
+    bulamazsa DEFAULT_CONTEXT_LENGTH döner.
+
+    Args:
+        model_name: Model adı (display name veya real name)
+
+    Returns:
+        Context uzunluğu (token cinsinden)
+    """
+    if not model_name:
+        return DEFAULT_CONTEXT_LENGTH
+    
+    # ModelMappingManager'daki context_lengths cache'ine bak
+    ctx = model_mapper.get_context_length(model_name)
+    if ctx:
+        return ctx
+    
+    return DEFAULT_CONTEXT_LENGTH
+
+
 class ModelMappingManager:
     """
     Manage model name mappings
@@ -123,6 +214,7 @@ class ModelMappingManager:
         self.cache_file = os.path.join(cache_dir, "model_mappings.json")
         self._mappings: Dict[str, str] = {}
         self._reverse_mappings: Dict[str, List[str]] = {}  # One real_name can have multiple display_names
+        self._context_lengths: Dict[str, int] = {}  # display_name -> context_length (token)
         self._cache_loaded = False
         
         # Ensure cache directory exists
@@ -156,6 +248,12 @@ class ModelMappingManager:
                 
                 self._cache_loaded = True
                 print(f"Loaded {len(self._mappings)} model mappings from cache file")
+                
+                # Load context lengths (opsiyonel - eski cache dosyalarında olmayabilir)
+                self._context_lengths = data.get("context_lengths", {})
+                if self._context_lengths:
+                    print(f"Loaded {len(self._context_lengths)} context length configs from cache file")
+                
                 return True
         except Exception as e:
             print(f"Error loading model mappings from cache file: {e}")
@@ -166,7 +264,8 @@ class ModelMappingManager:
         try:
             data = {
                 "mappings": self._mappings,
-                "reverse_mappings": self._reverse_mappings
+                "reverse_mappings": self._reverse_mappings,
+                "context_lengths": self._context_lengths
             }
             
             # Write to temporary file first, then rename (atomic operation)
@@ -209,18 +308,28 @@ class ModelMappingManager:
                         self._reverse_mappings[m.real_name] = []
                     self._reverse_mappings[m.real_name].append(m.display_name)
                 
+                # Build context lengths dict
+                self._context_lengths = {
+                    m.display_name: m.context_length 
+                    for m in mappings 
+                    if m.context_length
+                }
+                
                 self._cache_loaded = True
                 
                 # Save to cache file
                 self._save_to_cache_file()
                 
                 print(f"Loaded {len(self._mappings)} model mappings from database")
+                if self._context_lengths:
+                    print(f"Loaded {len(self._context_lengths)} context length configs from database")
                 
         except Exception as e:
             print(f"Error loading model mappings from DB: {e}")
             # No fallback - mappings will be empty
             self._mappings = {}
             self._reverse_mappings = {}
+            self._context_lengths = {}
     
     async def ensure_loaded(self):
         """Ensure mappings are loaded (from cache file or DB on first load)"""
@@ -298,6 +407,33 @@ class ModelMappingManager:
         """Get all model mappings"""
         return self._mappings.copy()
     
+    def get_context_length(self, model_name: str) -> Optional[int]:
+        """
+        Model için context uzunluğunu döner.
+        Önce display_name ile, sonra real_name ile arar.
+        
+        Args:
+            model_name: Model adı (display name veya real name)
+        
+        Returns:
+            Context uzunluğu (token cinsinden) veya None
+        """
+        # Direkt display_name ile ara
+        if model_name in self._context_lengths:
+            return self._context_lengths[model_name]
+        
+        # real_name ile ara (reverse mapping ile display_name bul)
+        display_names = self._reverse_mappings.get(model_name, [])
+        for dn in display_names:
+            if dn in self._context_lengths:
+                return self._context_lengths[dn]
+        
+        return None
+    
+    def get_all_context_lengths(self) -> Dict[str, int]:
+        """Get all context lengths"""
+        return self._context_lengths.copy()
+    
     async def reload(self):
         """Reload mappings from database"""
         self._cache_loaded = False
@@ -307,38 +443,58 @@ class ModelMappingManager:
         """Invalidate cache (force reload from DB)"""
         self._cache_loaded = False
     
-    async def create_mapping(self, display_name: str, real_name: str) -> Dict[str, str]:
-        """Create a new model mapping in database"""
+    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None) -> Dict[str, any]:
+        """
+        Create or update a model mapping in database (upsert).
+        Var olan mapping'i günceller, yoksa yeni oluşturur.
+        """
         from app.repositories.model_mapping_repository import ModelMappingRepository
         from app.database import async_session_maker
         
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
             
-            # Check if already exists
-            if await repo.exists(display_name):
-                raise ValueError(f"Model mapping already exists: {display_name}")
+            mapping, is_new = await repo.upsert(display_name, real_name, context_length)
             
-            mapping = await repo.create(display_name, real_name)
-            await session.commit()
+            # Update local cache - önce eski reverse mapping'i temizle
+            old_real_name = self._mappings.get(display_name)
+            if old_real_name and old_real_name != real_name:
+                # Real name değiştiyse eski reverse mapping'den kaldır
+                if old_real_name in self._reverse_mappings:
+                    if display_name in self._reverse_mappings[old_real_name]:
+                        self._reverse_mappings[old_real_name].remove(display_name)
+                    if not self._reverse_mappings[old_real_name]:
+                        del self._reverse_mappings[old_real_name]
             
-            # Update local cache
+            # Set new mapping
             self._mappings[display_name] = real_name
             
-            # Update reverse mapping (append to list)
+            # Update reverse mapping
             if real_name not in self._reverse_mappings:
                 self._reverse_mappings[real_name] = []
-            self._reverse_mappings[real_name].append(display_name)
+            if display_name not in self._reverse_mappings[real_name]:
+                self._reverse_mappings[real_name].append(display_name)
+            
+            # Update context length cache
+            if context_length:
+                self._context_lengths[display_name] = context_length
+            elif display_name in self._context_lengths and context_length is None:
+                # context_length gönderilmediyse mevcut değeri koru (update'de)
+                pass
             
             # Save to cache file
             self._save_to_cache_file()
             
-            print(f"Created mapping: {display_name} -> {real_name}")
+            action = "Created" if is_new else "Updated"
+            ctx_info = f" (ctx={context_length})" if context_length else ""
+            print(f"{action} mapping: {display_name} -> {real_name}{ctx_info}")
             
             return {
                 "display_name": mapping.display_name,
                 "real_name": mapping.real_name,
-                "created_at": mapping.created_at.isoformat() if mapping.created_at else None
+                "context_length": mapping.context_length,
+                "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
+                "is_new": is_new
             }
     
     async def delete_mapping(self, display_name: str):
@@ -369,6 +525,10 @@ class ModelMappingManager:
                     if not self._reverse_mappings[real_name]:
                         del self._reverse_mappings[real_name]
             
+            # Remove context length
+            if display_name in self._context_lengths:
+                del self._context_lengths[display_name]
+            
             # Save to cache file
             self._save_to_cache_file()
             
@@ -387,6 +547,7 @@ class ModelMappingManager:
                 {
                     "display_name": m.display_name,
                     "real_name": m.real_name,
+                    "context_length": m.context_length,
                     "created_at": m.created_at.isoformat() if m.created_at else None
                 }
                 for m in mappings

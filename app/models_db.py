@@ -31,10 +31,12 @@ class ModelMapping(Base):
     id = Column(Integer, primary_key=True, index=True)
     display_name = Column(String(255), unique=True, nullable=False, index=True)
     real_name = Column(String(255), nullable=False)
+    context_length = Column(Integer, nullable=True)  # Context window size in tokens (e.g., 131072 for 128K)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     def __repr__(self):
-        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}')>"
+        ctx = f", ctx={self.context_length}" if self.context_length else ""
+        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{ctx})>"
 
 
 class UserModel(Base):

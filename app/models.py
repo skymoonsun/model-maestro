@@ -106,9 +106,10 @@ class AssignModelsRequest(BaseModel):
 
 
 class CreateMappingRequest(BaseModel):
-    """Create model mapping request"""
+    """Create or update model mapping request"""
     display_name: str
     real_name: str
+    context_length: Optional[str] = None  # Human-friendly format: "198K", "128K", "1M", "32768"
 
 
 class UserResponse(BaseModel):
@@ -142,6 +143,8 @@ class ModelMappingResponse(BaseModel):
     """Model mapping response"""
     display_name: str
     real_name: str
+    context_length: Optional[int] = None  # Token cinsinden (e.g., 202752)
+    context_length_display: Optional[str] = None  # İnsan-dostu format (e.g., "198K")
     created_at: Optional[str] = None
 
 class SetUserLimitRequest(BaseModel):
