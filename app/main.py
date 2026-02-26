@@ -411,6 +411,10 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                     if display_name not in models_dict:
                         model_copy = model.copy()
                         model_copy["id"] = display_name
+                        # Cursor IDE reads max_model_len to show context usage % and trigger summarization
+                        ctx_len = get_context_length_for_model(display_name)
+                        if ctx_len:
+                            model_copy["max_model_len"] = ctx_len
                         models_dict[display_name] = model_copy
         
         # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
@@ -420,6 +424,10 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                 base_model = all_models_response["data"][0] if all_models_response["data"] else {}
                 model_entry = base_model.copy() if base_model else {}
                 model_entry["id"] = display_name
+                # Cursor IDE reads max_model_len to show context usage % and trigger summarization
+                ctx_len = get_context_length_for_model(display_name)
+                if ctx_len:
+                    model_entry["max_model_len"] = ctx_len
                 models_dict[display_name] = model_entry
         
         mapped_models = list(models_dict.values())
