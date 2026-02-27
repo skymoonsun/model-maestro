@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
+from fastapi.middleware.cors import CORSMiddleware
 import secrets
 import logging
 import json
@@ -20,6 +21,8 @@ from app.models import (
     OllamaEmbeddingsRequest,
 )
 from app.admin import router as admin_router
+from app.admin_config import router as admin_config_router
+from app.admin_dashboard import router as admin_dashboard_router
 from app.user_manager import user_manager
 
 # Setup logging
@@ -51,8 +54,19 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True}
 )
 
-# Include admin router
+# CORS middleware (frontend panel için)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Production'da frontend URL'i ile sınırlandırılmalı
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include admin routers
 app.include_router(admin_router)
+app.include_router(admin_config_router)
+app.include_router(admin_dashboard_router)
 
 
 # Basic Auth for documentation
@@ -135,6 +149,11 @@ async def startup_event():
                 raise e
             logger.warning(f"Database not ready yet, retrying in 1s... ({i+1}/{retries})")
             await asyncio.sleep(1)
+    
+    # Load configuration from database
+    from app.services import config_manager
+    await config_manager.load_all()
+    logger.info("Configuration loaded from database")
     
     # Start background tasks
     from app.background_tasks import start_background_tasks

@@ -7,7 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 # Import your models
 from app.database import Base
-from app.models_db import User, ModelMapping, UserModel
+from app.models_db import (
+    User, ModelMapping, UserModel, UserActivityLog, UserLimit,
+    SystemConfig, ModelConfig, ToolSet, ModelFormatPattern, AuditLog
+)
 from app.config import get_settings
 
 # this is the Alembic Config object

@@ -160,3 +160,129 @@ class UserLimitResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
+
+# =============================================================================
+# FRONTEND PANEL - NEW MODELS
+# =============================================================================
+
+# --- System Config ---
+
+class SystemConfigItem(BaseModel):
+    """Single system config item"""
+    key: str
+    value: str
+    description: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class SystemConfigResponse(BaseModel):
+    """Complete system config grouped by category"""
+    background_tasks: Dict[str, Any] = {}
+    http_client: Dict[str, Any] = {}
+    defaults: Dict[str, Any] = {}
+    ollama_unsupported_params: List[str] = []
+
+class UpdateSystemConfigRequest(BaseModel):
+    """Update system config (partial update)"""
+    background_tasks: Optional[Dict[str, Any]] = None
+    http_client: Optional[Dict[str, Any]] = None
+    defaults: Optional[Dict[str, Any]] = None
+    ollama_unsupported_params: Optional[List[str]] = None
+
+# --- Model Config ---
+
+class ModelConfigRequest(BaseModel):
+    """Create/update model config"""
+    model_prefix: str
+    allowed_tools: Optional[List[str]] = None
+    unsupported_params: Optional[List[str]] = None
+    default_context_length: Optional[int] = 32768
+    max_context_length: Optional[int] = None
+    requests_per_minute: Optional[int] = None
+    tokens_per_minute: Optional[int] = None
+    is_active: bool = True
+    maintenance_mode: bool = False
+    description: Optional[str] = None
+    cost_multiplier: Optional[float] = 1.0
+
+class ModelConfigResponse(BaseModel):
+    """Model config response"""
+    id: int
+    model_prefix: str
+    allowed_tools: Optional[List[str]] = None
+    unsupported_params: Optional[List[str]] = None
+    default_context_length: Optional[int] = 32768
+    max_context_length: Optional[int] = None
+    requests_per_minute: Optional[int] = None
+    tokens_per_minute: Optional[int] = None
+    is_active: bool = True
+    maintenance_mode: bool = False
+    description: Optional[str] = None
+    cost_multiplier: Optional[float] = 1.0
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+# --- Tool Sets ---
+
+class ToolSetRequest(BaseModel):
+    """Create/update tool set"""
+    name: str
+    tools: Optional[List[str]] = None  # None = full (all tools)
+    description: Optional[str] = None
+
+class ToolSetResponse(BaseModel):
+    """Tool set response"""
+    id: int
+    name: str
+    tools: Optional[List[str]] = None
+    description: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+# --- Model Format Patterns ---
+
+class ModelFormatPatternRequest(BaseModel):
+    """Create/update model format pattern"""
+    model_prefix: str
+    format_type: str
+    pattern_config: Dict[str, Any]
+    is_active: bool = True
+
+class ModelFormatPatternResponse(BaseModel):
+    """Model format pattern response"""
+    id: int
+    model_prefix: str
+    format_type: str
+    pattern_config: Dict[str, Any]
+    is_active: bool = True
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+# --- Dashboard ---
+
+class DashboardStatsResponse(BaseModel):
+    """Dashboard statistics"""
+    users: Dict[str, Any]
+    requests: Dict[str, Any]
+    tokens: Dict[str, Any]
+    models: Dict[str, Any]
+    system: Dict[str, Any]
+
+class ChartDataResponse(BaseModel):
+    """Chart data response"""
+    labels: List[str]
+    data: List[Any]
+    period: Optional[str] = None
+
+# --- Audit Log ---
+
+class AuditLogResponse(BaseModel):
+    """Audit log entry response"""
+    id: int
+    action: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    admin_ip: Optional[str] = None
+    created_at: Optional[str] = None
+
+

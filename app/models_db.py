@@ -1,6 +1,7 @@
 """SQLAlchemy database models"""
 
-from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, DateTime, UniqueConstraint, Numeric
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -95,4 +96,110 @@ class UserLimit(Base):
     
     def __repr__(self):
         return f"<UserLimit(user_id={self.user_id}, requests={self.request_limit}, tokens={self.token_limit})>"
+
+
+# =============================================================================
+# FRONTEND PANEL - NEW TABLES
+# =============================================================================
+
+class SystemConfig(Base):
+    """System-wide key/value configuration"""
+    __tablename__ = "system_config"
+    
+    key = Column(String(255), primary_key=True)
+    value = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    def __repr__(self):
+        return f"<SystemConfig(key='{self.key}', value='{self.value[:50]}...')>"
+
+
+class ModelConfig(Base):
+    """Model-specific configuration (tool filtering, param restrictions, rate limits)"""
+    __tablename__ = "model_config"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    model_prefix = Column(String(255), unique=True, nullable=False, index=True)  # "minimax", "deepseek", etc.
+    
+    # Tool filtering
+    allowed_tools = Column(ARRAY(String), nullable=True)  # NULL = tüm tool'lar izinli
+    
+    # Parameter restrictions
+    unsupported_params = Column(ARRAY(String), nullable=True)  # Kaldırılacak parametreler
+    
+    # Context settings
+    default_context_length = Column(Integer, default=32768)
+    max_context_length = Column(Integer, nullable=True)
+    
+    # Rate limiting
+    requests_per_minute = Column(Integer, nullable=True)
+    tokens_per_minute = Column(Integer, nullable=True)
+    
+    # Status
+    is_active = Column(Boolean, default=True, nullable=False)
+    maintenance_mode = Column(Boolean, default=False, nullable=False)
+    
+    # Metadata
+    description = Column(Text, nullable=True)
+    cost_multiplier = Column(Numeric(6, 2), default=1.0)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    def __repr__(self):
+        return f"<ModelConfig(prefix='{self.model_prefix}', active={self.is_active})>"
+
+
+class ToolSet(Base):
+    """Pre-defined tool sets for easy assignment"""
+    __tablename__ = "tool_sets"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)  # "basic", "standard", "full"
+    tools = Column(ARRAY(String), nullable=True)  # NULL = tüm tool'lar (full set)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    def __repr__(self):
+        count = len(self.tools) if self.tools else "∞"
+        return f"<ToolSet(name='{self.name}', tools={count})>"
+
+
+class ModelFormatPattern(Base):
+    """Custom format patterns for specific models (Kimi tool calls, etc.)"""
+    __tablename__ = "model_format_patterns"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    model_prefix = Column(String(255), nullable=False, index=True)
+    format_type = Column(String(50), nullable=False)  # 'custom_tool_call', 'reasoning_split', etc.
+    pattern_config = Column(JSONB, nullable=False)  # Regex patterns and settings
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Unique constraint: one pattern type per model prefix
+    __table_args__ = (
+        UniqueConstraint('model_prefix', 'format_type', name='uq_model_format'),
+    )
+    
+    def __repr__(self):
+        return f"<ModelFormatPattern(prefix='{self.model_prefix}', type='{self.format_type}')>"
+
+
+class AuditLog(Base):
+    """Admin action audit log"""
+    __tablename__ = "audit_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    action = Column(String(100), nullable=False, index=True)  # "create_user", "update_config", etc.
+    entity_type = Column(String(100), nullable=True)  # "user", "model_config", "system_config", etc.
+    entity_id = Column(String(255), nullable=True)  # Affected entity identifier
+    details = Column(JSONB, nullable=True)  # Action details (before/after values, etc.)
+    admin_ip = Column(String(45), nullable=True)  # Admin's IP address
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    def __repr__(self):
+        return f"<AuditLog(action='{self.action}', entity='{self.entity_type}:{self.entity_id}')>"
 

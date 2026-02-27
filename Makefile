@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-restart dev-logs dev-build dev-clean prod-up prod-down prod-restart prod-logs
+.PHONY: help dev-up dev-down dev-restart dev-logs dev-build dev-clean prod-up prod-down prod-restart prod-logs db-seed db-seed-reset
 
 # Colors for output
 BLUE := \033[0;34m
@@ -141,6 +141,34 @@ db-reset: ## Reset database (drops and recreates)
 		docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"; \
 		docker exec ollama-proxy alembic upgrade head; \
 		echo "$(GREEN)✓ Database reset complete$(NC)"; \
+	else \
+		echo "$(YELLOW)Cancelled$(NC)"; \
+	fi
+
+db-seed: ## Seed database with pending seeds (migration-style)
+	@echo "$(GREEN)Running pending seeds...$(NC)"
+	docker exec ollama-proxy python -m app.seeder
+	@echo "$(GREEN)✓ Database seeded$(NC)"
+
+db-seed-status: ## Show seed status (which seeds have been applied)
+	docker exec ollama-proxy python -m app.seeder --status
+
+db-seed-reset: ## Reset seed history (data stays, seeds will re-run)
+	@echo "$(RED)WARNING: This will reset seed history - all seeds will re-run on next db-seed!$(NC)"
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		docker exec ollama-proxy python -m app.seeder --reset; \
+		echo "$(GREEN)✓ Seed history reset$(NC)"; \
+	else \
+		echo "$(YELLOW)Cancelled$(NC)"; \
+	fi
+
+db-seed-reset-all: ## Reset seed history AND remove seeded data
+	@echo "$(RED)WARNING: This will remove ALL seeded data and reset history!$(NC)"
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		docker exec ollama-proxy python -m app.seeder --reset-all; \
+		echo "$(GREEN)✓ Seed data and history reset$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
 	fi
