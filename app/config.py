@@ -443,7 +443,7 @@ class ModelMappingManager:
         """Invalidate cache (force reload from DB)"""
         self._cache_loaded = False
     
-    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None) -> Dict[str, any]:
+    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Dict[str, any]:
         """
         Create or update a model mapping in database (upsert).
         Var olan mapping'i günceller, yoksa yeni oluşturur.
@@ -454,7 +454,7 @@ class ModelMappingManager:
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
             
-            mapping, is_new = await repo.upsert(display_name, real_name, context_length)
+            mapping, is_new = await repo.upsert(display_name, real_name, context_length, capabilities)
             
             # Update local cache - önce eski reverse mapping'i temizle
             old_real_name = self._mappings.get(display_name)
@@ -493,6 +493,7 @@ class ModelMappingManager:
                 "display_name": mapping.display_name,
                 "real_name": mapping.real_name,
                 "context_length": mapping.context_length,
+                "capabilities": mapping.capabilities,
                 "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
                 "is_new": is_new
             }
@@ -548,6 +549,7 @@ class ModelMappingManager:
                     "display_name": m.display_name,
                     "real_name": m.real_name,
                     "context_length": m.context_length,
+                    "capabilities": m.capabilities,
                     "created_at": m.created_at.isoformat() if m.created_at else None
                 }
                 for m in mappings

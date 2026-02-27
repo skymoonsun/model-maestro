@@ -110,6 +110,7 @@ class CreateMappingRequest(BaseModel):
     display_name: str
     real_name: str
     context_length: Optional[str] = None  # Human-friendly format: "198K", "128K", "1M", "32768"
+    capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
 
 
 class UserResponse(BaseModel):
@@ -145,6 +146,7 @@ class ModelMappingResponse(BaseModel):
     real_name: str
     context_length: Optional[int] = None  # Token cinsinden (e.g., 202752)
     context_length_display: Optional[str] = None  # İnsan-dostu format (e.g., "198K")
+    capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
     created_at: Optional[str] = None
 
 class SetUserLimitRequest(BaseModel):
@@ -286,3 +288,36 @@ class AuditLogResponse(BaseModel):
     created_at: Optional[str] = None
 
 
+# --- Ollama Model Management ---
+
+class ModelPullRequest(BaseModel):
+    """Pull a model from Ollama registry"""
+    name: str
+    stream: bool = True
+
+class OllamaModelListItem(BaseModel):
+    """A model from Ollama /api/tags"""
+    name: str
+    model: Optional[str] = None
+    size: Optional[int] = None
+    digest: Optional[str] = None
+    modified_at: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    # Enriched fields (from our DB)
+    is_mapped: bool = False
+    display_name: Optional[str] = None
+
+class ModelShowResponse(BaseModel):
+    """Detailed model info from Ollama /api/show"""
+    name: str
+    capabilities: Optional[List[str]] = None
+    details: Optional[Dict[str, Any]] = None
+    model_info: Optional[Dict[str, Any]] = None
+    template: Optional[str] = None
+    modified_at: Optional[str] = None
+
+class SyncCapabilitiesResponse(BaseModel):
+    """Response from capabilities sync"""
+    synced: int
+    failed: int
+    results: List[Dict[str, Any]]
