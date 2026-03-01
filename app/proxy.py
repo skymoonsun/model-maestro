@@ -832,12 +832,14 @@ class OllamaProxy:
         # Ensure model mappings are loaded from database
         await self._ensure_mappings_loaded()
         
-        # Extract model name for logging
+        # Extract model name for node selection and logging
         model_name = None
         if data and isinstance(data, dict):
             model_name = data.get('model') or data.get('name')
         
-        url = f"{self.base_url}{endpoint}"
+        # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
+        base_url = await self._select_node_url(model_name or '')
+        url = f"{base_url}{endpoint}"
         
         # Map model names in request
         if data:
