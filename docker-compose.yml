@@ -25,7 +25,6 @@ services:
       - "3000:3000"
     environment:
       - BACKEND_URL=http://ollama-proxy:8000
-      - NEXT_PUBLIC_ADMIN_TOKEN=${ADMIN_TOKEN}
     restart: unless-stopped
     depends_on:
       - ollama-proxy

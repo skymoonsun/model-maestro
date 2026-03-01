@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str
     admin_token: str
+    admin_username: str = "admin"
+    admin_password: str = "admin"
     redis_url: str = "redis://localhost:6379/0"
     docs_username: str = "admin"
     docs_password: str = "changeme"

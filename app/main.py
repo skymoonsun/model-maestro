@@ -21,6 +21,7 @@ from app.models import (
     OllamaEmbeddingsRequest,
 )
 from app.admin import router as admin_router
+from app.admin_auth import router as admin_auth_router
 from app.admin_config import router as admin_config_router
 from app.admin_dashboard import router as admin_dashboard_router
 from app.admin_models import router as admin_models_router
@@ -65,7 +66,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include admin routers
+# Include admin routers (auth first - login has no auth)
+app.include_router(admin_auth_router)
 app.include_router(admin_router)
 app.include_router(admin_config_router)
 app.include_router(admin_dashboard_router)
