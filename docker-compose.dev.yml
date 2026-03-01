@@ -42,6 +42,8 @@ services:
       - "8000:8000"
     volumes:
       - ./cache:/app/cache
+      - ./app:/app/app
+      - ./alembic:/app/alembic
     env_file:
       - .env
     extra_hosts:

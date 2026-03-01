@@ -323,3 +323,293 @@ class SyncCapabilitiesResponse(BaseModel):
     synced: int
     failed: int
     results: List[Dict[str, Any]]
+
+
+# =============================================================================
+# LOAD BALANCING - NODE MANAGEMENT
+# =============================================================================
+
+class OllamaNodeCreate(BaseModel):
+    """Create a new Ollama node"""
+    name: str
+    base_url: str
+    api_key: Optional[str] = None
+    priority: Optional[int] = 0
+    weight: Optional[int] = 100
+    is_active: Optional[bool] = True
+    health_check_url: Optional[str] = None
+
+
+class OllamaNodeUpdate(BaseModel):
+    """Update an Ollama node"""
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    priority: Optional[int] = None
+    weight: Optional[int] = None
+    is_active: Optional[bool] = None
+    health_check_url: Optional[str] = None
+
+
+class OllamaNodeResponse(BaseModel):
+    """Ollama node response"""
+    id: int
+    name: str
+    base_url: str
+    api_key_set: bool = False
+    priority: int = 0
+    weight: int = 100
+    is_active: bool = True
+    health_status: str = "unknown"
+    last_health_check: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class NodeModelInfo(BaseModel):
+    """Model info for a node"""
+    model_name: str
+    model_size: Optional[int] = None
+    model_family: Optional[str] = None
+    is_available: bool = True
+
+
+class OllamaNodeDetailResponse(BaseModel):
+    """Detailed Ollama node response with models"""
+    id: int
+    name: str
+    base_url: str
+    api_key_set: bool = False
+    priority: int = 0
+    weight: int = 100
+    is_active: bool = True
+    health_status: str = "unknown"
+    last_health_check: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    model_count: int = 0
+    models: List[NodeModelInfo] = []
+
+
+class ModelDistributionResponse(BaseModel):
+    """Model distribution across nodes"""
+    model_name: str
+    node_count: int
+    nodes: List[str]
+
+
+class NodeSyncResponse(BaseModel):
+    """Response from node model sync"""
+    success: bool
+    node_id: int
+    node_name: str
+    synced_count: int = 0
+    models: List[str] = []
+    total_models: int = 0
+    error: Optional[str] = None
+
+
+class PullModelRequest(BaseModel):
+    """Pull model request"""
+    name: str
+    stream: bool = True
+
+
+class PullModelResponse(BaseModel):
+    """Pull model response"""
+    status: str
+    node: Optional[str] = None
+    digest: Optional[str] = None
+    total: Optional[int] = None
+    completed: Optional[int] = None
+    error: Optional[str] = None
+
+
+class NodeLoadMetricsResponse(BaseModel):
+    """Node load metrics"""
+    node_id: int
+    active_requests: int
+    total_requests_today: int
+    avg_response_time_ms: Optional[int] = None
+    last_5_min_requests: Optional[int] = None
+    recorded_at: Optional[str] = None
+
+
+class LoadBalancerStatusResponse(BaseModel):
+    """Load balancer status"""
+    strategy: str
+    total_nodes: int
+    active_nodes: int
+    healthy_nodes: int
+    total_models: int
+    node_loads: Dict[str, Any] = {}
+
+
+# =============================================================================
+# LOAD BALANCING - OLLAMA NODES
+# =============================================================================
+
+# --- Ollama Node Management ---
+
+class OllamaNodeCreate(BaseModel):
+    """Create a new Ollama node"""
+    name: str
+    base_url: str
+    api_key: Optional[str] = None
+    priority: int = 0
+    weight: int = 100
+    is_active: bool = True
+    health_check_url: Optional[str] = None
+
+class OllamaNodeUpdate(BaseModel):
+    """Update an Ollama node"""
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    priority: Optional[int] = None
+    weight: Optional[int] = None
+    is_active: Optional[bool] = None
+    health_check_url: Optional[str] = None
+
+class OllamaNodeResponse(BaseModel):
+    """Ollama node response"""
+    id: int
+    name: str
+    base_url: str
+    api_key: Optional[str] = None
+    priority: int
+    weight: int
+    is_active: bool
+    health_check_url: Optional[str] = None
+    last_health_check: Optional[str] = None
+    health_status: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    # Computed fields
+    model_count: int = 0
+    active_requests: int = 0
+    avg_response_time_ms: Optional[int] = None
+
+class OllamaNodeListResponse(BaseModel):
+    """List of Ollama nodes with models"""
+    nodes: List[OllamaNodeResponse]
+    total: int
+
+# --- Node Model Discovery ---
+
+class NodeModelResponse(BaseModel):
+    """Model on a node"""
+    id: int
+    node_id: int
+    node_name: str
+    model_name: str
+    model_size: Optional[int] = None
+    model_family: Optional[str] = None
+    model_capabilities: Optional[Dict[str, Any]] = None
+    digest: Optional[str] = None
+    modified_at: Optional[str] = None
+    last_seen: Optional[str] = None
+    is_available: bool
+
+class NodeModelListResponse(BaseModel):
+    """List of models on a node"""
+    node_id: int
+    node_name: str
+    models: List[NodeModelResponse]
+    total: int
+
+# --- Model Distribution ---
+
+class ModelDistributionRow(BaseModel):
+    """Per-model distribution row (models across nodes)"""
+    model_name: str
+    node_count: int
+    nodes: List[str]
+
+class ModelDistributionItem(BaseModel):
+    """Model distribution across nodes"""
+    model_name: str
+    display_name: Optional[str] = None
+    is_mapped: bool = False
+    total_instances: int
+    available_nodes: List[Dict[str, Any]]  # [{node_id, node_name, load, is_primary}]
+    primary_node: Optional[Dict[str, Any]] = None  # {node_id, node_name}
+
+class ModelDistributionResponse(BaseModel):
+    """Model distribution across all nodes"""
+    distribution: List[ModelDistributionItem]
+    total_models: int
+    total_nodes: int
+
+# --- Load Metrics ---
+
+class NodeLoadMetricResponse(BaseModel):
+    """Node load metric"""
+    node_id: int
+    node_name: str
+    active_requests: int
+    total_requests_today: int
+    avg_response_time_ms: Optional[int] = None
+    last_5_min_requests: int
+    cpu_usage: Optional[float] = None
+    memory_usage: Optional[float] = None
+    recorded_at: Optional[str] = None
+
+class LoadBalancerStatusResponse(BaseModel):
+    """Load balancer status"""
+    strategy: str
+    total_nodes: int
+    active_nodes: int
+    healthy_nodes: int
+    unhealthy_nodes: int
+    total_models_available: int
+    load_metrics: List[NodeLoadMetricResponse]
+
+# --- Model Routing Rules ---
+
+class ModelRoutingRuleCreate(BaseModel):
+    """Create a routing rule"""
+    model_pattern: str
+    preferred_node_id: Optional[int] = None
+    fallback_node_ids: Optional[List[int]] = None
+    load_balance_strategy: str = "least_loaded"  # round_robin, weighted, least_loaded
+    is_active: bool = True
+
+class ModelRoutingRuleUpdate(BaseModel):
+    """Update a routing rule"""
+    model_pattern: Optional[str] = None
+    preferred_node_id: Optional[int] = None
+    fallback_node_ids: Optional[List[int]] = None
+    load_balance_strategy: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class ModelRoutingRuleResponse(BaseModel):
+    """Routing rule response"""
+    id: int
+    model_pattern: str
+    preferred_node_id: Optional[int] = None
+    preferred_node_name: Optional[str] = None
+    fallback_node_ids: Optional[List[int]] = None
+    fallback_node_names: Optional[List[str]] = None
+    load_balance_strategy: str
+    is_active: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+# --- Model Pull with Node Selection ---
+
+class ModelPullToNodeRequest(BaseModel):
+    """Pull model to specific node(s)"""
+    name: str
+    node_ids: Optional[List[int]] = None  # None = all nodes, specific IDs = selected nodes
+    stream: bool = True
+    insecure: bool = False
+
+class ModelPullStatusResponse(BaseModel):
+    """Status of model pull to multiple nodes"""
+    model_name: str
+    total_nodes: int
+    completed_nodes: int
+    failed_nodes: int
+    results: List[Dict[str, Any]]  # [{node_id, node_name, status, error}]
+

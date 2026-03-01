@@ -1,13 +1,20 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ollamaModelsApi, type OllamaModel } from '@/lib/api';
+import { ollamaModelsApi, nodesApi, type OllamaModel } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
 import {
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
@@ -16,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { useState, useCallback } from 'react';
-import { Download, Trash2, Search, HardDrive } from 'lucide-react';
+import { Download, Trash2, Search, HardDrive, Server } from 'lucide-react';
 import Link from 'next/link';
 
 function formatSize(bytes: number) {
@@ -25,12 +32,20 @@ function formatSize(bytes: number) {
     return `${(bytes / 1_000).toFixed(0)} KB`;
 }
 
+const PULL_ALL = 'all';
+
 function PullModelSection() {
     const [modelName, setModelName] = useState('');
     const [pulling, setPulling] = useState(false);
     const [progress, setProgress] = useState(0);
     const [status, setStatus] = useState('');
+    const [targetNode, setTargetNode] = useState<string>(PULL_ALL);
     const queryClient = useQueryClient();
+
+    const { data: nodes } = useQuery({
+        queryKey: ['nodes'],
+        queryFn: () => nodesApi.list(),
+    });
 
     const handlePull = useCallback(async () => {
         if (!modelName.trim()) return;
@@ -39,17 +54,41 @@ function PullModelSection() {
         setStatus('Starting...');
 
         try {
-            await ollamaModelsApi.pull(modelName.trim(), (data) => {
-                if (data.status) setStatus(data.status as string);
-                if (data.total && data.completed) {
-                    setProgress(((data.completed as number) / (data.total as number)) * 100);
-                }
-                if (data.status === 'success') {
-                    setProgress(100);
-                }
-            });
+            if (nodes?.length && targetNode !== PULL_ALL) {
+                const nodeId = Number(targetNode);
+                await nodesApi.pullModel(nodeId, modelName.trim(), (data) => {
+                    if (data.status) setStatus(data.status as string);
+                    if (data.total && data.completed) {
+                        setProgress(((data.completed as number) / (data.total as number)) * 100);
+                    }
+                    if (data.status === 'success') setProgress(100);
+                    if ((data as { node?: string }).node) {
+                        setStatus(`${(data as { node: string }).node}: ${data.status}`);
+                    }
+                });
+            } else if (nodes?.length && targetNode === PULL_ALL) {
+                await nodesApi.pullModelAll(modelName.trim(), (data) => {
+                    if (data.status) setStatus(data.status as string);
+                    if (data.total && data.completed) {
+                        setProgress(((data.completed as number) / (data.total as number)) * 100);
+                    }
+                    if (data.status === 'success') setProgress(100);
+                    if ((data as { node?: string }).node) {
+                        setStatus(`${(data as { node: string }).node}: ${data.status}`);
+                    }
+                });
+            } else {
+                await ollamaModelsApi.pull(modelName.trim(), (data) => {
+                    if (data.status) setStatus(data.status as string);
+                    if (data.total && data.completed) {
+                        setProgress(((data.completed as number) / (data.total as number)) * 100);
+                    }
+                    if (data.status === 'success') setProgress(100);
+                });
+            }
             toast.success(`${modelName} downloaded successfully`);
             queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
+            queryClient.invalidateQueries({ queryKey: ['nodes'] });
             setModelName('');
         } catch (err: unknown) {
             toast.error(`Pull error: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -58,7 +97,7 @@ function PullModelSection() {
             setProgress(0);
             setStatus('');
         }
-    }, [modelName, queryClient]);
+    }, [modelName, targetNode, nodes?.length, queryClient]);
 
     return (
         <Card>
@@ -68,18 +107,44 @@ function PullModelSection() {
                 </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                     <Input
                         placeholder="Model name (e.g., llama3.3:70b)"
                         value={modelName}
                         onChange={(e) => setModelName(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && !pulling && handlePull()}
                         disabled={pulling}
+                        className="flex-1 min-w-[200px]"
                     />
+                    {nodes?.length ? (
+                        <Select value={targetNode} onValueChange={setTargetNode} disabled={pulling}>
+                            <SelectTrigger className="w-[180px]">
+                                <Server className="h-4 w-4 mr-2" />
+                                <SelectValue placeholder="Pull to..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value={PULL_ALL}>All nodes</SelectItem>
+                                {nodes?.map((n) => (
+                                    <SelectItem key={n.id} value={String(n.id)}>
+                                        {n.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    ) : null}
                     <Button onClick={handlePull} disabled={!modelName.trim() || pulling}>
                         {pulling ? 'Pulling...' : 'Pull'}
                     </Button>
                 </div>
+                {nodes?.length ? (
+                    <p className="text-xs text-muted-foreground">
+                        Pull to a specific node or all nodes. Manage nodes in{' '}
+                        <Link href="/nodes" className="text-primary hover:underline">
+                            Nodes
+                        </Link>
+                        .
+                    </p>
+                ) : null}
                 {pulling && (
                     <div className="space-y-2">
                         <Progress value={progress} className="h-2" />

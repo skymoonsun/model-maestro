@@ -30,8 +30,6 @@ def get_settings() -> Settings:
     return Settings()
 
 
-from app.services import config_manager
-
 def filter_tools_for_model(model_name: str, tools: List[dict]) -> List[dict]:
     """
     Model için tanımlı allowed tools config varsa tools listesini filtreler.
@@ -46,7 +44,7 @@ def filter_tools_for_model(model_name: str, tools: List[dict]) -> List[dict]:
     """
     if not tools:
         return tools
-
+    from app.services import config_manager  # Lazy import to avoid circular dependency
     allowed_names = config_manager.get_model_allowed_tools(model_name)
     
     # None means all tools allowed
@@ -73,6 +71,7 @@ def get_allowed_tools_for_model(model_name: str) -> Optional[List[str]]:
     """
     if not model_name:
         return None
+    from app.services import config_manager  # Lazy import to avoid circular dependency
     return config_manager.get_model_allowed_tools(model_name)
 
 

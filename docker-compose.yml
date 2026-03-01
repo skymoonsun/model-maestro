@@ -4,9 +4,8 @@ services:
   ollama-proxy:
     build: .
     container_name: ollama-proxy
-    network_mode: "host"
     ports:
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     volumes:
       - ./cache:/app/cache
     env_file:
@@ -14,4 +13,25 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    networks:
+      - ollama-proxy-net
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    container_name: ollama-proxy-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://ollama-proxy:8000
+      - NEXT_PUBLIC_ADMIN_TOKEN=${ADMIN_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - ollama-proxy
+    networks:
+      - ollama-proxy-net
+
+networks:
+  ollama-proxy-net:
+    driver: bridge

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     LayoutDashboard,
     Users,
@@ -15,28 +15,43 @@ import {
     Layers,
     Server,
     SlidersHorizontal,
+    Network,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
+
+interface NavChild {
+    label: string;
+    href: string;
+    icon: React.ComponentType<{ className?: string }>;
+}
 
 interface NavItem {
     label: string;
     href: string;
     icon: React.ComponentType<{ className?: string }>;
-    children?: { label: string; href: string; icon: React.ComponentType<{ className?: string }> }[];
+    children?: NavChild[];
 }
 
 const navigation: NavItem[] = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
     { label: 'Users', href: '/users', icon: Users },
     {
+        label: 'Ollama',
+        href: '/ollama',
+        icon: Server,
+        children: [
+            { label: 'Nodes', href: '/nodes', icon: Network },
+            { label: 'Models', href: '/models/ollama', icon: Bot },
+        ],
+    },
+    {
         label: 'Models',
         href: '/models',
-        icon: Bot,
+        icon: Layers,
         children: [
             { label: 'Mappings', href: '/models/mappings', icon: Layers },
-            { label: 'Ollama Models', href: '/models/ollama', icon: Server },
-            { label: 'Model Config', href: '/models/config', icon: SlidersHorizontal },
+            { label: 'Config', href: '/models/config', icon: SlidersHorizontal },
         ],
     },
     { label: 'Tool Sets', href: '/tool-sets', icon: Wrench },
@@ -46,7 +61,35 @@ const navigation: NavItem[] = [
 
 export function Sidebar() {
     const pathname = usePathname();
-    const [modelsOpen, setModelsOpen] = useState(pathname.startsWith('/models'));
+    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+
+    useEffect(() => {
+        setOpenGroups((prev) => {
+            const next = { ...prev };
+            navigation.forEach((item) => {
+                if (item.children) {
+                    const isActive = item.children.some(
+                        (c) =>
+                            pathname === c.href ||
+                            (c.href !== '/' && pathname.startsWith(c.href))
+                    );
+                    if (isActive) next[item.href] = true;
+                }
+            });
+            return next;
+        });
+    }, [pathname]);
+
+    const toggleGroup = (href: string, currentlyOpen: boolean) => {
+        setOpenGroups((prev) => ({ ...prev, [href]: !currentlyOpen }));
+    };
+
+    const isGroupActive = (item: NavItem) => {
+        if (!item.children) return false;
+        return item.children.some(
+            (c) => pathname === c.href || (c.href !== '/' && pathname.startsWith(c.href))
+        );
+    };
 
     return (
         <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 z-50">
@@ -69,11 +112,12 @@ export function Sidebar() {
                     <nav className="px-3 space-y-1">
                         {navigation.map((item) => {
                             if (item.children) {
-                                const isParentActive = pathname.startsWith(item.href);
+                                const isOpen = openGroups[item.href] ?? isGroupActive(item);
+                                const isParentActive = isGroupActive(item);
                                 return (
                                     <div key={item.href}>
                                         <button
-                                            onClick={() => setModelsOpen(!modelsOpen)}
+                                            onClick={() => toggleGroup(item.href, isOpen)}
                                             className={cn(
                                                 'flex items-center w-full gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors',
                                                 isParentActive
@@ -81,15 +125,15 @@ export function Sidebar() {
                                                     : 'text-muted-foreground hover:text-foreground hover:bg-accent'
                                             )}
                                         >
-                                            <item.icon className="h-4 w-4" />
+                                            <item.icon className="h-4 w-4 shrink-0" />
                                             <span className="flex-1 text-left">{item.label}</span>
-                                            {modelsOpen ? (
-                                                <ChevronDown className="h-4 w-4" />
+                                            {isOpen ? (
+                                                <ChevronDown className="h-4 w-4 shrink-0" />
                                             ) : (
-                                                <ChevronRight className="h-4 w-4" />
+                                                <ChevronRight className="h-4 w-4 shrink-0" />
                                             )}
                                         </button>
-                                        {modelsOpen && (
+                                        {isOpen && (
                                             <div className="ml-4 mt-1 space-y-1">
                                                 {item.children.map((child) => (
                                                     <Link
@@ -97,12 +141,14 @@ export function Sidebar() {
                                                         href={child.href}
                                                         className={cn(
                                                             'flex items-center gap-3 px-3 py-2 text-sm rounded-lg transition-colors',
-                                                            pathname === child.href
+                                                            pathname === child.href ||
+                                                                (child.href !== '/' &&
+                                                                    pathname.startsWith(child.href))
                                                                 ? 'bg-accent text-foreground font-medium'
                                                                 : 'text-muted-foreground hover:text-foreground hover:bg-accent'
                                                         )}
                                                     >
-                                                        <child.icon className="h-4 w-4" />
+                                                        <child.icon className="h-4 w-4 shrink-0" />
                                                         <span>{child.label}</span>
                                                     </Link>
                                                 ))}
@@ -113,7 +159,9 @@ export function Sidebar() {
                             }
 
                             const isActive =
-                                item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+                                item.href === '/'
+                                    ? pathname === '/'
+                                    : pathname.startsWith(item.href);
 
                             return (
                                 <Link
@@ -126,7 +174,7 @@ export function Sidebar() {
                                             : 'text-muted-foreground hover:text-foreground hover:bg-accent'
                                     )}
                                 >
-                                    <item.icon className="h-4 w-4" />
+                                    <item.icon className="h-4 w-4 shrink-0" />
                                     <span>{item.label}</span>
                                 </Link>
                             );

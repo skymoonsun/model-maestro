@@ -149,6 +149,18 @@ db-reset: ## Reset database (drops and recreates)
 		echo "$(YELLOW)Cancelled$(NC)"; \
 	fi
 
+db-fresh: ## Drop DB, recreate, run all migrations and seeders (no confirmation)
+	@echo "$(RED)Terminating connections and dropping database...$(NC)"
+	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'ollama_proxy' AND pid <> pg_backend_pid();" 2>/dev/null || true
+	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"
+	@echo "$(GREEN)Creating fresh database...$(NC)"
+	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"
+	@echo "$(GREEN)Running migrations...$(NC)"
+	@docker exec ollama-proxy alembic upgrade head
+	@echo "$(GREEN)Running seeders...$(NC)"
+	@docker exec ollama-proxy python -m app.seeder
+	@echo "$(GREEN)✓ Database fresh: migrations + seeds complete$(NC)"
+
 db-seed: ## Seed database with pending seeds (migration-style)
 	@echo "$(GREEN)Running pending seeds...$(NC)"
 	docker exec ollama-proxy python -m app.seeder

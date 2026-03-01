@@ -9,6 +9,7 @@ from app.repositories.system_config_repository import SystemConfigRepository
 from app.repositories.model_config_repository import ModelConfigRepository
 from app.repositories.tool_set_repository import ToolSetRepository
 from app.repositories.audit_log_repository import AuditLogRepository
+from app.repositories.node_repository import NodeRepository, NodeModelRepository, NodeLoadMetricRepository
 
 __all__ = [
     "UserRepository",
@@ -20,4 +21,7 @@ __all__ = [
     "ModelConfigRepository",
     "ToolSetRepository",
     "AuditLogRepository",
+    "NodeRepository",
+    "NodeModelRepository",
+    "NodeLoadMetricRepository",
 ]
