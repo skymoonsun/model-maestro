@@ -70,10 +70,15 @@ class ModelConfigRepository:
         configs = await self.get_active()
         model_name_lower = model_name.lower()
         
-        # Find the best matching prefix (longest match first)
+        # Check for exact matches first
+        for config in configs:
+            if config.is_exact_match and config.model_prefix.lower() == model_name_lower:
+                return config
+        
+        # Find the best matching prefix (longest match first) among prefix-configs
         best_match = None
         for config in configs:
-            if model_name_lower.startswith(config.model_prefix.lower()):
+            if not config.is_exact_match and model_name_lower.startswith(config.model_prefix.lower()):
                 if best_match is None or len(config.model_prefix) > len(best_match.model_prefix):
                     best_match = config
         

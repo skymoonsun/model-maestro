@@ -44,3 +44,6 @@ Dockerfile
 # Data files (will be mounted as volumes)
 data/users.json
 
+# Frontend (separate build context)
+frontend/node_modules
+frontend/.next

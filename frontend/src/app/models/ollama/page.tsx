@@ -1,0 +1,207 @@
+'use client';
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ollamaModelsApi, type OllamaModel } from '@/lib/api';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+    Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
+import {
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose,
+} from '@/components/ui/dialog';
+import { toast } from 'sonner';
+import { useState, useCallback } from 'react';
+import { Download, Trash2, Search, HardDrive } from 'lucide-react';
+import Link from 'next/link';
+
+function formatSize(bytes: number) {
+    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(0)} MB`;
+    return `${(bytes / 1_000).toFixed(0)} KB`;
+}
+
+function PullModelSection() {
+    const [modelName, setModelName] = useState('');
+    const [pulling, setPulling] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [status, setStatus] = useState('');
+    const queryClient = useQueryClient();
+
+    const handlePull = useCallback(async () => {
+        if (!modelName.trim()) return;
+        setPulling(true);
+        setProgress(0);
+        setStatus('Starting...');
+
+        try {
+            await ollamaModelsApi.pull(modelName.trim(), (data) => {
+                if (data.status) setStatus(data.status as string);
+                if (data.total && data.completed) {
+                    setProgress(((data.completed as number) / (data.total as number)) * 100);
+                }
+                if (data.status === 'success') {
+                    setProgress(100);
+                }
+            });
+            toast.success(`${modelName} downloaded successfully`);
+            queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
+            setModelName('');
+        } catch (err: unknown) {
+            toast.error(`Pull error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        } finally {
+            setPulling(false);
+            setProgress(0);
+            setStatus('');
+        }
+    }, [modelName, queryClient]);
+
+    return (
+        <Card>
+            <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Download className="h-4 w-4" /> Model Pull
+                </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+                <div className="flex gap-2">
+                    <Input
+                        placeholder="Model name (e.g., llama3.3:70b)"
+                        value={modelName}
+                        onChange={(e) => setModelName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && !pulling && handlePull()}
+                        disabled={pulling}
+                    />
+                    <Button onClick={handlePull} disabled={!modelName.trim() || pulling}>
+                        {pulling ? 'Pulling...' : 'Pull'}
+                    </Button>
+                </div>
+                {pulling && (
+                    <div className="space-y-2">
+                        <Progress value={progress} className="h-2" />
+                        <p className="text-xs text-muted-foreground">{status} — %{progress.toFixed(0)}</p>
+                    </div>
+                )}
+            </CardContent>
+        </Card>
+    );
+}
+
+export default function OllamaModelsPage() {
+    const [search, setSearch] = useState('');
+    const queryClient = useQueryClient();
+    const { data: models, isLoading } = useQuery({
+        queryKey: ['ollama-models'],
+        queryFn: ollamaModelsApi.list,
+    });
+
+    const deleteMutation = useMutation({
+        mutationFn: ollamaModelsApi.delete,
+        onSuccess: (_, name) => {
+            queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
+            toast.success(`${name} deleted`);
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const filtered = models?.filter((m) =>
+        m.name.toLowerCase().includes(search.toLowerCase()) ||
+        (m.display_name && m.display_name.toLowerCase().includes(search.toLowerCase()))
+    ) || [];
+
+    return (
+        <div className="space-y-4">
+            <PullModelSection />
+
+            <div className="flex items-center justify-between gap-4">
+                <div className="relative flex-1 max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input placeholder="Search models..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+                </div>
+                <Badge variant="outline" className="text-muted-foreground">
+                    <HardDrive className="h-3 w-3 mr-1" /> {models?.length || 0} models
+                </Badge>
+            </div>
+
+            <Card>
+                <CardContent className="p-0">
+                    {isLoading ? (
+                        <div className="p-6"><Skeleton className="h-64 w-full" /></div>
+                    ) : (
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Model</TableHead>
+                                    <TableHead>Size</TableHead>
+                                    <TableHead>Status</TableHead>
+                                    <TableHead>Display Name</TableHead>
+                                    <TableHead className="text-right">Action</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {filtered.map((m) => (
+                                    <TableRow key={m.name}>
+                                        <TableCell className="font-mono text-sm">{m.name}</TableCell>
+                                        <TableCell className="text-sm">{formatSize(m.size)}</TableCell>
+                                        <TableCell>
+                                            {m.is_mapped ? (
+                                                <Badge variant="outline" className="text-emerald-400 border-emerald-400/30 bg-emerald-400/10">
+                                                    ✅ Mapped
+                                                </Badge>
+                                            ) : (
+                                                <Badge variant="outline" className="text-amber-400 border-amber-400/30 bg-amber-400/10">
+                                                    Unmapped
+                                                </Badge>
+                                            )}
+                                        </TableCell>
+                                        <TableCell>
+                                            {m.display_name ? (
+                                                <span className="text-sm">{m.display_name}</span>
+                                            ) : (
+                                                <Link href="/models/mappings">
+                                                    <Button variant="ghost" size="sm" className="text-xs text-blue-400">Map →</Button>
+                                                </Link>
+                                            )}
+                                        </TableCell>
+                                        <TableCell className="text-right">
+                                            <Dialog>
+                                                <DialogTrigger asChild>
+                                                    <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive">
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </DialogTrigger>
+                                                <DialogContent>
+                                                    <DialogHeader><DialogTitle>Delete Model</DialogTitle></DialogHeader>
+                                                    <p className="text-sm text-muted-foreground py-4">
+                                                        Are you sure you want to delete model <strong>{m.name}</strong> from Ollama?
+                                                    </p>
+                                                    <DialogFooter>
+                                                        <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
+                                                        <DialogClose asChild>
+                                                            <Button variant="destructive" onClick={() => deleteMutation.mutate(m.name)}>Delete</Button>
+                                                        </DialogClose>
+                                                    </DialogFooter>
+                                                </DialogContent>
+                                            </Dialog>
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                                {filtered.length === 0 && (
+                                    <TableRow>
+                                        <TableCell colSpan={5} className="text-center text-muted-foreground py-12">
+                                            {search ? 'No results found' : 'No models found on Ollama server'}
+                                        </TableCell>
+                                    </TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    )}
+                </CardContent>
+            </Card>
+        </div>
+    );
+}

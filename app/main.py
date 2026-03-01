@@ -226,6 +226,7 @@ async def list_models(username: str = Depends(get_current_user)):
         return {"models": []}
     
     # Get all mappings from database
+    await model_mapper.ensure_loaded()
     all_mappings = model_mapper.get_all_mappings()
     
     # Apply model mapping to display names
@@ -414,6 +415,7 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         return {"object": "list", "data": []}
     
     # Get all mappings from database
+    await model_mapper.ensure_loaded()
     all_mappings = model_mapper.get_all_mappings()
     
     # Apply model mapping to display names

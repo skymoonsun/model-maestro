@@ -65,16 +65,26 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
     models = data.get("models", [])
     
     # Mapping bilgisini ekle
-    all_mappings = model_mapper.get_all_mappings()
     # Reverse: real_name -> display_name
-    reverse = {}
-    for dn, rn in all_mappings.items():
-        reverse[rn] = dn
-    
+    await model_mapper.ensure_loaded()
     result = []
     for m in models:
         model_name = m.get("name", "")
-        mapped_display = reverse.get(model_name)
+        
+        # ":latest" eki ile veya eksiz hallerini de kontrol et
+        options = [model_name]
+        if ":" not in model_name:
+            options.append(f"{model_name}:latest")
+        elif model_name.endswith(":latest"):
+            options.append(model_name.replace(":latest", ""))
+            
+        mapped_display = None
+        for opt in options:
+            disp_names = model_mapper.get_all_display_names_for_real_name(opt)
+            # if get_all_display_names_for_real_name returns [opt], it means unmapped
+            if disp_names and disp_names != [opt]:
+                mapped_display = disp_names[0]
+                break
         
         result.append(OllamaModelListItem(
             name=model_name,

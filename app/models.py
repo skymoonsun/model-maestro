@@ -195,6 +195,7 @@ class UpdateSystemConfigRequest(BaseModel):
 class ModelConfigRequest(BaseModel):
     """Create/update model config"""
     model_prefix: str
+    is_exact_match: bool = False
     allowed_tools: Optional[List[str]] = None
     unsupported_params: Optional[List[str]] = None
     default_context_length: Optional[int] = 32768
@@ -210,6 +211,7 @@ class ModelConfigResponse(BaseModel):
     """Model config response"""
     id: int
     model_prefix: str
+    is_exact_match: bool = False
     allowed_tools: Optional[List[str]] = None
     unsupported_params: Optional[List[str]] = None
     default_context_length: Optional[int] = 32768

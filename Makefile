@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-restart dev-logs dev-build dev-clean prod-up prod-down prod-restart prod-logs db-seed db-seed-reset
+.PHONY: help dev-up dev-down dev-restart dev-logs dev-build dev-clean prod-up prod-down prod-restart prod-logs db-seed db-seed-reset frontend-up frontend-down frontend-build frontend-logs frontend-install frontend-shell
 
 # Colors for output
 BLUE := \033[0;34m
@@ -21,6 +21,9 @@ help: ## Show this help message
 	@echo "$(GREEN)Database Commands:$(NC)"
 	@grep -E '^db-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
+	@echo "$(GREEN)Frontend Commands:$(NC)"
+	@grep -E '^frontend-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
+	@echo ""
 	@echo "$(GREEN)Monitoring Commands:$(NC)"
 	@grep -E '^logs-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 
@@ -36,6 +39,7 @@ dev-up: ## Start development environment (PostgreSQL, Redis, API, Celery)
 	@echo "$(YELLOW)Services:$(NC)"
 	@echo "  API:        http://localhost:8000"
 	@echo "  Docs:       http://localhost:8000/api/docs"
+	@echo "  Frontend:   http://localhost:3000"
 	@echo "  PostgreSQL: localhost:5432"
 	@echo "  Redis:      localhost:6379"
 	@echo ""
@@ -295,3 +299,32 @@ restart-redis: ## Restart Redis
 
 rebuild: dev-build dev-up ## Rebuild and restart all containers
 	@echo "$(GREEN)✓ Rebuild complete$(NC)"
+
+# ============================================================================
+# Frontend
+# ============================================================================
+
+frontend-up: ## Start frontend container
+	@echo "$(GREEN)Starting frontend...$(NC)"
+	$(COMPOSE) -f docker-compose.dev.yml up -d frontend
+	@echo "$(GREEN)✓ Frontend started at http://localhost:3000$(NC)"
+
+frontend-down: ## Stop frontend container
+	$(COMPOSE) -f docker-compose.dev.yml stop frontend
+	@echo "$(GREEN)✓ Frontend stopped$(NC)"
+
+frontend-build: ## Rebuild frontend container
+	@echo "$(YELLOW)Rebuilding frontend...$(NC)"
+	$(COMPOSE) -f docker-compose.dev.yml build --no-cache frontend
+	@echo "$(GREEN)✓ Frontend rebuilt$(NC)"
+
+frontend-logs: ## Show frontend logs
+	$(COMPOSE) -f docker-compose.dev.yml logs -f frontend
+
+frontend-install: ## Install npm dependencies in frontend container
+	@echo "$(YELLOW)Installing frontend dependencies...$(NC)"
+	docker exec ollama-proxy-frontend npm install
+	@echo "$(GREEN)✓ Dependencies installed$(NC)"
+
+frontend-shell: ## Open shell in frontend container
+	docker exec -it ollama-proxy-frontend /bin/sh

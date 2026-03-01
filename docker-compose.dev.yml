@@ -15,7 +15,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ollama_user -d ollama_proxy"]
+      test: [ "CMD-SHELL", "pg_isready -U ollama_user -d ollama_proxy" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -30,7 +30,7 @@ services:
       - redis_data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -53,7 +53,22 @@ services:
       redis:
         condition: service_healthy
 
+  # Frontend Admin Panel
+  frontend:
+    build: ./frontend
+    container_name: ollama-proxy-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://ollama-proxy:8000
+      - NEXT_PUBLIC_ADMIN_TOKEN=${ADMIN_TOKEN}
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    restart: unless-stopped
+    depends_on:
+      - ollama-proxy
+
 volumes:
   postgres_data:
   redis_data:
-

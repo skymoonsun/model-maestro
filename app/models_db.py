@@ -123,6 +123,8 @@ class ModelConfig(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     model_prefix = Column(String(255), unique=True, nullable=False, index=True)  # "minimax", "deepseek", etc.
+    is_exact_match = Column(Boolean, default=False, nullable=False, server_default="false")
+    
     
     # Tool filtering
     allowed_tools = Column(ARRAY(String), nullable=True)  # NULL = tüm tool'lar izinli
