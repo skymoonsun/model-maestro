@@ -14,6 +14,14 @@ export function clearAdminToken(): void {
   if (typeof window !== 'undefined') sessionStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
+async function handleUnauthorized() {
+  if (typeof window !== 'undefined') {
+    clearAdminToken();
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { }
+    window.location.href = '/login';
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -34,8 +42,7 @@ export async function adminFetch<T>(path: string, options?: RequestInit): Promis
   });
   if (!res.ok) {
     if (res.status === 401 && typeof window !== 'undefined') {
-      clearAdminToken();
-      window.location.href = '/login';
+      await handleUnauthorized();
     }
     const text = await res.text();
     throw new ApiError(text || res.statusText, res.status);
@@ -55,8 +62,7 @@ export async function adminFetchText(path: string, options?: RequestInit): Promi
   });
   if (!res.ok) {
     if (res.status === 401 && typeof window !== 'undefined') {
-      clearAdminToken();
-      window.location.href = '/login';
+      await handleUnauthorized();
     }
     throw new ApiError(await res.text(), res.status);
   }
@@ -79,8 +85,7 @@ export async function streamFetch(
   });
   if (!res.ok) {
     if (res.status === 401 && typeof window !== 'undefined') {
-      clearAdminToken();
-      window.location.href = '/login';
+      await handleUnauthorized();
     }
     throw new ApiError(await res.text(), res.status);
   }
@@ -495,7 +500,7 @@ export interface Node extends OllamaNodeResponse {
   models: NodeModel[];
 }
 
-export interface NodeDetail extends Node {}
+export interface NodeDetail extends Node { }
 
 export interface CreateNode {
   name: string;
