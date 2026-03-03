@@ -242,25 +242,21 @@ export default function UserDetailPage() {
                                 <TableHeader>
                                     <TableRow>
                                         <TableHead>Model</TableHead>
-                                        <TableHead>Endpoint</TableHead>
-                                        <TableHead>Token</TableHead>
-                                        <TableHead>Duration</TableHead>
-                                        <TableHead>Status</TableHead>
+                                        <TableHead>Type</TableHead>
+                                        <TableHead>Prompt</TableHead>
+                                        <TableHead>Completion</TableHead>
+                                        <TableHead>Total</TableHead>
                                         <TableHead>Time</TableHead>
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {activity?.map((log) => (
+                                    {activity?.map((log: { id: number; model_name: string; request_type: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; created_at: string }) => (
                                         <TableRow key={log.id}>
-                                            <TableCell className="font-mono text-xs">{log.model}</TableCell>
-                                            <TableCell className="text-xs">{log.endpoint}</TableCell>
-                                            <TableCell className="text-xs">{log.tokens_used.toLocaleString()}</TableCell>
-                                            <TableCell className="text-xs">{log.request_time.toFixed(1)}s</TableCell>
-                                            <TableCell>
-                                                <Badge variant={log.status_code === 200 ? 'default' : 'destructive'} className="text-xs">
-                                                    {log.status_code}
-                                                </Badge>
-                                            </TableCell>
+                                            <TableCell className="font-mono text-xs">{log.model_name}</TableCell>
+                                            <TableCell className="text-xs">{log.request_type}</TableCell>
+                                            <TableCell className="text-xs">{(log.prompt_tokens ?? 0).toLocaleString()}</TableCell>
+                                            <TableCell className="text-xs">{(log.completion_tokens ?? 0).toLocaleString()}</TableCell>
+                                            <TableCell className="text-xs font-medium">{(log.total_tokens ?? 0).toLocaleString()}</TableCell>
                                             <TableCell className="text-xs text-muted-foreground">
                                                 {new Date(log.created_at).toLocaleString('en-US')}
                                             </TableCell>
