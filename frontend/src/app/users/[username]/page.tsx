@@ -46,7 +46,11 @@ export default function UserDetailPage() {
 
     const { data: activity } = useQuery({
         queryKey: ['users', username, 'activity'],
-        queryFn: () => usersApi.getActivity(username),
+        queryFn: async () => {
+            const res = await usersApi.getActivity(username);
+            // Backend returns { username, activities: [...], total_returned, limit, offset }
+            return (res as any)?.activities ?? res;
+        },
     });
 
     const [reqLimit, setReqLimit] = useState('');
@@ -141,7 +145,7 @@ export default function UserDetailPage() {
                 </CardHeader>
                 <CardContent>
                     <div className="flex items-center gap-2">
-                        <code className="flex-1 text-xs bg-muted px-3 py-2 rounded font-mono overflow-auto">
+                        <code className="flex-1 text-xs bg-muted px-3 py-2 rounded font-mono break-all">
                             {user.token}
                         </code>
                         <Button
@@ -233,7 +237,7 @@ export default function UserDetailPage() {
 
                 <TabsContent value="activity" className="mt-4">
                     <Card>
-                        <CardContent className="p-0">
+                        <CardContent className="p-0 overflow-x-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
