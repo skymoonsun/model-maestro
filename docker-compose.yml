@@ -20,6 +20,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.prod
+      args:
+        - BACKEND_URL=http://ollama-proxy:8000
     container_name: ollama-proxy-frontend
     ports:
       - "3000:3000"
