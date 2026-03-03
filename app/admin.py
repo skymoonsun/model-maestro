@@ -291,7 +291,8 @@ async def create_or_update_model_mapping(
         mapping = await model_mapper.create_or_update_mapping(
             request.display_name,
             request.real_name,
-            ctx_length_tokens
+            ctx_length_tokens,
+            request.capabilities
         )
         
         # Format context_length for display
@@ -302,6 +303,7 @@ async def create_or_update_model_mapping(
             real_name=mapping["real_name"],
             context_length=mapping.get("context_length"),
             context_length_display=ctx_display,
+            capabilities=mapping.get("capabilities"),
             created_at=mapping.get("created_at")
         )
     except HTTPException:
@@ -323,6 +325,7 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
             real_name=m["real_name"],
             context_length=m.get("context_length"),
             context_length_display=format_context_length(m.get("context_length")) if m.get("context_length") else None,
+            capabilities=m.get("capabilities"),
             created_at=m.get("created_at")
         )
         for m in mappings

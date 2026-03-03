@@ -326,12 +326,53 @@ def convert_kimi_content_to_openai_delta(content: str, model: str) -> List[Dict[
 
 class OllamaProxy:
     """Proxy requests to Ollama with model name manipulation"""
-    
+
     def __init__(self):
         self.settings = get_settings()
         self.base_url = self.settings.ollama_base_url
         self._mappings_loaded = False
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._use_load_balancing = False  # Will be enabled when nodes are configured
+    
+    async def _select_node_url(self, model_name: str) -> str:
+        """
+        Select the best node URL for a model using load balancing.
+        
+        Falls back to self.base_url if load balancing is not configured or no nodes available.
+        """
+        try:
+            from app.database import async_session_maker
+            from app.node_manager import node_manager
+            from app.load_balancer import load_balancer
+            
+            async with async_session_maker() as session:
+                # Get real model name
+                real_model_name = model_mapper.get_real_model_name(model_name)
+                
+                # Get available nodes for this model
+                nodes = await node_manager.get_nodes_for_model(real_model_name, session)
+                
+                if not nodes:
+                    # Try display name as fallback
+                    nodes = await node_manager.get_nodes_for_model(model_name, session)
+                
+                if not nodes:
+                    # No nodes have this model - use default
+                    logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
+                    return self.base_url
+                
+                # Select best node using load balancer
+                selected_node = await load_balancer.select_node(nodes, session)
+                
+                if selected_node:
+                    logger.info(f"[LB] Selected node {selected_node['node_name']} for model {model_name}")
+                    return selected_node['base_url']
+                
+                return self.base_url
+                
+        except Exception as e:
+            logger.error(f"[LB] Error selecting node: {e}, falling back to default URL")
+            return self.base_url
     
     async def _ensure_mappings_loaded(self):
         """Ensure model mappings are loaded from database"""
@@ -791,12 +832,14 @@ class OllamaProxy:
         # Ensure model mappings are loaded from database
         await self._ensure_mappings_loaded()
         
-        # Extract model name for logging
+        # Extract model name for node selection and logging
         model_name = None
         if data and isinstance(data, dict):
             model_name = data.get('model') or data.get('name')
         
-        url = f"{self.base_url}{endpoint}"
+        # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
+        base_url = await self._select_node_url(model_name or '')
+        url = f"{base_url}{endpoint}"
         
         # Map model names in request
         if data:

@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-restart dev-logs dev-build dev-clean prod-up prod-down prod-restart prod-logs
+.PHONY: help dev-up dev-down dev-restart dev-logs dev-build dev-clean prod-up prod-down prod-restart prod-logs db-seed db-seed-reset frontend-up frontend-down frontend-build frontend-logs frontend-install frontend-shell
 
 # Colors for output
 BLUE := \033[0;34m
@@ -21,6 +21,9 @@ help: ## Show this help message
 	@echo "$(GREEN)Database Commands:$(NC)"
 	@grep -E '^db-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 	@echo ""
+	@echo "$(GREEN)Frontend Commands:$(NC)"
+	@grep -E '^frontend-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
+	@echo ""
 	@echo "$(GREEN)Monitoring Commands:$(NC)"
 	@grep -E '^logs-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
 
@@ -36,6 +39,7 @@ dev-up: ## Start development environment (PostgreSQL, Redis, API, Celery)
 	@echo "$(YELLOW)Services:$(NC)"
 	@echo "  API:        http://localhost:8000"
 	@echo "  Docs:       http://localhost:8000/api/docs"
+	@echo "  Frontend:   http://localhost:3000"
 	@echo "  PostgreSQL: localhost:5432"
 	@echo "  Redis:      localhost:6379"
 	@echo ""
@@ -141,6 +145,46 @@ db-reset: ## Reset database (drops and recreates)
 		docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"; \
 		docker exec ollama-proxy alembic upgrade head; \
 		echo "$(GREEN)✓ Database reset complete$(NC)"; \
+	else \
+		echo "$(YELLOW)Cancelled$(NC)"; \
+	fi
+
+db-fresh: ## Drop DB, recreate, run all migrations and seeders (no confirmation)
+	@echo "$(RED)Terminating connections and dropping database...$(NC)"
+	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'ollama_proxy' AND pid <> pg_backend_pid();" 2>/dev/null || true
+	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"
+	@echo "$(GREEN)Creating fresh database...$(NC)"
+	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"
+	@echo "$(GREEN)Running migrations...$(NC)"
+	@docker exec ollama-proxy alembic upgrade head
+	@echo "$(GREEN)Running seeders...$(NC)"
+	@docker exec ollama-proxy python -m app.seeder
+	@echo "$(GREEN)✓ Database fresh: migrations + seeds complete$(NC)"
+
+db-seed: ## Seed database with pending seeds (migration-style)
+	@echo "$(GREEN)Running pending seeds...$(NC)"
+	docker exec ollama-proxy python -m app.seeder
+	@echo "$(GREEN)✓ Database seeded$(NC)"
+
+db-seed-status: ## Show seed status (which seeds have been applied)
+	docker exec ollama-proxy python -m app.seeder --status
+
+db-seed-reset: ## Reset seed history (data stays, seeds will re-run)
+	@echo "$(RED)WARNING: This will reset seed history - all seeds will re-run on next db-seed!$(NC)"
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		docker exec ollama-proxy python -m app.seeder --reset; \
+		echo "$(GREEN)✓ Seed history reset$(NC)"; \
+	else \
+		echo "$(YELLOW)Cancelled$(NC)"; \
+	fi
+
+db-seed-reset-all: ## Reset seed history AND remove seeded data
+	@echo "$(RED)WARNING: This will remove ALL seeded data and reset history!$(NC)"
+	@read -p "Are you sure? (yes/no): " confirm; \
+	if [ "$$confirm" = "yes" ]; then \
+		docker exec ollama-proxy python -m app.seeder --reset-all; \
+		echo "$(GREEN)✓ Seed data and history reset$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
 	fi
@@ -267,3 +311,32 @@ restart-redis: ## Restart Redis
 
 rebuild: dev-build dev-up ## Rebuild and restart all containers
 	@echo "$(GREEN)✓ Rebuild complete$(NC)"
+
+# ============================================================================
+# Frontend
+# ============================================================================
+
+frontend-up: ## Start frontend container
+	@echo "$(GREEN)Starting frontend...$(NC)"
+	$(COMPOSE) -f docker-compose.dev.yml up -d frontend
+	@echo "$(GREEN)✓ Frontend started at http://localhost:3000$(NC)"
+
+frontend-down: ## Stop frontend container
+	$(COMPOSE) -f docker-compose.dev.yml stop frontend
+	@echo "$(GREEN)✓ Frontend stopped$(NC)"
+
+frontend-build: ## Rebuild frontend container
+	@echo "$(YELLOW)Rebuilding frontend...$(NC)"
+	$(COMPOSE) -f docker-compose.dev.yml build --no-cache frontend
+	@echo "$(GREEN)✓ Frontend rebuilt$(NC)"
+
+frontend-logs: ## Show frontend logs
+	$(COMPOSE) -f docker-compose.dev.yml logs -f frontend
+
+frontend-install: ## Install npm dependencies in frontend container
+	@echo "$(YELLOW)Installing frontend dependencies...$(NC)"
+	docker exec ollama-proxy-frontend npm install
+	@echo "$(GREEN)✓ Dependencies installed$(NC)"
+
+frontend-shell: ## Open shell in frontend container
+	docker exec -it ollama-proxy-frontend /bin/sh

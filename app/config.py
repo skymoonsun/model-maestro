@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str
     admin_token: str
+    admin_username: str = "admin"
+    admin_password: str = "admin"
     redis_url: str = "redis://localhost:6379/0"
     docs_username: str = "admin"
     docs_password: str = "changeme"
+    
+    # Ollama Official Web Search API
+    ollama_web_search_url: str = "https://ollama.com/api/web_search"
+    ollama_api_key: Optional[str] = None
     
     class Config:
         env_file = ".env"
@@ -30,77 +36,49 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# =============================================================================
-# MODEL-SPECIFIC TOOL FILTERING
-# =============================================================================
-# Bazı modeller (örn. minimax) tam Cursor tool seti ile Ollama 500 hatası veriyor.
-# Bu modeller için sadece temel tool'lar gönderilir.
-#
-# Yeni sorunlu model eklemek için: prefix -> izin verilen tool isimleri
-# Örnek: 'minimax-m2.5:cloud' -> 'minimax' prefix'i ile eşleşir
-MODEL_REDUCED_TOOLS: Dict[str, List[str]] = {
-    "minimax": [
-        "Read",
-        "Write",
-        "Shell",
-        "Glob",
-        "Grep",
-        "StrReplace",
-        "Delete",
-        "TodoWrite",
-        "WebSearch",
-        "WebFetch",
-        "SemanticSearch",
-        "ReadLints",
-    ],
-    # Örnek - yeni model eklemek için:
-    # "basaka-model": ["Read", "Write", "Shell", ...],
-}
-
-
 def filter_tools_for_model(model_name: str, tools: List[dict]) -> List[dict]:
     """
-    Model için tanımlı reduced tools config varsa tools listesini filtreler.
+    Model için tanımlı allowed tools config varsa tools listesini filtreler.
+    DB tabanlı ToolSet ve ModelConfig mekanizmasını kullanır.
 
     Args:
-        model_name: İstekteki model adı (örn. minimax-m2.5:cloud)
+        model_name: İstekteki model adı
         tools: Orijinal tools listesi
 
     Returns:
-        Filtrelenmiş tools listesi (config yoksa orijinal döner)
+        Filtrelenmiş tools listesi (kısıtlama yoksa orijinal döner)
     """
     if not tools:
         return tools
+    from app.services import config_manager  # Lazy import to avoid circular dependency
+    allowed_names = config_manager.get_model_allowed_tools(model_name)
+    
+    # None means all tools allowed
+    if allowed_names is None:
+        return tools
 
-    model_lower = model_name.lower()
-    for prefix, allowed_names in MODEL_REDUCED_TOOLS.items():
-        if model_lower.startswith(prefix):
-            allowed_set = set(allowed_names)
-            filtered = []
-            for t in tools:
-                if t.get("type") == "function":
-                    name = t.get("function", {}).get("name")
-                    if name and name in allowed_set:
-                        filtered.append(t)
-                else:
-                    filtered.append(t)  # Bilinmeyen tipi olduğu gibi bırak
-            return filtered
-
-    return tools
+    allowed_set = set(allowed_names)
+    filtered = []
+    for t in tools:
+        if t.get("type") == "function":
+            name = t.get("function", {}).get("name")
+            if name and name in allowed_set:
+                filtered.append(t)
+        else:
+            filtered.append(t)  # Type not recognized, leave as is
+    return filtered
 
 
 def get_allowed_tools_for_model(model_name: str) -> Optional[List[str]]:
     """
     Model için reduced tools config var mı döner.
     None = tüm tool'lar kullanılır.
+    DB üzerinden alınır.
     """
     if not model_name:
         return None
-    model_lower = model_name.lower()
-    for prefix, allowed in MODEL_REDUCED_TOOLS.items():
-        if model_lower.startswith(prefix):
-            return allowed
-    return None
+    from app.services import config_manager  # Lazy import to avoid circular dependency
+    return config_manager.get_model_allowed_tools(model_name)
 
 
 # =============================================================================
@@ -443,7 +421,7 @@ class ModelMappingManager:
         """Invalidate cache (force reload from DB)"""
         self._cache_loaded = False
     
-    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None) -> Dict[str, any]:
+    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Dict[str, any]:
         """
         Create or update a model mapping in database (upsert).
         Var olan mapping'i günceller, yoksa yeni oluşturur.
@@ -454,7 +432,7 @@ class ModelMappingManager:
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
             
-            mapping, is_new = await repo.upsert(display_name, real_name, context_length)
+            mapping, is_new = await repo.upsert(display_name, real_name, context_length, capabilities)
             
             # Update local cache - önce eski reverse mapping'i temizle
             old_real_name = self._mappings.get(display_name)
@@ -493,6 +471,7 @@ class ModelMappingManager:
                 "display_name": mapping.display_name,
                 "real_name": mapping.real_name,
                 "context_length": mapping.context_length,
+                "capabilities": mapping.capabilities,
                 "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
                 "is_new": is_new
             }
@@ -548,6 +527,7 @@ class ModelMappingManager:
                     "display_name": m.display_name,
                     "real_name": m.real_name,
                     "context_length": m.context_length,
+                    "capabilities": m.capabilities,
                     "created_at": m.created_at.isoformat() if m.created_at else None
                 }
                 for m in mappings

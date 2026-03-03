@@ -222,17 +222,170 @@ async def background_processor():
     logger.info("Background activity log processor stopped")
 
 
+# =============================================================================
+# NODE HEALTH CHECK & MODEL DISCOVERY TASKS
+# =============================================================================
+
+# Configuration for node tasks
+NODE_HEALTH_CHECK_INTERVAL = 60.0  # seconds
+MODEL_SYNC_INTERVAL = 300.0  # seconds (5 minutes)
+NODE_TASK_SHUTDOWN_EVENT = asyncio.Event()
+
+
+async def node_health_check_task():
+    """
+    Periodically check health of all active nodes.
+    Updates node health status in database.
+    """
+    logger.info("Starting node health check task")
+    
+    while not NODE_TASK_SHUTDOWN_EVENT.is_set():
+        try:
+            from app.database import async_session_maker
+            from app.node_manager import node_manager
+            from app.repositories.node_repository import NodeRepository
+            
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                
+                for node in nodes:
+                    is_healthy, error = await node_manager.health_check_node(
+                        node.base_url,
+                        node.api_key,
+                        timeout=5.0
+                    )
+                    
+                    status = "healthy" if is_healthy else "unhealthy"
+                    await node_repo.update_health_status(
+                        node.id,
+                        status,
+                        error if not is_healthy else None
+                    )
+                    
+                    logger.debug(f"Node '{node.name}' health: {status}")
+                
+                await session.commit()
+                
+        except Exception as e:
+            logger.error(f"Error in health check task: {e}")
+        
+        # Wait for next interval or shutdown
+        try:
+            await asyncio.wait_for(
+                NODE_TASK_SHUTDOWN_EVENT.wait(),
+                timeout=NODE_HEALTH_CHECK_INTERVAL
+            )
+            break  # Shutdown requested
+        except asyncio.TimeoutError:
+            pass  # Continue to next iteration
+    
+    logger.info("Node health check task stopped")
+
+
+async def model_discovery_task():
+    """
+    Periodically discover models from all healthy nodes.
+    Updates node_models table.
+    """
+    logger.info("Starting model discovery task")
+    
+    while not NODE_TASK_SHUTDOWN_EVENT.is_set():
+        try:
+            from app.database import async_session_maker
+            from app.node_manager import node_manager
+            
+            async with async_session_maker() as session:
+                result = await node_manager.sync_all_nodes(session)
+                
+                logger.info(
+                    f"Model discovery: {result['successful_nodes']}/{result['total_nodes']} nodes, "
+                    f"{result['total_models']} models"
+                )
+                
+                if result['failed_nodes']:
+                    logger.warning(f"Failed nodes: {result['failed_nodes']}")
+                    
+        except Exception as e:
+            logger.error(f"Error in model discovery task: {e}")
+        
+        # Wait for next interval or shutdown
+        try:
+            await asyncio.wait_for(
+                NODE_TASK_SHUTDOWN_EVENT.wait(),
+                timeout=MODEL_SYNC_INTERVAL
+            )
+            break  # Shutdown requested
+        except asyncio.TimeoutError:
+            pass  # Continue to next iteration
+    
+    logger.info("Model discovery task stopped")
+
+
+async def node_load_cleanup_task():
+    """
+    Clean up old load metrics and reset counters.
+    Run every hour.
+    """
+    logger.info("Starting node load cleanup task")
+    
+    while not NODE_TASK_SHUTDOWN_EVENT.is_set():
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeLoadMetricRepository
+            
+            async with async_session_maker() as session:
+                metric_repo = NodeLoadMetricRepository(session)
+                
+                # Reset daily counters (at midnight)
+                from datetime import datetime
+                if datetime.utcnow().hour == 0:
+                    await metric_repo.reset_daily_counters()
+                    logger.info("Reset daily request counters")
+                
+                # Reset 5-minute counters every 5 minutes
+                await metric_repo.reset_5min_counters()
+                
+        except Exception as e:
+            logger.error(f"Error in load cleanup task: {e}")
+        
+        # Wait 1 hour
+        try:
+            await asyncio.wait_for(
+                NODE_TASK_SHUTDOWN_EVENT.wait(),
+                timeout=3600.0
+            )
+            break
+        except asyncio.TimeoutError:
+            pass
+    
+    logger.info("Node load cleanup task stopped")
+
+
 async def start_background_tasks():
-    """Start background task processor"""
-    # Start the background processor as a task
+    """Start all background task processors"""
+    # Start activity log processor
     asyncio.create_task(background_processor())
-    logger.info("Background tasks started")
+    
+    # Start node health check task
+    asyncio.create_task(node_health_check_task())
+    
+    # Start model discovery task
+    asyncio.create_task(model_discovery_task())
+    
+    # Start load cleanup task
+    asyncio.create_task(node_load_cleanup_task())
+    
+    logger.info("All background tasks started")
 
 
 async def stop_background_tasks():
-    """Stop background task processor gracefully"""
+    """Stop all background task processors gracefully"""
     logger.info("Stopping background tasks...")
+    
+    # Signal shutdown
     SHUTDOWN_EVENT.set()
+    NODE_TASK_SHUTDOWN_EVENT.set()
     
     # Process remaining logs in queue
     try:
@@ -254,5 +407,12 @@ async def stop_background_tasks():
                     await process_batch(batch)
     except Exception as e:
         logger.error(f"Error processing remaining logs: {e}")
+    
+    # Close node manager HTTP client
+    try:
+        from app.node_manager import node_manager
+        await node_manager.close()
+    except Exception as e:
+        logger.error(f"Error closing node manager: {e}")
     
     logger.info("Background tasks stopped") 

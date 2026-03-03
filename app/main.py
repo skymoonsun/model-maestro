@@ -6,8 +6,10 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
+from fastapi.middleware.cors import CORSMiddleware
 import secrets
 import logging
+import httpx
 import json
 
 from app.auth import get_current_user, check_model_access
@@ -20,6 +22,11 @@ from app.models import (
     OllamaEmbeddingsRequest,
 )
 from app.admin import router as admin_router
+from app.admin_auth import router as admin_auth_router
+from app.admin_config import router as admin_config_router
+from app.admin_dashboard import router as admin_dashboard_router
+from app.admin_models import router as admin_models_router
+from app.admin_nodes import router as admin_nodes_router
 from app.user_manager import user_manager
 
 # Setup logging
@@ -51,8 +58,22 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True}
 )
 
-# Include admin router
+# CORS middleware (frontend panel için)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Production'da frontend URL'i ile sınırlandırılmalı
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include admin routers (auth first - login has no auth)
+app.include_router(admin_auth_router)
 app.include_router(admin_router)
+app.include_router(admin_config_router)
+app.include_router(admin_dashboard_router)
+app.include_router(admin_models_router)
+app.include_router(admin_nodes_router)
 
 
 # Basic Auth for documentation
@@ -136,6 +157,11 @@ async def startup_event():
             logger.warning(f"Database not ready yet, retrying in 1s... ({i+1}/{retries})")
             await asyncio.sleep(1)
     
+    # Load configuration from database
+    from app.services import config_manager
+    await config_manager.load_all()
+    logger.info("Configuration loaded from database")
+    
     # Start background tasks
     from app.background_tasks import start_background_tasks
     await start_background_tasks()
@@ -205,6 +231,7 @@ async def list_models(username: str = Depends(get_current_user)):
         return {"models": []}
     
     # Get all mappings from database
+    await model_mapper.ensure_loaded()
     all_mappings = model_mapper.get_all_mappings()
     
     # Apply model mapping to display names
@@ -365,6 +392,108 @@ async def embeddings(
 
 
 # ============================================================================
+# Search Provider Mock Endpoints (Brave Search Compatible)
+# ============================================================================
+
+async def get_search_user(request: Request) -> str:
+    """Dependency to get user from X-Subscription-Token or Authorization header"""
+    token = request.headers.get("X-Subscription-Token")
+    
+    if not token:
+        # Fallback to standard Authorization Bearer
+        auth = request.headers.get("Authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth[7:]
+            
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing search API token (X-Subscription-Token or Bearer Token required)"
+        )
+    
+    # We create a fake bearer header to inject into get_current_user
+    # get_current_user expects the exact header format: "Bearer <token>"
+    return await get_current_user(f"Bearer {token}")
+
+
+@app.get("/res/v1/web/search", tags=["Search Provider Mock"])
+async def brave_search_mock(
+    request: Request,
+    q: str,
+    count: int = 10,
+    username: str = Depends(get_search_user)
+):
+    """
+    Mock Brave Search API that forwards requests to Ollama Official Web Search.
+    This behaves EXACTLY like Brave Search API (same URL, params, and response format)
+    but runs Ollama's web search in the background.
+    """
+    logger.info(f"User {username} requesting Brave Search mock with query: {q}")
+    settings = get_settings()
+    
+    # Format the request exactly as Ollama Cloud expects
+    ollama_request_data = {"query": q}
+    ollama_results = []
+    
+    if settings.ollama_api_key:
+        try:
+            headers = {
+                "Authorization": f"Bearer {settings.ollama_api_key}",
+                "Content-Type": "application/json"
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    settings.ollama_web_search_url,
+                    json=ollama_request_data,
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    ollama_results = data.get("results", [])
+                else:
+                    logger.error(f"Ollama Web Search error: {response.text}")
+        except Exception as e:
+            logger.error(f"Error fetching from Ollama web_search: {e}")
+    else:
+        logger.warning("OLLAMA_API_KEY is not set. Using mocked fallback results for web search.")
+        # Fallback to mock search result (taklit/mock fallback)
+        ollama_results = [
+            {
+                "title": f"Mock Title for: {q} (No API Key set)",
+                "url": "https://example.com/mock-search-result",
+                "content": "Configure OLLAMA_API_KEY in .env to enable real web search."
+            },
+            {
+                "title": "Ollama",
+                "url": "https://ollama.com/",
+                "content": "Cloud models are now available..."
+            }
+        ]
+        
+    # Transform the Ollama response to match Brave Search API exactly
+    # Brave Format: { "type": "search", "web": { "results": [{ "title": "...", "url": "...", "description": "..." }] } }
+    brave_results = []
+    for item in ollama_results:
+        brave_results.append({
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "description": item.get("content", ""),
+        })
+        
+    return {
+        "type": "search",
+        "query": {
+            "original": q
+        },
+        "web": {
+            "type": "search",
+            "results": brave_results
+        }
+    }
+
+
+# ============================================================================
 # OpenAI Compatible API Endpoints
 # ============================================================================
 
@@ -393,6 +522,7 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         return {"object": "list", "data": []}
     
     # Get all mappings from database
+    await model_mapper.ensure_loaded()
     all_mappings = model_mapper.get_all_mappings()
     
     # Apply model mapping to display names
@@ -492,28 +622,17 @@ async def openai_chat_completions(
                 detail="User has exceeded their request or token limit"
             )
     
-    # Model-specific unsupported parameters
-    # Key: model name prefix (matches any tag like :latest, :671b etc.)
-    # Value: list of parameters that should be removed for this model
-    model_unsupported_params = {
-        # Deepseek models - known issues with Ollama tool calling stability
-        'deepseek': ['tools', 'tool_choice'],
-        # Kimi models - natively supports tools, but proxy handles conversion.
-        # Removing top_p as it might not be compatible.
-        'kimi': ['top_p'],
-        # Gemini models - natively supports tools in Ollama.
-        # Removing specific params that might cause issues.
-        'gemini': ['top_p', 'presence_penalty', 'frequency_penalty'],
-    }
+    from app.services import config_manager
     
-    # Find unsupported params for this model using prefix matching
-    unsupported_params = []
-    model_name_lower = model_name.lower()
-    
-    for prefix, params in model_unsupported_params.items():
-        if model_name_lower.startswith(prefix):
-            unsupported_params = params
-            break
+    # Check if model is in maintenance mode
+    if config_manager.is_model_in_maintenance(model_name):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Bu model şu anda bakımdadır: {model_name}"
+        )
+
+    # Find unsupported params for this model from database
+    unsupported_params = config_manager.get_model_unsupported_params(model_name)
     
     # Remove unsupported parameters for this specific model
     if unsupported_params:
@@ -536,26 +655,9 @@ async def openai_chat_completions(
                     data["tool_choice"] = "auto"
             logger.info(f"Filtered tools for {model_name}: {len(data['tools'])} tools (reduced set)")
     
-    # Ollama's /v1/chat/completions endpoint may not support all OpenAI parameters
     # Remove parameters that Ollama doesn't recognize to avoid parsing errors
-    # These are Cursor/OpenAI specific parameters that Ollama doesn't handle
-    ollama_unsupported_params = [
-        'logit_bias',
-        'logprobs',
-        'top_logprobs',
-        'top_k',  # Ollama uses different format for top_k
-        'response_format',  # Ollama may not support structured outputs
-        'user',  # OpenAI tracking field
-        'service_tier',  # OpenAI specific
-        'parallel_tool_calls',  # OpenAI specific
-        # NOT: stream_options ARTIK SİLİNMİYOR! Ollama bunu destekliyor.
-        # Cursor'ın token kullanımını (context %) görmesi için gerekli.
-        'store',  # OpenAI specific
-        'metadata',  # OpenAI specific
-        'prediction',  # OpenAI specific
-        'modalities',  # OpenAI specific
-        'audio',  # OpenAI specific
-    ]
+    # Fetched from dynamic system configuration
+    ollama_unsupported_params = config_manager.get_ollama_unsupported_params()
     
     # Check if any unsupported parameters exist and remove them
     removed_ollama_params = [param for param in ollama_unsupported_params if param in data]
@@ -675,15 +777,23 @@ async def cursor_chat_completions(
                 detail="User has exceeded their request or token limit"
             )
     
-    # Keep most parameters, remove only problematic ones
-    # NOTE: 'tools' parameter is CRITICAL for Cursor compatibility!
-    # Removing it causes models to generate malformed tool calls
-    problematic_params = [
+    from app.services import config_manager
+    
+    # Check if model is in maintenance mode
+    if config_manager.is_model_in_maintenance(model_name):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Bu model şu anda bakımdadır: {model_name}"
+        )
+
+    # Get system-wide and model-specific unsupported parameters
+    system_unsupported_params = config_manager.get_ollama_unsupported_params()
+    model_unsupported_params = config_manager.get_model_unsupported_params(model_name)
+    
+    problematic_params = list(set([
         'user', 'n', 'logprobs', 'top_logprobs', 'presence_penalty', 'frequency_penalty',
-        # NOT: stream_options ARTIK SİLİNMİYOR! Context kullanımı göstergesi için gerekli.
-        'parallel_tool_calls',  # OpenAI specific
-        'service_tier',  # OpenAI specific
-    ]
+        'parallel_tool_calls', 'service_tier',
+    ] + system_unsupported_params + model_unsupported_params))
     data = {k: v for k, v in data.items() if k not in problematic_params}
     
     # Model-specific tool filtering (minimax vb. - Ollama 500 önlemek için)
