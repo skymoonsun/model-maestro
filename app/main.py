@@ -9,6 +9,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 import secrets
 import logging
+import httpx
 import json
 
 from app.auth import get_current_user, check_model_access
@@ -388,6 +389,108 @@ async def embeddings(
         data=request.model_dump(exclude_none=True),
         username=username
     )
+
+
+# ============================================================================
+# Search Provider Mock Endpoints (Brave Search Compatible)
+# ============================================================================
+
+async def get_search_user(request: Request) -> str:
+    """Dependency to get user from X-Subscription-Token or Authorization header"""
+    token = request.headers.get("X-Subscription-Token")
+    
+    if not token:
+        # Fallback to standard Authorization Bearer
+        auth = request.headers.get("Authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth[7:]
+            
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing search API token (X-Subscription-Token or Bearer Token required)"
+        )
+    
+    # We create a fake bearer header to inject into get_current_user
+    # get_current_user expects the exact header format: "Bearer <token>"
+    return await get_current_user(f"Bearer {token}")
+
+
+@app.get("/res/v1/web/search", tags=["Search Provider Mock"])
+async def brave_search_mock(
+    request: Request,
+    q: str,
+    count: int = 10,
+    username: str = Depends(get_search_user)
+):
+    """
+    Mock Brave Search API that forwards requests to Ollama Official Web Search.
+    This behaves EXACTLY like Brave Search API (same URL, params, and response format)
+    but runs Ollama's web search in the background.
+    """
+    logger.info(f"User {username} requesting Brave Search mock with query: {q}")
+    settings = get_settings()
+    
+    # Format the request exactly as Ollama Cloud expects
+    ollama_request_data = {"query": q}
+    ollama_results = []
+    
+    if settings.ollama_api_key:
+        try:
+            headers = {
+                "Authorization": f"Bearer {settings.ollama_api_key}",
+                "Content-Type": "application/json"
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    settings.ollama_web_search_url,
+                    json=ollama_request_data,
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    ollama_results = data.get("results", [])
+                else:
+                    logger.error(f"Ollama Web Search error: {response.text}")
+        except Exception as e:
+            logger.error(f"Error fetching from Ollama web_search: {e}")
+    else:
+        logger.warning("OLLAMA_API_KEY is not set. Using mocked fallback results for web search.")
+        # Fallback to mock search result (taklit/mock fallback)
+        ollama_results = [
+            {
+                "title": f"Mock Title for: {q} (No API Key set)",
+                "url": "https://example.com/mock-search-result",
+                "content": "Configure OLLAMA_API_KEY in .env to enable real web search."
+            },
+            {
+                "title": "Ollama",
+                "url": "https://ollama.com/",
+                "content": "Cloud models are now available..."
+            }
+        ]
+        
+    # Transform the Ollama response to match Brave Search API exactly
+    # Brave Format: { "type": "search", "web": { "results": [{ "title": "...", "url": "...", "description": "..." }] } }
+    brave_results = []
+    for item in ollama_results:
+        brave_results.append({
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "description": item.get("content", ""),
+        })
+        
+    return {
+        "type": "search",
+        "query": {
+            "original": q
+        },
+        "web": {
+            "type": "search",
+            "results": brave_results
+        }
+    }
 
 
 # ============================================================================

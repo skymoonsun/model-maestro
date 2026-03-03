@@ -51,9 +51,6 @@ class OllamaEmbeddingsRequest(BaseModel):
     """Ollama embeddings request"""
     model: str
     prompt: str
-    options: Optional[Dict[str, Any]] = None
-    keep_alive: Optional[str] = None
-
 
 class OllamaShowRequest(BaseModel):
     """Ollama show model request"""

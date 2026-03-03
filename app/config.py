@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     docs_username: str = "admin"
     docs_password: str = "changeme"
     
+    # Ollama Official Web Search API
+    ollama_web_search_url: str = "https://ollama.com/api/web_search"
+    ollama_api_key: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
