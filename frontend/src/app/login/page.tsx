@@ -1,16 +1,26 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Bot } from 'lucide-react';
+import { Bot, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 
-export default function LoginPage() {
+function LoginForm() {
     const router = useRouter();
-    const searchParams = useSearchParams();
+    const [redirect, setRedirect] = useState('/');
+    
+    // We use a separate component for search params to allow pre-rendering
+    const SearchParamsFetcher = () => {
+        const searchParams = useSearchParams();
+        const red = searchParams.get('redirect');
+        if (red && redirect !== red) {
+            setRedirect(red);
+        }
+        return null;
+    };
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
@@ -40,7 +50,6 @@ export default function LoginPage() {
                 sessionStorage.setItem('admin_token', data.token);
             }
             toast.success('Login successful');
-            const redirect = searchParams.get('redirect') || '/';
             router.push(redirect);
             router.refresh();
         } catch {
@@ -96,8 +105,19 @@ export default function LoginPage() {
                             {loading ? 'Signing in...' : 'Sign in'}
                         </Button>
                     </form>
+                    <Suspense fallback={null}>
+                        <SearchParamsFetcher />
+                    </Suspense>
                 </CardContent>
             </Card>
         </div>
+    );
+}
+
+export default function LoginPage() {
+    return (
+        <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}>
+            <LoginForm />
+        </Suspense>
     );
 }
