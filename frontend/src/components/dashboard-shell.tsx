@@ -14,7 +14,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     return (
         <div className="flex min-h-screen">
             <Sidebar />
-            <main className="flex-1 md:pl-64">
+            <main className="flex-1 md:pl-64 min-w-0 overflow-hidden">
                 <Header />
                 <div className="p-6">{children}</div>
             </main>
