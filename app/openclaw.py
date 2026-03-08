@@ -397,9 +397,9 @@ async def openclaw_chat(
         )
 
     # Check user limits
-    limit_exceeded = await ollama_proxy.check_user_limits(username)
-    if limit_exceeded:
-        raise HTTPException(status_code=429, detail=limit_exceeded)
+    within_limits = await ollama_proxy.check_user_limits(username, "chat")
+    if not within_limits:
+        raise HTTPException(status_code=429, detail="Daily request limit exceeded")
 
     # Map display model name -> real Ollama model name
     real_model_name = model_mapper.get_real_model_name(model_name)
@@ -459,9 +459,9 @@ async def openclaw_generate(
         )
 
     # Check user limits
-    limit_exceeded = await ollama_proxy.check_user_limits(username)
-    if limit_exceeded:
-        raise HTTPException(status_code=429, detail=limit_exceeded)
+    within_limits = await ollama_proxy.check_user_limits(username, "generate")
+    if not within_limits:
+        raise HTTPException(status_code=429, detail="Daily request limit exceeded")
 
     # Map model name
     real_model_name = model_mapper.get_real_model_name(model_name)
@@ -553,6 +553,11 @@ async def openclaw_embed(
             detail=f"Model '{model_name}' is not available for your account",
         )
 
+    # Check user limits
+    within_limits = await ollama_proxy.check_user_limits(username, "embeddings")
+    if not within_limits:
+        raise HTTPException(status_code=429, detail="Daily request limit exceeded")
+
     # Map model name
     real_model_name = model_mapper.get_real_model_name(model_name)
     body["model"] = real_model_name
@@ -587,6 +592,11 @@ async def openclaw_embeddings(
             status_code=403,
             detail=f"Model '{model_name}' is not available for your account",
         )
+
+    # Check user limits
+    within_limits = await ollama_proxy.check_user_limits(username, "embeddings")
+    if not within_limits:
+        raise HTTPException(status_code=429, detail="Daily request limit exceeded")
 
     real_model_name = model_mapper.get_real_model_name(model_name)
     body["model"] = real_model_name
