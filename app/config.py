@@ -193,6 +193,7 @@ class ModelMappingManager:
         self._mappings: Dict[str, str] = {}
         self._reverse_mappings: Dict[str, List[str]] = {}  # One real_name can have multiple display_names
         self._context_lengths: Dict[str, int] = {}  # display_name -> context_length (token)
+        self._capabilities: Dict[str, List[str]] = {}  # display_name -> capabilities
         self._cache_loaded = False
         
         # Ensure cache directory exists
@@ -227,10 +228,13 @@ class ModelMappingManager:
                 self._cache_loaded = True
                 print(f"Loaded {len(self._mappings)} model mappings from cache file")
                 
-                # Load context lengths (opsiyonel - eski cache dosyalarında olmayabilir)
+                # Load context lengths and capabilities
                 self._context_lengths = data.get("context_lengths", {})
+                self._capabilities = data.get("capabilities", {})
                 if self._context_lengths:
                     print(f"Loaded {len(self._context_lengths)} context length configs from cache file")
+                if self._capabilities:
+                    print(f"Loaded {len(self._capabilities)} capabilities configs from cache file")
                 
                 return True
         except Exception as e:
@@ -243,7 +247,8 @@ class ModelMappingManager:
             data = {
                 "mappings": self._mappings,
                 "reverse_mappings": self._reverse_mappings,
-                "context_lengths": self._context_lengths
+                "context_lengths": self._context_lengths,
+                "capabilities": self._capabilities
             }
             
             # Write to temporary file first, then rename (atomic operation)
@@ -292,6 +297,13 @@ class ModelMappingManager:
                     for m in mappings 
                     if m.context_length
                 }
+
+                # Build capabilities dict
+                self._capabilities = {
+                    m.display_name: m.capabilities
+                    for m in mappings
+                    if m.capabilities
+                }
                 
                 self._cache_loaded = True
                 
@@ -308,6 +320,7 @@ class ModelMappingManager:
             self._mappings = {}
             self._reverse_mappings = {}
             self._context_lengths = {}
+            self._capabilities = {}
     
     async def ensure_loaded(self):
         """Ensure mappings are loaded (from cache file or DB on first load)"""
@@ -405,6 +418,23 @@ class ModelMappingManager:
         for dn in display_names:
             if dn in self._context_lengths:
                 return self._context_lengths[dn]
+        
+        return None
+    
+    def get_capabilities(self, model_name: str) -> Optional[List[str]]:
+        """
+        Model için capabilities listesini döner ("completion", "tools", vb.).
+        Önce display_name ile, sonra real_name ile arar.
+        """
+        # Direkt display_name ile ara
+        if model_name in self._capabilities:
+            return self._capabilities[model_name]
+        
+        # real_name ile ara (reverse mapping ile display_name bul)
+        display_names = self._reverse_mappings.get(model_name, [])
+        for dn in display_names:
+            if dn in self._capabilities:
+                return self._capabilities[dn]
         
         return None
     
