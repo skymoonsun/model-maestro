@@ -1537,6 +1537,97 @@ class OllamaProxy:
                                                     if 'eval_count' in mapped_data:
                                                         completion_tokens += mapped_data.get('eval_count', 0)
                                                 
+                                                # KIMI NATIVE TOOL CALL BUFFERING
+                                                if is_kimi_model:
+                                                    content = ""
+                                                    reasoning = ""
+                                                    if isinstance(json_data, dict) and 'message' in json_data:
+                                                        message = json_data.get('message', {})
+                                                        if isinstance(message, dict):
+                                                            content = message.get('content', '') or ''
+                                                            reasoning = message.get('thinking', '') or ''
+                                                            if not reasoning:
+                                                                reasoning = message.get('reasoning', '') or ''
+                                                    
+                                                    combined_for_detection = content + reasoning
+                                                    
+                                                    if kimi_suspicion_buffer:
+                                                        combined_for_detection = kimi_suspicion_buffer + combined_for_detection
+                                                        kimi_suspicion_buffer = ""
+                                                    
+                                                    if kimi_buffering_active:
+                                                        kimi_content_buffer += combined_for_detection
+                                                        if '<|tool_calls_section_end|>' in kimi_content_buffer:
+                                                            logger.info(f"[NATIVE TOOL] Section complete. Processing {len(kimi_content_buffer)} bytes")
+                                                            clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+                                                            if has_tool_calls:
+                                                                ollama_tool_calls = []
+                                                                for t in tool_calls:
+                                                                    try:
+                                                                        args_dict = json.loads(t["function"]["arguments"])
+                                                                    except:
+                                                                        args_dict = {}
+                                                                    ollama_tool_calls.append({
+                                                                        "function": {
+                                                                            "name": t["function"]["name"],
+                                                                            "arguments": args_dict
+                                                                        }
+                                                                    })
+                                                                
+                                                                if clean_content:
+                                                                    clean_content = re.sub(r'<\|tool_calls_[^>]+>', '', clean_content)
+                                                                    c_chunk = json.loads(json.dumps(mapped_data))
+                                                                    if 'message' not in c_chunk: c_chunk['message'] = {"role": "assistant"}
+                                                                    if 'thinking' in c_chunk['message']: del c_chunk['message']['thinking']
+                                                                    c_chunk['message']['content'] = clean_content
+                                                                    yield json.dumps(c_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                                    first_chunk_sent = True
+                                                                
+                                                                t_chunk = json.loads(json.dumps(mapped_data))
+                                                                if 'message' not in t_chunk: t_chunk['message'] = {"role": "assistant"}
+                                                                t_chunk['message']['content'] = ""
+                                                                if 'thinking' in t_chunk['message']: del t_chunk['message']['thinking']
+                                                                t_chunk['message']['tool_calls'] = ollama_tool_calls
+                                                                yield json.dumps(t_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                                first_chunk_sent = True
+                                                                
+                                                            kimi_content_buffer = ""
+                                                            kimi_buffering_active = False
+                                                        
+                                                        # Skip yielding this original chunk as it's part of buffer
+                                                        continue
+                                                        
+                                                    else:
+                                                        if '<|tool_calls_section_begin|>' in combined_for_detection:
+                                                            logger.info(f"[NATIVE TOOL] Section begin detected")
+                                                            idx = combined_for_detection.find('<|tool_calls_section_begin|>')
+                                                            pre_text = combined_for_detection[:idx]
+                                                            kimi_content_buffer = combined_for_detection[idx:]
+                                                            kimi_buffering_active = True
+                                                            
+                                                            if pre_text:
+                                                                p_chunk = json.loads(json.dumps(mapped_data))
+                                                                if 'message' in p_chunk and isinstance(p_chunk['message'], dict):
+                                                                    if content: p_chunk['message']['content'] = pre_text
+                                                                    elif 'thinking' in p_chunk['message']: p_chunk['message']['thinking'] = pre_text
+                                                                yield json.dumps(p_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                                first_chunk_sent = True
+                                                            continue
+                                                            
+                                                        elif combined_for_detection.endswith('<') or combined_for_detection.endswith('<|') or combined_for_detection.endswith('<|tool'):
+                                                            suspicion_idx = combined_for_detection.rfind('<')
+                                                            kimi_suspicion_buffer = combined_for_detection[suspicion_idx:]
+                                                            safe_content = combined_for_detection[:suspicion_idx]
+                                                            
+                                                            if safe_content:
+                                                                s_chunk = json.loads(json.dumps(mapped_data))
+                                                                if 'message' in s_chunk and isinstance(s_chunk['message'], dict):
+                                                                    if content: s_chunk['message']['content'] = safe_content
+                                                                    elif 'thinking' in s_chunk['message']: s_chunk['message']['thinking'] = safe_content
+                                                                yield json.dumps(s_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                                first_chunk_sent = True
+                                                            continue
+
                                                 # Forward as-is in NDJSON format
                                                 yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
                                                 first_chunk_sent = True
