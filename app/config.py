@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     ollama_web_search_url: str = "https://ollama.com/api/web_search"
     ollama_api_key: Optional[str] = None
     
+    # Model Switching & Fallback Configuration
+    fallback_chain: str = "github-copilot/claude-opus-4.6,kimi-k2.5,qwen3.5"
+    model_timeout_threshold: float = 4.0  # seconds
+    model_max_retries: int = 3
+    
+    @property
+    def fallback_chain_list(self) -> List[str]:
+        """Parse fallback chain from comma-separated string"""
+        return [m.strip() for m in self.fallback_chain.split(",") if m.strip()]
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
