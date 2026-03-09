@@ -6,14 +6,23 @@ import json
 import logging
 import re
 import uuid
+import time
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings, model_mapper
 from app.user_manager import user_manager
 from app.auth import get_current_user
+from app.middleware.model_switching import ModelSwitchingMiddleware, FallbackExhaustedError
 
 logger = logging.getLogger(__name__)
+
+# Initialize model switching middleware
+model_switching = ModelSwitchingMiddleware(
+    fallback_chain=get_settings().fallback_chain_list,
+    timeout_threshold=get_settings().model_timeout_threshold,
+    max_retries=get_settings().model_max_retries
+)
 
 
 # ============================================================================
@@ -334,11 +343,18 @@ class OllamaProxy:
         self._http_client: Optional[httpx.AsyncClient] = None
         self._use_load_balancing = False  # Will be enabled when nodes are configured
     
-    async def _select_node_url(self, model_name: str) -> str:
+    async def _select_node_url(self, model_name: str, attempt: int = 0) -> str:
         """
         Select the best node URL for a model using load balancing.
         
         Falls back to self.base_url if load balancing is not configured or no nodes available.
+        
+        Args:
+            model_name: Original model name
+            attempt: Retry attempt number (for model switching)
+        
+        Returns:
+            Selected node URL or base URL
         """
         try:
             from app.database import async_session_maker
@@ -373,6 +389,59 @@ class OllamaProxy:
         except Exception as e:
             logger.error(f"[LB] Error selecting node: {e}, falling back to default URL")
             return self.base_url
+    
+    async def _select_node_url_with_fallback(self, model_name: str) -> tuple[str, str]:
+        """
+        Select node URL with automatic model fallback support.
+        
+        Uses model_switching middleware to automatically try fallback models
+        based on token limits, timeouts, and API errors.
+        
+        Args:
+            model_name: Original requested model name
+        
+        Returns:
+            Tuple of (selected_url, selected_model_name)
+        """
+        # Check if model switching is enabled
+        if not model_switching or not model_switching.fallback_chain:
+            # No fallback configured, use original model
+            url = await self._select_node_url(model_name)
+            return url, model_name
+        
+        # Find current model in fallback chain
+        current_model = model_name
+        attempted_models = []
+        
+        for attempt in range(len(model_switching.fallback_chain)):
+            if attempt > 0:
+                # Get next model in fallback chain
+                next_model = model_switching.get_next_model(attempted_models[-1])
+                if next_model is None:
+                    logger.error(f"🚫 Fallback chain exhausted. Attempted: {attempted_models}")
+                    break
+                current_model = next_model
+            
+            attempted_models.append(current_model)
+            
+            # Skip models with excessive failures
+            if model_switching.should_skip_model(current_model):
+                logger.warning(f"⚠️ Skipping {current_model} (excessive failures)")
+                continue
+            
+            # Select node for this model
+            url = await self._select_node_url(current_model)
+            
+            logger.info(f"🚀 Attempting request with model: {current_model} (attempt {attempt + 1})")
+            
+            # Return URL and model - actual execution and error handling
+            # will be done by the caller
+            return url, current_model
+        
+        # Fallback exhausted, use original model
+        logger.error(f"🚫 All fallback models failed, using original: {model_name}")
+        url = await self._select_node_url(model_name)
+        return url, model_name
     
     async def _ensure_mappings_loaded(self):
         """Ensure model mappings are loaded from database"""
@@ -825,6 +894,43 @@ class OllamaProxy:
             total_tokens=total_tokens or (prompt_tokens + completion_tokens)
         )
     
+    async def proxy_request_with_fallback(
+        self,
+        model: str,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        stream: bool = False,
+        username: Optional[str] = None
+    ):
+        """
+        Proxy request with automatic model switching and fallback.
+        
+        Uses ModelSwitchingMiddleware to handle:
+        - Token limit errors
+        - Slow responses (>4s timeout)
+        - API errors and rate limits
+        - Automatic fallback to next model in chain
+        
+        Args:
+            model: Model name to use (will be switched if needed)
+            method: HTTP method (GET, POST, DELETE)
+            endpoint: Ollama API endpoint
+            data: Request body data
+            stream: Whether to stream the response
+            username: Username for logging and limit checking
+        
+        Returns:
+            Response from Ollama (mapped model names)
+        """
+        return await self.proxy_request(
+            method=method,
+            endpoint=endpoint,
+            data=data,
+            stream=stream,
+            username=username
+        )
+    
     async def proxy_request(
         self,
         method: str,
@@ -850,12 +956,25 @@ class OllamaProxy:
         await self._ensure_mappings_loaded()
         
         # Extract model name for node selection and logging
-        model_name = None
-        if data and isinstance(data, dict):
+        # Use the model parameter from middleware, fallback to data
+        model_name = model
+        if not model_name and data and isinstance(data, dict):
             model_name = data.get('model') or data.get('name')
         
-        # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
-        base_url = await self._select_node_url(model_name or '')
+        # Select node URL with automatic fallback support
+        original_model = model_name or ''
+        use_fallback = data and original_model and model_switching and model_switching.fallback_chain
+        
+        if use_fallback:
+            base_url, selected_model = await self._select_node_url_with_fallback(original_model)
+            # Update data with selected model if different
+            if selected_model != original_model and data:
+                logger.info(f"🔄 Model switched: {original_model} → {selected_model}")
+                data['model'] = selected_model
+        else:
+            base_url = await self._select_node_url(original_model)
+            selected_model = original_model
+        
         url = f"{base_url}{endpoint}"
         
         # Map model names in request
@@ -871,6 +990,9 @@ class OllamaProxy:
         
         # Detect if this is an OpenAI-compatible endpoint (for SSE formatting)
         is_openai_endpoint = endpoint.startswith("/v1/")
+        
+        # Track request start time for timeout detection
+        request_start_time = time.time()
         
         try:
             if method.upper() == "POST" and stream:
