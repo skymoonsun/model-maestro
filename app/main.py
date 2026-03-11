@@ -683,6 +683,11 @@ async def openai_chat_completions(
     if isinstance(data['options'], dict) and 'num_ctx' not in data['options']:
         data['options']['num_ctx'] = ctx_length
         logger.info(f"Injected num_ctx={ctx_length} for model {model_name}")
+
+    # COLD-START FIX: Modeli VRAM'de tut — bir kez yüklendikten sonra unload etme.
+    # Ollama varsayılan keep_alive=5dk; -1 ile server restart'a kadar yüklü kalır.
+    if 'keep_alive' not in data:
+        data['keep_alive'] = -1
     
     return await ollama_proxy.proxy_request(
         method="POST",
