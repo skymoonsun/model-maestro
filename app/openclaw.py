@@ -413,6 +413,12 @@ async def openclaw_chat(
         body["options"]["num_ctx"] = ctx_length
         logger.info(f"[OpenClaw] Injected num_ctx={ctx_length} for {model_name}")
 
+    # Keep model loaded indefinitely after first use to prevent cold-start timeouts.
+    # Ollama's default keep_alive is 5 minutes; set to -1 (forever) so the model
+    # stays in VRAM and subsequent requests don't have to wait for reload.
+    if "keep_alive" not in body:
+        body["keep_alive"] = -1
+
     # Filter tools for model if applicable
     if "tools" in body and body["tools"]:
         filtered_tools = filter_tools_for_model(model_name, body["tools"])
@@ -473,6 +479,10 @@ async def openclaw_generate(
     if isinstance(body["options"], dict) and "num_ctx" not in body["options"]:
         ctx_length = get_context_length_for_model(model_name)
         body["options"]["num_ctx"] = ctx_length
+
+    # Keep model loaded indefinitely after first use
+    if "keep_alive" not in body:
+        body["keep_alive"] = -1
 
     return await ollama_proxy.proxy_request(
         method="POST",
