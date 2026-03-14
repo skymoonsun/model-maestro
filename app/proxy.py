@@ -1011,1060 +1011,788 @@ class OllamaProxy:
                     endpoint=endpoint,
                     base_url=base_url
                 )
-                    client = await self._get_http_client()
-                    
-                    # Always log streaming requests for debugging
-                    logger.info(f"[STREAM START] Sending streaming request to Ollama: {url}")
-                    logger.info(f"[STREAM START] Model: {data.get('model', 'unknown')}, OpenAI endpoint: {is_openai_endpoint}")
-                    logger.info(f"[STREAM START] max_tokens: {data.get('max_tokens', 'not set')}, temperature: {data.get('temperature', 'not set')}")
-                    
-                    try:
-                        # Log tools if present
-                        if data.get("tools"):
-                            logger.info(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in data['tools']]}")
-                        
-                        async with client.stream("POST", url, json=data) as resp:
-                            logger.info(f"[STREAM] Ollama response status: {resp.status_code}")
-                            logger.info(f"[STREAM] Ollama response headers: {dict(resp.headers)}")
-                            
-                            # Check status code before streaming
-                            if resp.status_code != 200:
-                                error_text = await resp.aread()
-                                error_msg = error_text.decode()
-                                
-                                # Try to parse error message if it's JSON
-                                try:
-                                    error_json = json.loads(error_msg)
-                                    if isinstance(error_json, dict) and 'error' in error_json:
-                                        error_detail = error_json['error']
-                                        if isinstance(error_detail, dict) and 'message' in error_detail:
-                                            error_msg = error_detail['message']
-                                        elif isinstance(error_detail, str):
-                                            error_msg = error_detail
-                                except (json.JSONDecodeError, KeyError, TypeError):
-                                    # If not JSON or doesn't have expected structure, use as-is
-                                    pass
-                                
-                                # Log the request data that caused the error for debugging
-                                logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
-                                logger.error(f"Request URL: {url}")
-                                logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
-                                logger.error(f"Full error response: {error_text.decode()}")
-                                
-                                # CONTEXT FIX: Detect context length exceeded errors
-                                # Ollama returns errors like: "context length exceeded" or
-                                # "model requires more context" or mentions "num_ctx"
-                                error_msg_lower = error_msg.lower()
-                                is_context_error = any(phrase in error_msg_lower for phrase in [
-                                    'context length', 'context_length', 'num_ctx',
-                                    'context window', 'token limit', 'too long',
-                                    'maximum context', 'exceeds the model',
-                                ])
-                                
-                                if is_context_error:
-                                    error_type = "context_length_exceeded"
-                                    error_code = "context_length_exceeded"
-                                    friendly_msg = (
-                                        f"Context limiti aşıldı. Model'in context penceresi doldu. "
-                                        f"Lütfen yeni bir chat başlatın veya context'i temizleyin. "
-                                        f"Detay: {error_msg}"
-                                    )
-                                    logger.warning(f"[CONTEXT OVERFLOW] Model context limit reached: {error_msg}")
-                                else:
-                                    error_type = "api_error"
-                                    error_code = resp.status_code
-                                    friendly_msg = f"Ollama upstream error: {error_msg}"
-                                
-                                # Send error in SSE format for OpenAI compatibility
-                                error_response = {
-                                    "error": {
-                                        "message": friendly_msg,
-                                        "type": error_type,
-                                        "code": error_code
-                                    }
-                                }
-                                yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                yield b'data: [DONE]\n\n'
-                                return
-                            
-                            # Buffer to accumulate partial lines
-                            buffer = b""
-                            
-                            # Pending tool calls: key by id (Ollama sends each tool call with index 0 in separate chunks)
-                            pending_tool_calls: Dict[str, Dict[str, Any]] = {}  # id -> {idx, id, type, function}
-                            
-                            prompt_tokens = 0
-                            completion_tokens = 0
-                            first_chunk_sent = False
-                            done_marker_sent = False  # Track if [DONE] was already sent
-                            usage_chunk_received = False  # Track if upstream sent a usage chunk
-                            just_yielded_assembled_tools = False  # Persist across chunks - skip duplicate finish_reason:tool_calls
-                            chunk_count = 0
-                            total_bytes = 0
-                            
-                            # KIMI TOOL CALL BUFFER: Accumulate content when tool call section is detected
-                            # This is needed because tool call markers can span multiple chunks
-                            kimi_content_buffer = ""
-                            kimi_buffering_active = False
-                            kimi_suspicion_buffer = ""
-                            current_model = data.get('model', 'unknown')
-                            
-                            # State for capturing <think> tag generated natively by models like DeepSeek-R1 or GLM-5
-                            in_thinking = False
-                            think_suspicion = ""
-                            
-                            # Only enable Kimi tool call buffering for Kimi models
-                            # Other models (Qwen, Gemma, etc.) don't use this format
-                            is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
-                            
-                            async for chunk in resp.aiter_raw():
-                                if not chunk:
-                                    continue
-                                
-                                chunk_count += 1
-                                total_bytes += len(chunk)
-                                
-                                # Log first few chunks for debugging
-                                if chunk_count <= 3:
-                                    logger.info(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
-                                
-                                # Add to buffer
-                                buffer += chunk
-                                
-                                # Process complete lines
-                                while b'\n' in buffer:
-                                    line, buffer = buffer.split(b'\n', 1)
-                                    if line:
-                                        try:
-                                            # Check if it's SSE format (for OpenAI endpoints)
-                                            if line.startswith(b'data: '):
-                                                # Extract JSON after "data: "
-                                                json_str = line[6:].decode('utf-8').strip()
-                                                if json_str and json_str != '[DONE]':
-                                                    logger.info(f"[OLLAMA IN] {json_str}")
-                                                    json_data = json.loads(json_str) 
-                                                    # Don't map yet, we'll map below after Kimi check or in normal path
-                                                    
-                                                    # KIMI TOOL CALL BUFFERING (only for Kimi models):
-                                                    # Check if this chunk contains Kimi tool call markers
-                                                    # If so, buffer the content until the section is complete
-                                                    # Check BOTH content and reasoning fields
-                                                    content = ""
-                                                    reasoning = ""
-                                                    combined_for_detection = ""
-                                                    
-                                                    if isinstance(json_data, dict) and 'choices' in json_data:
-                                                        for choice in json_data.get('choices', []):
-                                                            if isinstance(choice, dict):
-                                                                delta = choice.get('delta', {})
-                                                                if isinstance(delta, dict):
-                                                                    content = delta.get('content', '') or ''
-                                                                    reasoning = delta.get('reasoning', '') or ''
-                                                    
-                                                    # Only do Kimi-specific buffering for Kimi models
-                                                    if is_kimi_model:
-                                                        # Combine content and reasoning for tool call detection
-                                                        # Tool calls can appear in either field
-                                                        combined_for_detection = content + reasoning
-                                                        
-                                                        # DEBUG LOG: Show received content (truncated)
-                                                        if content:
-                                                            logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
-                                                        if reasoning:
-                                                            logger.info(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
-                                                        
-                                                        # Combine with suspicion buffer if exists
-                                                        if kimi_suspicion_buffer:
-                                                            logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
-                                                            combined_for_detection = kimi_suspicion_buffer + combined_for_detection
-                                                            kimi_suspicion_buffer = ""
 
-                                                    # 1. Active Buffering State (only for Kimi)
-                                                    if is_kimi_model and kimi_buffering_active:
-                                                        kimi_content_buffer += combined_for_detection
-                                                        
-                                                        # Check if section is complete
-                                                        if '<|tool_calls_section_end|>' in kimi_content_buffer:
-                                                            logger.info(f"[KIMI] Tool call section complete, processing buffer")
-                                                            
-                                                            # Parse and convert the buffered content
-                                                            clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
-                                                            
-                                                            if has_tool_calls:
-                                                                logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
-                                                                
-                                                                # Send clean content if any
-                                                                if clean_content:
-                                                                    # Check if clean_content still contains raw markers (double check)
-                                                                    if '<|tool_calls_' in clean_content:
-                                                                         # Force remove any remaining markers
-                                                                         clean_content = re.sub(r'<\|tool_calls_[^>]+>', '', clean_content)
-                                                                    
-                                                                    content_chunk = {
-                                                                        "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
-                                                                        "object": "chat.completion.chunk",
-                                                                        "model": model_mapper.get_display_model_name(current_model),
-                                                                        "choices": [{
-                                                                            "index": 0,
-                                                                            "delta": {"content": clean_content},
-                                                                            "finish_reason": None
-                                                                        }]
-                                                                    }
-                                                                    yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                
-                                                                # Send tool calls chunk
-                                                                tool_calls_chunk = {
-                                                                    "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
-                                                                    "object": "chat.completion.chunk",
-                                                                    "model": model_mapper.get_display_model_name(current_model),
-                                                                    "choices": [{
-                                                                        "index": 0,
-                                                                        "delta": {"tool_calls": tool_calls},
-                                                                        "finish_reason": None
-                                                                    }]
-                                                                }
-                                                                yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                
-                                                                # Send finish_reason chunk
-                                                                finish_chunk = {
-                                                                    "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
-                                                                    "object": "chat.completion.chunk",
-                                                                    "model": model_mapper.get_display_model_name(current_model),
-                                                                    "choices": [{
-                                                                        "index": 0,
-                                                                        "delta": {},
-                                                                        "finish_reason": "tool_calls"
-                                                                    }]
-                                                                }
-                                                                yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                first_chunk_sent = True
-                                                            else:
-                                                                # No tool calls found after parsing (fake alarm?), yield original buffer
-                                                                # But first, try to convert it as regular content
-                                                                mapped_data = self._map_model_from_ollama(json.loads(json_str)) # Re-use original mapping logic
-                                                                # Override content with full buffer
-                                                                if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                                    choices = mapped_data.get('choices', [])
-                                                                    if choices and len(choices) > 0:
-                                                                        choices[0]['delta']['content'] = kimi_content_buffer
+            # Non-streaming requests with failover support
+            return await self._non_streaming_with_failover(
+                url=url,
+                method=method,
+                data=data,
+                endpoint=endpoint,
+                is_openai_endpoint=is_openai_endpoint,
+                username=username,
+                original_group=original_group,
+                tried_models=tried_models,
+                model_name=model_name
+            )
 
-                                                                yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                first_chunk_sent = True
-                                                            
-                                                            # Reset buffer
-                                                            kimi_content_buffer = ""
-                                                            kimi_buffering_active = False
-                                                            continue
-                                                        else:
-                                                            # Still buffering, wait for section end
-                                                            continue
-                                                    
-                                                    # 2. Check for Start Marker (only for Kimi)
-                                                    if is_kimi_model and '<|tool_calls_section_begin|>' in combined_for_detection:
-                                                        kimi_buffering_active = True
-                                                        kimi_content_buffer = combined_for_detection
-                                                        logger.info(f"[KIMI] Tool call section started, buffering (from {'content' if '<|tool_calls_section_begin|>' in content else 'reasoning'})")
-                                                        # Start buffering, don't yield
-                                                        continue
-                                                        
-                                                    # 3. Check for Suspicious Ending (Partial Marker) - only for Kimi
-                                                    # If content ends with '<' or '<|' or '<|t' etc., it might be a split marker.
-                                                    # The longest marker prefix is about 26 chars.
-                                                    # Check if the end of content matches the beginning of the marker
-                                                    if is_kimi_model:
-                                                        marker_start = "<|tool_calls_section_begin|>"
-                                                        is_suspicious = False
-                                                        
-                                                        # Critical fix: Empty combined is NOT suspicious! 
-                                                        # OpenAI sends role-only chunks with empty content first.
-                                                        if combined_for_detection:
-                                                            # Check suffixes of length 1 to len(marker)-1
-                                                            for i in range(1, len(marker_start)):
-                                                                if i > len(combined_for_detection):
-                                                                    break
-                                                                suffix = combined_for_detection[-i:]
-                                                                if marker_start.startswith(suffix):
-                                                                    is_suspicious = True
-                                                                    break
-                                                        
-                                                        if is_suspicious:
-                                                            logger.info(f"[KIMI DEBUG] Combined content is suspicious (possible split marker), buffering: {combined_for_detection!r}")
-                                                            kimi_suspicion_buffer = combined_for_detection
-                                                            # Don't yield yet, wait for next chunk to confirm
-                                                            continue
-                                                    
-                                                    # Normal processing (no Kimi detection)
-                                                    mapped_data = self._map_model_from_ollama(json_data)
-
-                                                    # Extract delta for convenience (with safety check for empty choices)
-                                                    delta_obj = {}
-                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                        choices = mapped_data.get('choices', [])
-                                                        if choices and len(choices) > 0:
-                                                            delta_obj = choices[0].get('delta', {})
-
-                                                    # If we had a suspicion buffer that turned out to be false alarm (combined above),
-                                                    # we need to make sure we use the COMBINED content, not just the current chunk content.
-                                                    # But _map_model_from_ollama uses json_data which only has current chunk.
-                                                    # So we manually update the content if we combined buffers.
-                                                    if content != (delta.get('content', '') or ''):
-                                                        if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                            choices = mapped_data.get('choices', [])
-                                                            if choices and len(choices) > 0:
-                                                                if isinstance(choices[0], dict) and 'delta' in choices[0]:
-                                                                    choices[0]['delta']['content'] = content
-                                                    
-                                                    # Extract token usage if available
-                                                    if isinstance(mapped_data, dict) and 'usage' in mapped_data:
-                                                        usage = mapped_data['usage']
-                                                        prompt_tokens += usage.get('prompt_tokens', 0)
-                                                        completion_tokens += usage.get('completion_tokens', 0)
-                                                    
-                                                    # NOTE: Do NOT skip any chunks! 
-                                                    # OpenAI API sends role-only chunks first (content: "")
-                                                    # Cursor needs these chunks to understand the response structure
-                                                    should_skip = False
-                                                    
-                                                    # ========= USAGE CHUNK HANDLING =========
-                                                    # When stream_options.include_usage is true, Ollama sends a final
-                                                    # chunk with choices=[] and usage={...}. Forward it to Cursor!
-                                                    if isinstance(mapped_data, dict) and 'usage' in mapped_data:
-                                                        usage_data = mapped_data['usage']
-                                                        if isinstance(usage_data, dict):
-                                                            prompt_tokens = usage_data.get('prompt_tokens', prompt_tokens)
-                                                            completion_tokens = usage_data.get('completion_tokens', completion_tokens)
-                                                        
-                                                        choices_list = mapped_data.get('choices', [])
-                                                        if not choices_list or len(choices_list) == 0:
-                                                            # This is a pure usage chunk (choices=[]) - forward to Cursor
-                                                            logger.info(f"[PROXY YIELD USAGE] prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                            usage_chunk_received = True
-                                                            first_chunk_sent = True
-                                                            continue
-                                                    
-                                                    # ========= TOOL CALL BUFFERING =========
-                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data and len(mapped_data['choices']) > 0:
-                                                        choice = mapped_data['choices'][0]
-                                                        delta_obj = choice.get('delta', {})
-                                                        content_str = delta_obj.get('content')
-                                                        fr = choice.get('finish_reason')
-                                                        
-                                                        # FIX: Only set has_reasoning if it's truthy to avoid empty reasoning_content: ""
-                                                        reasoning_str = delta_obj.get('reasoning_content', "") or ""
-                                                        has_reasoning = bool(reasoning_str)
-                                                        
-                                                        # DYNAMIC <think> TAG INTERCEPTION
-                                                        # Some models stream out <think> tags or partial tags.
-                                                        if content_str is not None:
-                                                            _temp_text = think_suspicion + content_str
-                                                            think_suspicion = ""
-                                                            content_str = ""
-                                                            
-                                                            _proc_text = _temp_text
-                                                            while _proc_text:
-                                                                if not in_thinking:
-                                                                    # Try to find start of thinking
-                                                                    idx_start = _proc_text.find("<think>")
-                                                                    if idx_start != -1:
-                                                                        content_str += _proc_text[:idx_start]
-                                                                        in_thinking = True
-                                                                        _proc_text = _proc_text[idx_start+7:]
-                                                                        continue
-                                                                    
-                                                                    # Also check for unexpected end tag (recovery)
-                                                                    idx_end = _proc_text.find("</think>")
-                                                                    if idx_end != -1:
-                                                                        reasoning_str += _proc_text[:idx_end]
-                                                                        has_reasoning = True
-                                                                        _proc_text = _proc_text[idx_end+8:]
-                                                                        continue
-
-                                                                    # Check for partial tags at the end of string
-                                                                    found_partial = False
-                                                                    for tag in ["<think>", "</think>"]:
-                                                                        for i in range(len(tag)-1, 0, -1):
-                                                                            if _proc_text.endswith(tag[:i]):
-                                                                                think_suspicion = _proc_text[-i:]
-                                                                                content_str += _proc_text[:-i]
-                                                                                _proc_text = ""
-                                                                                found_partial = True
-                                                                                break
-                                                                        if found_partial: break
-                                                                    
-                                                                    if not found_partial:
-                                                                        content_str += _proc_text
-                                                                        _proc_text = ""
-                                                                else:
-                                                                    # Try to find end of thinking
-                                                                    idx_end = _proc_text.find("</think>")
-                                                                    if idx_end != -1:
-                                                                        reasoning_str += _proc_text[:idx_end]
-                                                                        has_reasoning = True
-                                                                        in_thinking = False
-                                                                        _proc_text = _proc_text[idx_end+8:]
-                                                                        continue
-
-                                                                    # Also check for another start tag (unexpected but handleable)
-                                                                    idx_start = _proc_text.find("<think>")
-                                                                    if idx_start != -1:
-                                                                        reasoning_str += _proc_text[:idx_start]
-                                                                        has_reasoning = True
-                                                                        in_thinking = True
-                                                                        _proc_text = _proc_text[idx_start+7:]
-                                                                        continue
-
-                                                                    # Check for partial tags
-                                                                    found_partial = False
-                                                                    for tag in ["</think>", "<think>"]:
-                                                                        for i in range(len(tag)-1, 0, -1):
-                                                                            if _proc_text.endswith(tag[:i]):
-                                                                                think_suspicion = _proc_text[-i:]
-                                                                                reasoning_str += _proc_text[:-i]
-                                                                                has_reasoning = True
-                                                                                _proc_text = ""
-                                                                                found_partial = True
-                                                                                break
-                                                                        if found_partial: break
-                                                                    
-                                                                    if not found_partial:
-                                                                        reasoning_str += _proc_text
-                                                                        has_reasoning = True
-                                                                        _proc_text = ""
-                                                        
-                                                        # Apply mapped content/reasoning back to mapped_data in case we yield it directly
-                                                        # It's safer to separate reasoning and content into two chunks if both exist!
-                                                        if isinstance(mapped_data, dict) and 'choices' in mapped_data:
-                                                            if has_reasoning and content_str:
-                                                                # We will handle this by yielding two chunks below!
-                                                                pass
-                                                            else:
-                                                                mapped_data['choices'][0]['delta']['content'] = content_str
-                                                                if has_reasoning:
-                                                                    mapped_data['choices'][0]['delta']['reasoning_content'] = reasoning_str
-                                                        
-                                                        # CURSOR FIX: Always yield content/reasoning, even if tool_calls are present
-                                                        # This prevents chat from being cut off when tool calls are incomplete/invalid
-
-                                                        # Buffer tool calls for assembly
-                                                        # CRITICAL: Ollama/GLM sends each tool call in SEPARATE chunks, all with index 0.
-                                                        # Use id as key - same id = accumulate (streaming partial), different id = new tool call.
-                                                        if 'tool_calls' in delta_obj and delta_obj['tool_calls']:
-                                                            for tc in delta_obj['tool_calls']:
-                                                                tc_id = tc.get('id') or f"call_{uuid.uuid4().hex[:8]}"
-                                                                tc_func = tc.get('function', {})
-                                                                
-                                                                if tc_id not in pending_tool_calls:
-                                                                    # New tool call - assign next sequential index
-                                                                    pending_tool_calls[tc_id] = {
-                                                                        "idx": len(pending_tool_calls),
-                                                                        "id": tc_id,
-                                                                        "type": tc.get('type', 'function'),
-                                                                        "function": {"name": tc_func.get('name', ''), "arguments": tc_func.get('arguments', '')}
-                                                                    }
-                                                                else:
-                                                                    # Same id = streaming partial data, accumulate
-                                                                    if tc_func.get('name'):
-                                                                        pending_tool_calls[tc_id]["function"]["name"] += tc_func['name']
-                                                                    if tc_func.get('arguments'):
-                                                                        pending_tool_calls[tc_id]["function"]["arguments"] += tc_func['arguments']
-
-                                                        # Yield content/reasoning if present (regardless of tool_calls)
-                                                        if content_str or reasoning_str:
-                                                            if has_reasoning:
-                                                                reasoning_chunk = json.loads(json.dumps(mapped_data))
-                                                                r_delta = reasoning_chunk['choices'][0].get('delta', {})
-                                                                if first_chunk_sent:
-                                                                    r_delta.pop('role', None)
-                                                                new_r_delta = {k: v for k, v in r_delta.items() if k not in ('content', 'tool_calls')}
-                                                                new_r_delta['reasoning_content'] = reasoning_str
-                                                                reasoning_chunk['choices'][0]['delta'] = new_r_delta
-                                                                reasoning_chunk['choices'][0]['finish_reason'] = None
-
-                                                                logger.info(f"[PROXY YIELD REASONING] {json.dumps(reasoning_chunk, ensure_ascii=False)}")
-                                                                yield b'data: ' + json.dumps(reasoning_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                first_chunk_sent = True
-
-                                                            if content_str:
-                                                                content_chunk = json.loads(json.dumps(mapped_data))
-                                                                c_delta = content_chunk['choices'][0].get('delta', {})
-                                                                if first_chunk_sent:
-                                                                    c_delta.pop('role', None)
-                                                                new_c_delta = {k: v for k, v in c_delta.items() if k not in ('reasoning_content', 'tool_calls')}
-                                                                new_c_delta['content'] = content_str
-                                                                content_chunk['choices'][0]['delta'] = new_c_delta
-                                                                content_chunk['choices'][0]['finish_reason'] = None
-
-                                                                logger.info(f"[PROXY YIELD CONTENT] {json.dumps(content_chunk, ensure_ascii=False)}")
-                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                first_chunk_sent = True
-
-                                                        # When the tool call stream finishes, yield the fully assembled tool calls
-                                                        # Flushing happens if we receive a finish_reason OR if the stream transitioned away from tool_calls to something else (content etc.)
-                                                        flush_tools = False
-                                                        if pending_tool_calls:
-                                                            if fr in ("tool_calls", "stop"):
-                                                                flush_tools = True
-                                                            elif not ("tool_calls" in delta_obj and delta_obj["tool_calls"]):
-                                                                flush_tools = True
-
-                                                        if flush_tools:
-                                                            # CURSOR FIX: Sanitize and validate tool calls - invalid arguments
-                                                            # (e.g. offset:-100) cause "Unexpected non-whitespace character after JSON"
-                                                            assembled_calls = []
-                                                            for idx, t in enumerate(sorted(pending_tool_calls.values(), key=lambda x: x["idx"])):
-                                                                tc = {
-                                                                    "index": idx,
-                                                                    "id": t["id"],
-                                                                    "type": t["type"],
-                                                                    "function": {
-                                                                        "name": t["function"]["name"],
-                                                                        "arguments": t["function"]["arguments"]
-                                                                    }
-                                                                }
-                                                                # Sanitize invalid args (e.g. Read offset:-100 -> 1)
-                                                                _sanitize_tool_call_arguments(tc)
-                                                                if _is_tool_call_valid(tc):
-                                                                    assembled_calls.append(tc)
-                                                                else:
-                                                                    logger.warning(f"[CURSOR FIX] Skipping invalid tool call: {t['function']['name']} - invalid JSON arguments")
-                                                            
-                                                            # Only yield if we have valid tool calls (avoid Cursor JSON parse errors)
-                                                            if assembled_calls:
-                                                                tool_chunk = json.loads(json.dumps(mapped_data))
-                                                                tool_chunk["choices"][0]["delta"] = {"tool_calls": assembled_calls}
-                                                                tool_chunk["choices"][0]["finish_reason"] = None
-                                                                logger.info(f"[PROXY YIELD ASSEMBLED TOOLS] {json.dumps(tool_chunk, ensure_ascii=False)}")
-                                                                yield b"data: " + json.dumps(tool_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
-                                                                first_chunk_sent = True
-                                                                
-                                                                # After yielding fully assembled tool calls, yield the finish_reason chunk
-                                                                finish_chunk = json.loads(json.dumps(mapped_data))
-                                                                f_delta = finish_chunk["choices"][0].get("delta", {})
-                                                                if first_chunk_sent:
-                                                                    f_delta.pop("role", None)
-                                                                finish_chunk["choices"][0]["finish_reason"] = fr if fr else "tool_calls"
-                                                                logger.info(f"[PROXY YIELD FINISH TOOLS] {json.dumps(finish_chunk, ensure_ascii=False)}")
-                                                                yield b"data: " + json.dumps(finish_chunk, ensure_ascii=False).encode("utf-8") + b"\n\n"
-                                                                just_yielded_assembled_tools = True
-                                                            pending_tool_calls = {}
-
-                                                    # ========================================
-
-                                                    # Yield remaining content/reasoning (if not already yielded above)
-                                                    # This handles cases where content came WITHOUT tool_calls in this chunk
-                                                    if not (content_str or reasoning_str):
-                                                        if reasoning_str and content_str:
-                                                            # Split into two chunks
-                                                            r_chunk = json.loads(json.dumps(mapped_data))
-                                                            r_delta = r_chunk['choices'][0].get('delta', {})
-                                                            # Strip role from subsequent chunks
-                                                            has_role = 'role' in r_delta
-                                                            if first_chunk_sent:
-                                                                r_delta.pop('role', None)
-                                                            
-                                                            new_r_delta = {k: v for k, v in r_delta.items() if k not in ('content', 'tool_calls')}
-                                                            new_r_delta['reasoning_content'] = reasoning_str
-                                                            r_chunk['choices'][0]['delta'] = new_r_delta
-                                                            
-                                                            logger.info(f"[PROXY YIELD REASONING SPLIT] (Role: {has_role and not first_chunk_sent}) {json.dumps(r_chunk, ensure_ascii=False)}")
-                                                            yield b'data: ' + json.dumps(r_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                            first_chunk_sent = True
-                                                            
-                                                            c_chunk = json.loads(json.dumps(mapped_data))
-                                                            c_delta = c_chunk['choices'][0].get('delta', {})
-                                                            # Second chunk is always subsequent
-                                                            c_delta.pop('role', None)
-                                                            
-                                                            new_c_delta = {k: v for k, v in c_delta.items() if k not in ('reasoning_content', 'tool_calls')}
-                                                            new_c_delta['content'] = content_str
-                                                            c_chunk['choices'][0]['delta'] = new_c_delta
-                                                            
-                                                            logger.info(f"[PROXY YIELD CONTENT SPLIT] {json.dumps(c_chunk, ensure_ascii=False)}")
-                                                            yield b'data: ' + json.dumps(c_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                        else:
-                                                            # FINAL CLEANUP FOR CURSOR COMPATIBILITY
-                                                            if isinstance(mapped_data.get('choices'), list) and len(mapped_data['choices']) > 0:
-                                                                choice = mapped_data['choices'][0]
-                                                                final_delta = choice.get('delta', {})
-                                                                
-                                                                # CURSOR FIX: Never yield tool_calls here - we buffer and yield
-                                                                # ASSEMBLED TOOLS separately. Sending partial tool_calls causes
-                                                                # "Unexpected "{" at position "0" in state ENDED" JSON parse errors.
-                                                                if pending_tool_calls and 'tool_calls' in final_delta:
-                                                                    final_delta = {k: v for k, v in final_delta.items() if k != 'tool_calls'}
-                                                                    choice['delta'] = final_delta
-                                                                
-                                                                # Update with intercepted values
-                                                                if has_reasoning:
-                                                                    final_delta['reasoning_content'] = reasoning_str
-                                                                    if 'reasoning' in final_delta: del final_delta['reasoning']
-                                                                if content_str is not None:
-                                                                    final_delta['content'] = content_str
-
-                                                                final_fr = choice.get('finish_reason')
-                                                                
-                                                                # 1. Strip role if already sent
-                                                                if first_chunk_sent:
-                                                                    final_delta.pop('role', None)
-                                                                
-                                                                # 2. Handle reasoning vs content
-                                                                if final_delta.get('reasoning_content') == "":
-                                                                    final_delta.pop('reasoning_content', None)
-                                                                
-                                                                if 'reasoning_content' in final_delta:
-                                                                    # If we have reasoning, usually we don't want empty content
-                                                                    if final_delta.get('content') == "":
-                                                                        final_delta.pop('content', None)
-                                                                
-                                                                # 3. Handle stop chunks - OpenAI requires empty delta
-                                                                if final_fr is not None:
-                                                                    choice['delta'] = {}
-                                                                
-                                                                # 4. Skip yielding if delta is empty and we're buffering tool_calls
-                                                                # (avoids sending empty chunks that confuse Cursor)
-                                                                if not final_delta and pending_tool_calls:
-                                                                    pass  # Don't yield, wait for ASSEMBLED TOOLS
-                                                                # 5. CURSOR FIX: Skip duplicate finish_reason:tool_calls chunk.
-                                                                # We already yield ASSEMBLED TOOLS + FINISH TOOLS. Sending another
-                                                                # chunk with finish_reason causes "Unexpected \"{\" at position \"0\"
-                                                                # in state ENDED" - parser thinks stream ended, then sees new JSON.
-                                                                elif just_yielded_assembled_tools and final_fr == "tool_calls":
-                                                                    pass  # Already sent via PROXY YIELD FINISH TOOLS
-                                                                else:
-                                                                    logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
-                                                                    yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                    first_chunk_sent = True
-                                                            else:
-                                                                logger.info(f"[PROXY YIELD NORMAL] {json.dumps(mapped_data, ensure_ascii=False)}")
-                                                                yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                                                first_chunk_sent = True
-                                                        pass # Removed redundant first_chunk_sent = True
-                                                    # BUGFIX: Do NOT yield again when we have content/reasoning - we already
-                                                    # yielded them in the block above (PROXY YIELD REASONING/CONTENT).
-                                                    # The else block was causing DUPLICATE output (same text appearing twice).
-                                                    # True usage chunks (choices=[]) are rare and would be handled by
-                                                    # the "if not (content_str or reasoning_str)" branch above.
-                                                elif json_str == '[DONE]':
-                                                    # [DONE] marker - only send once!
-                                                    if not done_marker_sent:
-                                                        logger.info(f"[STREAM] Received [DONE] marker from Ollama, forwarding")
-                                                        yield b'data: [DONE]\n\n'
-                                                        done_marker_sent = True
-                                                        first_chunk_sent = True
-                                            else:
-                                                # ============================================
-                                                # NATIVE OLLAMA FORMAT (NDJSON) - CLEAN PASS-THROUGH
-                                                # ============================================
-                                                # Only map model names and track tokens.
-                                                # Do NOT modify content, remove fields, or inject
-                                                # OpenAI/SSE format data. The response must be
-                                                # identical to what native Ollama would return.
-                                                json_data = json.loads(line.decode('utf-8'))
-                                                
-                                                # Lightweight mapping: only model name, nothing else
-                                                mapped_data = self._map_native_ollama_response(json_data)
-                                                
-                                                # Track token usage for logging (non-destructive read)
-                                                if isinstance(mapped_data, dict):
-                                                    if 'prompt_eval_count' in mapped_data:
-                                                        prompt_tokens += mapped_data.get('prompt_eval_count', 0)
-                                                    if 'eval_count' in mapped_data:
-                                                        completion_tokens += mapped_data.get('eval_count', 0)
-                                                
-                                                # KIMI NATIVE TOOL CALL BUFFERING
-                                                if is_kimi_model:
-                                                    content = ""
-                                                    reasoning = ""
-                                                    if isinstance(json_data, dict) and 'message' in json_data:
-                                                        message = json_data.get('message', {})
-                                                        if isinstance(message, dict):
-                                                            content = message.get('content', '') or ''
-                                                            reasoning = message.get('thinking', '') or ''
-                                                            if not reasoning:
-                                                                reasoning = message.get('reasoning', '') or ''
-                                                    
-                                                    combined_for_detection = content + reasoning
-                                                    
-                                                    if kimi_suspicion_buffer:
-                                                        combined_for_detection = kimi_suspicion_buffer + combined_for_detection
-                                                        kimi_suspicion_buffer = ""
-                                                    
-                                                    if kimi_buffering_active:
-                                                        kimi_content_buffer += combined_for_detection
-                                                        if '<|tool_calls_section_end|>' in kimi_content_buffer:
-                                                            logger.info(f"[NATIVE TOOL] Section complete. Processing {len(kimi_content_buffer)} bytes")
-                                                            clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
-                                                            if has_tool_calls:
-                                                                ollama_tool_calls = []
-                                                                for t in tool_calls:
-                                                                    try:
-                                                                        args_dict = json.loads(t["function"]["arguments"])
-                                                                    except:
-                                                                        args_dict = {}
-                                                                    ollama_tool_calls.append({
-                                                                        "function": {
-                                                                            "name": t["function"]["name"],
-                                                                            "arguments": args_dict
-                                                                        }
-                                                                    })
-                                                                
-                                                                if clean_content:
-                                                                    clean_content = re.sub(r'<\|tool_calls_[^>]+>', '', clean_content)
-                                                                    c_chunk = json.loads(json.dumps(mapped_data))
-                                                                    if 'message' not in c_chunk: c_chunk['message'] = {"role": "assistant"}
-                                                                    if 'thinking' in c_chunk['message']: del c_chunk['message']['thinking']
-                                                                    c_chunk['message']['content'] = clean_content
-                                                                    yield json.dumps(c_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                                    first_chunk_sent = True
-                                                                
-                                                                t_chunk = json.loads(json.dumps(mapped_data))
-                                                                if 'message' not in t_chunk: t_chunk['message'] = {"role": "assistant"}
-                                                                t_chunk['message']['content'] = ""
-                                                                if 'thinking' in t_chunk['message']: del t_chunk['message']['thinking']
-                                                                t_chunk['message']['tool_calls'] = ollama_tool_calls
-                                                                yield json.dumps(t_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                                first_chunk_sent = True
-                                                                
-                                                            kimi_content_buffer = ""
-                                                            kimi_buffering_active = False
-                                                        
-                                                        # Skip yielding this original chunk as it's part of buffer
-                                                        continue
-                                                        
-                                                    else:
-                                                        if '<|tool_calls_section_begin|>' in combined_for_detection:
-                                                            logger.info(f"[NATIVE TOOL] Section begin detected")
-                                                            idx = combined_for_detection.find('<|tool_calls_section_begin|>')
-                                                            pre_text = combined_for_detection[:idx]
-                                                            kimi_content_buffer = combined_for_detection[idx:]
-                                                            kimi_buffering_active = True
-                                                            
-                                                            if pre_text:
-                                                                p_chunk = json.loads(json.dumps(mapped_data))
-                                                                if 'message' in p_chunk and isinstance(p_chunk['message'], dict):
-                                                                    if content: p_chunk['message']['content'] = pre_text
-                                                                    elif 'thinking' in p_chunk['message']: p_chunk['message']['thinking'] = pre_text
-                                                                yield json.dumps(p_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                                first_chunk_sent = True
-                                                            continue
-                                                            
-                                                        elif combined_for_detection.endswith('<') or combined_for_detection.endswith('<|') or combined_for_detection.endswith('<|tool'):
-                                                            suspicion_idx = combined_for_detection.rfind('<')
-                                                            kimi_suspicion_buffer = combined_for_detection[suspicion_idx:]
-                                                            safe_content = combined_for_detection[:suspicion_idx]
-                                                            
-                                                            if safe_content:
-                                                                s_chunk = json.loads(json.dumps(mapped_data))
-                                                                if 'message' in s_chunk and isinstance(s_chunk['message'], dict):
-                                                                    if content: s_chunk['message']['content'] = safe_content
-                                                                    elif 'thinking' in s_chunk['message']: s_chunk['message']['thinking'] = safe_content
-                                                                yield json.dumps(s_chunk, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                                first_chunk_sent = True
-                                                            continue
-
-                                                # Forward as-is in NDJSON format
-                                                yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                first_chunk_sent = True
-                                        
-                                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                                            # Log parse errors for debugging
-                                            logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
-                                            continue
-
-                            # ============================================
-                            # POST-STREAM PROCESSING
-                            # ============================================
-                            
-                            if is_openai_endpoint:
-                                # FLUSH BUFFER ON STREAM END (OpenAI only - Kimi tool call buffering)
-                                if kimi_content_buffer or kimi_suspicion_buffer:
-                                    logger.info(f"[KIMI DEBUG] Stream ended with remaining buffer. Flushing...")
-                                    final_content = kimi_content_buffer + kimi_suspicion_buffer
-                                    
-                                    # Try to process one last time if it looks like a tool call section
-                                    if '<|tool_calls_section_begin|>' in final_content:
-                                         clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(final_content)
-                                         if has_tool_calls:
-                                             tool_calls_chunk = {
-                                                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                                                "object": "chat.completion.chunk",
-                                                "model": model_mapper.get_display_model_name(current_model),
-                                                "choices": [{
-                                                    "index": 0,
-                                                    "delta": {"tool_calls": tool_calls},
-                                                    "finish_reason": "tool_calls"
-                                                }]
-                                             }
-                                             yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                             final_content = clean_content
-                                    
-                                    if final_content:
-                                         final_chunk = {
-                                            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                                            "object": "chat.completion.chunk",
-                                            "model": model_mapper.get_display_model_name(current_model),
-                                            "choices": [{
-                                                "index": 0,
-                                                "delta": {"content": final_content},
-                                                "finish_reason": None
-                                            }]
-                                         }
-                                         yield b'data: ' + json.dumps(final_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-
-                                if not first_chunk_sent and not done_marker_sent:
-                                    chunk = {
-                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": model_mapper.get_display_model_name(current_model),
-                                        "choices": [
-                                            {
-                                                "index": 0,
-                                                "delta": {"role": "assistant", "content": ""},
-                                                "finish_reason": None
-                                            }
-                                        ]
-                                    }
-                                    yield b'data: ' + json.dumps(chunk).encode('utf-8') + b'\n\n'
-                                    first_chunk_sent = True
-                                
-                                if not done_marker_sent:
-                                    if not usage_chunk_received and (prompt_tokens > 0 or completion_tokens > 0):
-                                        total_toks = prompt_tokens + completion_tokens
-                                        usage_chunk = {
-                                            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                                            "object": "chat.completion.chunk",
-                                            "model": model_mapper.get_display_model_name(current_model),
-                                            "choices": [],
-                                            "usage": {
-                                                "prompt_tokens": prompt_tokens,
-                                                "completion_tokens": completion_tokens,
-                                                "total_tokens": total_toks
-                                            }
-                                        }
-                                        logger.info(f"[PROXY INJECT USAGE] No upstream usage chunk received, injecting: prompt={prompt_tokens}, completion={completion_tokens}, total={total_toks}")
-                                        yield b'data: ' + json.dumps(usage_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                    
-                                    yield b'data: [DONE]\n\n'
-                                    done_marker_sent = True
-                            
-                            # Process any remaining data in buffer (both formats)
-                            if buffer:
-                                logger.info(f"[STREAM] Processing remaining buffer: {len(buffer)} bytes")
-                                try:
-                                    buffer_stripped = buffer.strip()
-                                    if buffer_stripped:
-                                        json_data = json.loads(buffer_stripped.decode('utf-8'))
-                                        if is_openai_endpoint:
-                                            mapped_data = self._map_model_from_ollama(json_data)
-                                        else:
-                                            mapped_data = self._map_native_ollama_response(json_data)
-                                        
-                                        # Extract token usage if available
-                                        if isinstance(mapped_data, dict) and 'prompt_eval_count' in mapped_data:
-                                            prompt_tokens += mapped_data.get('prompt_eval_count', 0)
-                                        if isinstance(mapped_data, dict) and 'eval_count' in mapped_data:
-                                            completion_tokens += mapped_data.get('eval_count', 0)
-                                        
-                                        if is_openai_endpoint:
-                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                        else:
-                                            yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                        first_chunk_sent = True
-                                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                                    logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {buffer[:100]!r}")
-                                    if buffer.strip():
-                                        if is_openai_endpoint:
-                                            yield b'data: ' + buffer + b'\n\n'
-                                        else:
-                                            yield buffer
-                                        first_chunk_sent = True
-                            
-                            # For OpenAI endpoints, send [DONE] marker if not already sent
-                            if is_openai_endpoint and not done_marker_sent:
-                                if not usage_chunk_received and (prompt_tokens > 0 or completion_tokens > 0):
-                                    total_toks = prompt_tokens + completion_tokens
-                                    usage_chunk = {
-                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                                        "object": "chat.completion.chunk",
-                                        "model": model_mapper.get_display_model_name(current_model),
-                                        "choices": [],
-                                        "usage": {
-                                            "prompt_tokens": prompt_tokens,
-                                            "completion_tokens": completion_tokens,
-                                            "total_tokens": total_toks
-                                        }
-                                    }
-                                    logger.info(f"[PROXY INJECT USAGE] (end-of-stream) prompt={prompt_tokens}, completion={completion_tokens}, total={total_toks}")
-                                    yield b'data: ' + json.dumps(usage_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                                
-                                logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream). Total chunks: {chunk_count}, bytes: {total_bytes}")
-                                yield b'data: [DONE]\n\n'
-                            elif is_openai_endpoint:
-                                logger.info(f"[STREAM END] Stream complete ([DONE] already sent). Total chunks: {chunk_count}, bytes: {total_bytes}")
-                            else:
-                                logger.info(f"[STREAM END] Non-OpenAI stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
-                            
-                            # Log user activity after streaming is complete
-                            if username and model_name:
-                                await self._log_user_activity(
-                                    username=username,
-                                    model_name=model_name,
-                                    request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
-                                    prompt_tokens=prompt_tokens,
-                                    completion_tokens=completion_tokens,
-                                    total_tokens=prompt_tokens + completion_tokens
-                                )
-                    except httpx.RequestError as e:
-                        # Network/connection errors
-                        logger.error(f"Network error while streaming to Ollama: {str(e)}")
-                        logger.error(f"Request URL: {url}")
-                        error_response = {
-                            "error": {
-                                "message": f"Failed to connect to Ollama: {str(e)}",
-                                "type": "connection_error",
-                                "code": 503
-                            }
-                        }
-                        yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                        yield b'data: [DONE]\n\n'
-                    except Exception as e:
-                        # Any other unexpected errors
-                        logger.error(f"Unexpected error while streaming: {str(e)}", exc_info=True)
-                        logger.error(f"Request URL: {url}")
-                        error_response = {
-                            "error": {
-                                "message": f"Unexpected error: {str(e)}",
-                                "type": "internal_error",
-                                "code": 500
-                            }
-                        }
-                        yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
-                        yield b'data: [DONE]\n\n'
-                
-                # Return streaming response with proper headers for SSE
-                # OpenAI endpoints use text/event-stream, native Ollama uses application/x-ndjson
-                if is_openai_endpoint:
-                    media_type = "text/event-stream"
-                else:
-                    media_type = "application/x-ndjson"
-                
-                import uuid
-                request_id = str(uuid.uuid4())[:8]
-                
-                return StreamingResponse(
-                    stream_generator(),
-                    media_type=f"{media_type}; charset=utf-8" if media_type == "text/event-stream" else media_type,
-                    headers={
-                        # Standard SSE headers - Cursor compatibility
-                        "Cache-Control": "no-cache, no-transform",
-                        "X-Accel-Buffering": "no",
-                        "Connection": "keep-alive",
-                    }
-                )
-            
-            # Non-streaming requests with persistent HTTP client
-            client = await self._get_http_client()
-            if method.upper() == "GET":
-                response = await client.get(url)
-            elif method.upper() == "POST":
-                # Log request data for debugging
-                logger.info(f"Sending request to Ollama: {url}")
-                response = await client.post(url, json=data)
-            elif method.upper() == "DELETE":
-                response = await client.delete(url, json=data)
-            else:
-                raise HTTPException(status_code=405, detail="Method not allowed")
-            
-            # Check response status
-            if response.status_code >= 400:
-                # Log the request data that caused the error for debugging
-                logger.error(f"Ollama error ({response.status_code}): {response.text}")
-                logger.error(f"Request URL: {url}")
-                if data:
-                    logger.error(f"Request data: {json.dumps(data, ensure_ascii=False, indent=2)}")
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Ollama error: {response.text}"
-                )
-            
-            # Parse response
-            try:
-                response_data = response.json()
-            except:
-                # Log user activity for non-JSON responses
-                if username and model_name:
-                    await self._log_user_activity(
-                        username=username,
-                        model_name=model_name,
-                        request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
-                        prompt_tokens=0,
-                        completion_tokens=0,
-                        total_tokens=0
-                    )
-                return response.text
-            
-            # Map model names in response
-            if endpoint == "/api/tags":
-                response_data = self._map_models_list(response_data)
-            elif endpoint == "/v1/models":
-                response_data = self._map_openai_models_list(response_data)
-            elif is_openai_endpoint:
-                response_data = self._map_model_from_ollama(response_data)
-            else:
-                # Native Ollama: lightweight mapping only (model names)
-                response_data = self._map_native_ollama_response(response_data)
-            
-            # Extract token usage for logging
-            prompt_tokens = 0
-            completion_tokens = 0
-            total_tokens = 0
-            
-            if isinstance(response_data, dict):
-                # For chat/generate responses
-                if 'prompt_eval_count' in response_data:
-                    prompt_tokens = response_data.get('prompt_eval_count', 0)
-                if 'eval_count' in response_data:
-                    completion_tokens = response_data.get('eval_count', 0)
-                if 'total_duration' in response_data and 'load_duration' in response_data:
-                    # Estimate tokens for embeddings (approximate)
-                    total_tokens = prompt_tokens + completion_tokens
-                
-                # For OpenAI format responses
-                if 'usage' in response_data:
-                    usage = response_data['usage']
-                    prompt_tokens = usage.get('prompt_tokens', 0)
-                    completion_tokens = usage.get('completion_tokens', 0)
-                    total_tokens = usage.get('total_tokens', 0)
-            
-            # Log user activity
-            if username and model_name:
-                await self._log_user_activity(
-                    username=username,
-                    model_name=model_name,
-                    request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens or (prompt_tokens + completion_tokens)
-                )
-            
-            return response_data
-                
+        except HTTPException:
+            raise
         except httpx.RequestError as e:
             raise HTTPException(
                 status_code=503,
                 detail=f"Failed to connect to Ollama: {str(e)}"
             )
-        except HTTPException:
-            raise
         except Exception as e:
             raise HTTPException(
                 status_code=500,
                 detail=f"Proxy error: {str(e)}"
             )
 
+    async def _stream_with_failover(
+        self,
+        url: str,
+        data: Dict[str, Any],
+        is_openai_endpoint: bool,
+        username: Optional[str],
+        original_group: Optional[str],
+        tried_models: set,
+        original_data: Optional[Dict[str, Any]],
+        endpoint: str,
+        base_url: str
+    ):
+        """
+        Handle streaming requests with automatic failover.
+
+        If initial connection fails (HTTP 5xx, connection error), try fallback models.
+        Failover only happens BEFORE streaming starts.
+
+        Args:
+            url: Target URL
+            data: Request data
+            is_openai_endpoint: Whether this is an OpenAI-compatible endpoint
+            username: Username for logging
+            original_group: Original group name (if model came from a group)
+            tried_models: Set of models already tried
+            original_data: Original request data before mapping
+            endpoint: API endpoint
+            base_url: Base URL for node selection
+
+        Returns:
+            StreamingResponse with failover support
+        """
+        # Determine media type
+        if is_openai_endpoint:
+            media_type = "text/event-stream"
+        else:
+            media_type = "application/x-ndjson"
+
+        async def stream_generator_with_failover():
+            """Generator that handles failover for streaming requests"""
+            nonlocal tried_models
+
+            # Store error info for potential failover
+            last_error = None
+            current_data = data.copy() if data else {}
+            current_url = url
+
+            for attempt in range(MAX_FAILOVER_RETRIES + 1):
+                client = await self._get_http_client()
+                current_model = current_data.get('model', 'unknown')
+
+                logger.info(f"[STREAM START] Attempt {attempt + 1}: Sending streaming request to {current_url}")
+                logger.info(f"[STREAM START] Model: {current_model}, OpenAI endpoint: {is_openai_endpoint}")
+                logger.info(f"[STREAM START] max_tokens: {current_data.get('max_tokens', 'not set')}, temperature: {current_data.get('temperature', 'not set')}")
+
+                try:
+                    if current_data.get("tools"):
+                        logger.info(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in current_data.get('tools', [])]}")
+
+                    async with client.stream("POST", current_url, json=current_data) as resp:
+                        logger.info(f"[STREAM] Ollama response status: {resp.status_code}")
+
+                        # Check status code before streaming
+                        if resp.status_code != 200:
+                            error_text = await resp.aread()
+                            error_msg = error_text.decode()
+
+                            # Parse error message
+                            try:
+                                error_json = json.loads(error_msg)
+                                if isinstance(error_json, dict) and 'error' in error_json:
+                                    error_detail = error_json['error']
+                                    if isinstance(error_detail, dict) and 'message' in error_detail:
+                                        error_msg = error_detail['message']
+                                    elif isinstance(error_detail, str):
+                                        error_msg = error_detail
+                            except (json.JSONDecodeError, KeyError, TypeError):
+                                pass
+
+                            logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
+                            logger.error(f"Request URL: {current_url}")
+                            logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
+
+                            # Check if we should failover (5xx errors only)
+                            should_failover = (
+                                resp.status_code >= 500 and
+                                original_group and
+                                attempt < MAX_FAILOVER_RETRIES
+                            )
+
+                            if should_failover:
+                                # Try to get fallback model
+                                fallback_model = self._get_fallback_model(original_group, current_model)
+
+                                if fallback_model and fallback_model not in tried_models:
+                                    logger.warning(f"[FAILOVER] Stream error {resp.status_code}, trying fallback model: {fallback_model}")
+                                    tried_models.add(fallback_model)
+
+                                    # Update data with fallback model
+                                    current_data = original_data.copy() if original_data else {}
+                                    current_data['model'] = fallback_model
+                                    current_data = await self._resolve_model_groups(current_data)
+                                    current_data = self._map_model_to_ollama(current_data)
+
+                                    # Select new node URL for fallback
+                                    new_base_url = await self._select_node_url(fallback_model)
+                                    current_url = f"{new_base_url}{endpoint}"
+
+                                    # Log failover attempt
+                                    logger.info(f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})")
+                                    continue
+
+                            # No failover available or max retries reached - yield error
+                            error_type = "api_error"
+                            error_code = resp.status_code
+
+                            # Check for context error
+                            error_msg_lower = error_msg.lower()
+                            is_context_error = any(phrase in error_msg_lower for phrase in [
+                                'context length', 'context_length', 'num_ctx',
+                                'context window', 'token limit', 'too long',
+                                'maximum context', 'exceeds the model',
+                            ])
+
+                            if is_context_error:
+                                error_type = "context_length_exceeded"
+                                error_code = "context_length_exceeded"
+                                friendly_msg = (
+                                    f"Context limiti aşıldı. Model'in context penceresi doldu. "
+                                    f"Lütfen yeni bir chat başlatın veya context'i temizleyin. "
+                                    f"Detay: {error_msg}"
+                                )
+                                logger.warning(f"[CONTEXT OVERFLOW] Model context limit reached: {error_msg}")
+                            else:
+                                friendly_msg = f"Ollama upstream error: {error_msg}"
+
+                            error_response = {
+                                "error": {
+                                    "message": friendly_msg,
+                                    "type": error_type,
+                                    "code": error_code
+                                }
+                            }
+                            yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                            yield b'data: [DONE]\n\n'
+                            return
+
+                        # Success! Stream the response
+                        # Use the existing streaming logic from line 1057 onwards
+                        # (this is the happy path)
+
+                        buffer = b""
+                        pending_tool_calls: Dict[str, Dict[str, Any]] = {}
+                        prompt_tokens = 0
+                        completion_tokens = 0
+                        first_chunk_sent = False
+                        done_marker_sent = False
+                        usage_chunk_received = False
+                        just_yielded_assembled_tools = False
+                        chunk_count = 0
+                        total_bytes = 0
+
+                        kimi_content_buffer = ""
+                        kimi_buffering_active = False
+                        kimi_suspicion_buffer = ""
+                        current_model = current_data.get('model', 'unknown')
+
+                        in_thinking = False
+                        think_suspicion = ""
+
+                        is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
+
+                        async for chunk in resp.aiter_raw():
+                            if not chunk:
+                                continue
+
+                            chunk_count += 1
+                            total_bytes += len(chunk)
+
+                            if chunk_count <= 3:
+                                logger.info(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
+
+                            buffer += chunk
+
+                            while b'\n' in buffer:
+                                line, buffer = buffer.split(b'\n', 1)
+                                if line:
+                                    try:
+                                        if line.startswith(b'data: '):
+                                            json_str = line[6:].decode('utf-8').strip()
+                                            if json_str and json_str != '[DONE]':
+                                                logger.info(f"[OLLAMA IN] {json_str}")
+                                                json_data = json.loads(json_str)
+
+                                                # Kimi tool call handling
+                                                content = ""
+                                                reasoning = ""
+                                                combined_for_detection = ""
+
+                                                if isinstance(json_data, dict) and 'choices' in json_data:
+                                                    for choice in json_data.get('choices', []):
+                                                        if isinstance(choice, dict):
+                                                            delta = choice.get('delta', {})
+                                                            if isinstance(delta, dict):
+                                                                content = delta.get('content', '') or ''
+                                                                reasoning = delta.get('reasoning', '') or ''
+
+                                                if is_kimi_model:
+                                                    combined_for_detection = content + reasoning
+
+                                                    if content:
+                                                        logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                    if reasoning:
+                                                        logger.info(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
+
+                                                    if kimi_suspicion_buffer:
+                                                        logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
+                                                        combined_for_detection = kimi_suspicion_buffer + combined_for_detection
+                                                        kimi_suspicion_buffer = ""
+
+                                                if is_kimi_model and kimi_buffering_active:
+                                                    kimi_content_buffer += combined_for_detection
+
+                                                    if '<|tool_calls_section_end|>' in kimi_content_buffer:
+                                                        logger.info(f"[KIMI] Tool call section complete, processing buffer")
+
+                                                        clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+
+                                                        if has_tool_calls:
+                                                            logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
+
+                                                            if clean_content:
+                                                                if '<|tool_calls_' in clean_content:
+                                                                    clean_content = re.sub(r'<\|tool_calls_[^>]+>', '', clean_content)
+
+                                                                content_chunk = {
+                                                                    "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                    "object": "chat.completion.chunk",
+                                                                    "model": model_mapper.get_display_model_name(current_model),
+                                                                    "choices": [{
+                                                                        "index": 0,
+                                                                        "delta": {"content": clean_content},
+                                                                        "finish_reason": None
+                                                                    }]
+                                                                }
+                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                                            tool_calls_chunk = {
+                                                                "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                "object": "chat.completion.chunk",
+                                                                "model": model_mapper.get_display_model_name(current_model),
+                                                                "choices": [{
+                                                                    "index": 0,
+                                                                    "delta": {"tool_calls": tool_calls},
+                                                                    "finish_reason": None
+                                                                }]
+                                                            }
+                                                            yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                                            finish_chunk = {
+                                                                "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                "object": "chat.completion.chunk",
+                                                                "model": model_mapper.get_display_model_name(current_model),
+                                                                "choices": [{
+                                                                    "index": 0,
+                                                                    "delta": {},
+                                                                    "finish_reason": "tool_calls"
+                                                                }]
+                                                            }
+                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
+                                                        else:
+                                                            mapped_data = self._map_model_from_ollama(json.loads(json_str))
+                                                            if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                                choices = mapped_data.get('choices', [])
+                                                                if choices and len(choices) > 0:
+                                                                    choices[0]['delta']['content'] = kimi_content_buffer
+                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
+
+                                                        kimi_content_buffer = ""
+                                                        kimi_buffering_active = False
+                                                        continue
+                                                    else:
+                                                        continue
+
+                                                if is_kimi_model and '<|tool_calls_section_begin|>' in combined_for_detection:
+                                                    kimi_buffering_active = True
+                                                    kimi_content_buffer = combined_for_detection
+                                                    logger.info(f"[KIMI] Tool call section started, buffering")
+                                                    continue
+
+                                                if is_kimi_model:
+                                                    marker_start = "<|tool_calls_section_begin|>"
+                                                    is_suspicious = False
+
+                                                    if combined_for_detection:
+                                                        for i in range(1, len(marker_start)):
+                                                            if i > len(combined_for_detection):
+                                                                break
+                                                            suffix = combined_for_detection[-i:]
+                                                            if marker_start.startswith(suffix):
+                                                                is_suspicious = True
+                                                                break
+
+                                                    if is_suspicious:
+                                                        logger.info(f"[KIMI DEBUG] Combined content is suspicious, buffering: {combined_for_detection!r}")
+                                                        kimi_suspicion_buffer = combined_for_detection
+                                                        continue
+
+                                                # Normal processing
+                                                mapped_data = self._map_model_from_ollama(json_data)
+
+                                                # Extract delta for usage tracking
+                                                delta_obj = {}
+                                                if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                    choices = mapped_data.get('choices', [])
+                                                    if choices and len(choices) > 0:
+                                                        delta_obj = choices[0].get('delta', {})
+
+                                                if content != (delta_obj.get('content', '') or ''):
+                                                    if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                        choices = mapped_data.get('choices', [])
+                                                        if choices and len(choices) > 0:
+                                                            if isinstance(choices[0], dict) and 'delta' in choices[0]:
+                                                                choices[0]['delta']['content'] = content
+
+                                                if isinstance(mapped_data, dict) and 'usage' in mapped_data:
+                                                    usage = mapped_data['usage']
+                                                    prompt_tokens += usage.get('prompt_tokens', 0)
+                                                    completion_tokens += usage.get('completion_tokens', 0)
+
+                                                should_skip = False
+
+                                                if isinstance(mapped_data, dict) and 'usage' in mapped_data:
+                                                    usage_data = mapped_data['usage']
+                                                    if isinstance(usage_data, dict):
+                                                        prompt_tokens = usage_data.get('prompt_tokens', prompt_tokens)
+                                                        completion_tokens = usage_data.get('completion_tokens', completion_tokens)
+
+                                                    choices_list = mapped_data.get('choices', [])
+                                                    if not choices_list or len(choices_list) == 0:
+                                                        logger.info(f"[PROXY YIELD USAGE] prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        usage_chunk_received = True
+                                                        first_chunk_sent = True
+                                                        continue
+
+                                                # Tool call buffering and other processing (simplified for brevity)
+                                                if isinstance(mapped_data, dict) and 'choices' in mapped_data and len(mapped_data['choices']) > 0:
+                                                    choice = mapped_data['choices'][0]
+                                                    delta_obj = choice.get('delta', {})
+                                                    content_str = delta_obj.get('content')
+                                                    fr = choice.get('finish_reason')
+
+                                                    reasoning_str = delta_obj.get('reasoning_content', "") or ""
+                                                    has_reasoning = bool(reasoning_str)
+
+                                                    # Thinking tag handling (simplified)
+                                                    if content_str is not None:
+                                                        _temp_text = think_suspicion + content_str
+                                                        think_suspicion = ""
+                                                        content_str = ""
+
+                                                        _proc_text = _temp_text
+                                                        while _proc_text:
+                                                            if not in_thinking:
+                                                                idx_start = _proc_text.find("<tool_call>")
+                                                                if idx_start != -1:
+                                                                    content_str += _proc_text[:idx_start]
+                                                                    in_thinking = True
+                                                                    _proc_text = _proc_text[idx_start+7:]
+                                                                    continue
+
+                                                                idx_end = _proc_text.find("...")
+                                                                if idx_end != -1:
+                                                                    reasoning_str += _proc_text[:idx_end]
+                                                                    has_reasoning = True
+                                                                    _proc_text = _proc_text[idx_end+8:]
+                                                                    continue
+
+                                                                found_partial = False
+                                                                for tag in ["<tool_call>", "..."]:
+                                                                    for i in range(len(tag)-1, 0, -1):
+                                                                        if _proc_text.endswith(tag[:i]):
+                                                                            think_suspicion = _proc_text[-i:]
+                                                                            content_str += _proc_text[:-i]
+                                                                            _proc_text = ""
+                                                                            found_partial = True
+                                                                            break
+                                                                    if found_partial: break
+
+                                                                if not found_partial:
+                                                                    content_str += _proc_text
+                                                                    _proc_text = ""
+                                                            else:
+                                                                idx_end = _proc_text.find("...")
+                                                                if idx_end != -1:
+                                                                    reasoning_str += _proc_text[:idx_end]
+                                                                    has_reasoning = True
+                                                                    in_thinking = False
+                                                                    _proc_text = _proc_text[idx_end+8:]
+                                                                    continue
+
+                                                                idx_start = _proc_text.find("<tool_call>")
+                                                                if idx_start != -1:
+                                                                    reasoning_str += _proc_text[:idx_start]
+                                                                    has_reasoning = True
+                                                                    in_thinking = True
+                                                                    _proc_text = _proc_text[idx_start+7:]
+                                                                    continue
+
+                                                                found_partial = False
+                                                                for tag in ["...", "<tool_call>"]:
+                                                                    for i in range(len(tag)-1, 0, -1):
+                                                                        if _proc_text.endswith(tag[:i]):
+                                                                            think_suspicion = _proc_text[-i:]
+                                                                            reasoning_str += _proc_text[:-i]
+                                                                            has_reasoning = True
+                                                                            _proc_text = ""
+                                                                            found_partial = True
+                                                                            break
+                                                                    if found_partial: break
+
+                                                                if not found_partial:
+                                                                    reasoning_str += _proc_text
+                                                                    _proc_text = ""
+
+                                                    # Build output delta
+                                                    out_delta = {}
+                                                    if content_str:
+                                                        out_delta['content'] = content_str
+                                                    if reasoning_str:
+                                                        out_delta['reasoning_content'] = reasoning_str
+                                                    if delta_obj.get('tool_calls'):
+                                                        out_delta['tool_calls'] = delta_obj['tool_calls']
+
+                                                    # Construct output chunk
+                                                    out_chunk = {
+                                                        "id": mapped_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                        "object": mapped_data.get('object', 'chat.completion.chunk'),
+                                                        "model": model_mapper.get_display_model_name(current_model),
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "delta": out_delta,
+                                                            "finish_reason": fr
+                                                        }]
+                                                    }
+
+                                                    # Check for usage in final chunk
+                                                    if 'usage' in mapped_data:
+                                                        out_chunk['usage'] = mapped_data['usage']
+
+                                                    yield b'data: ' + json.dumps(out_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                    first_chunk_sent = True
+
+                                            elif line == b'data: [DONE]':
+                                                logger.info(f"[STREAM] Received [DONE] marker")
+                                                yield b'data: [DONE]\n\n'
+                                                done_marker_sent = True
+                                            else:
+                                                # Non-SSE format (native Ollama)
+                                                logger.info(f"[OLLAMA IN NATIVE] {line.decode('utf-8', errors='replace')[:200]}")
+                                                json_str = line.decode('utf-8', errors='replace').strip()
+                                                if json_str:
+                                                    try:
+                                                        json_data = json.loads(json_str)
+                                                        mapped_data = self._map_model_from_ollama(json_data)
+                                                        yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                                        logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
+                                                        yield line + b'\n'
+
+                                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                            logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {line[:100]!r}")
+                                            yield line + b'\n'
+
+                        # Log user activity after streaming
+                        if username and current_model:
+                            await self._log_user_activity(
+                                username=username,
+                                model_name=current_model,
+                                request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                                total_tokens=prompt_tokens + completion_tokens
+                            )
+
+                        # Send [DONE] if not already sent
+                        if not done_marker_sent and is_openai_endpoint:
+                            logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
+                            yield b'data: [DONE]\n\n'
+
+                        logger.info(f"[STREAM END] Stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
+                        return  # Successfully completed
+
+                except httpx.RequestError as e:
+                    logger.error(f"Network error while streaming to Ollama: {str(e)}")
+
+                    # Check if we should failover
+                    should_failover = original_group and attempt < MAX_FAILOVER_RETRIES
+                    current_model = current_data.get('model', 'unknown')
+
+                    if should_failover:
+                        fallback_model = self._get_fallback_model(original_group, current_model)
+
+                        if fallback_model and fallback_model not in tried_models:
+                            logger.warning(f"[FAILOVER] Connection error, trying fallback model: {fallback_model}")
+                            tried_models.add(fallback_model)
+
+                            current_data = original_data.copy() if original_data else {}
+                            current_data['model'] = fallback_model
+                            current_data = await self._resolve_model_groups(current_data)
+                            current_data = self._map_model_to_ollama(current_data)
+
+                            new_base_url = await self._select_node_url(fallback_model)
+                            current_url = f"{new_base_url}{endpoint}"
+
+                            last_error = e
+                            continue
+
+                    # No failover available - yield error
+                    error_response = {
+                        "error": {
+                            "message": f"Connection error: {str(e)}",
+                            "type": "connection_error",
+                            "code": 503
+                        }
+                    }
+                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                    yield b'data: [DONE]\n\n'
+                    return
+
+                except Exception as e:
+                    logger.error(f"Unexpected error while streaming: {str(e)}", exc_info=True)
+                    error_response = {
+                        "error": {
+                            "message": f"Unexpected error: {str(e)}",
+                            "type": "internal_error",
+                            "code": 500
+                        }
+                    }
+                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                    yield b'data: [DONE]\n\n'
+                    return
+
+        return StreamingResponse(
+            stream_generator_with_failover(),
+            media_type=f"{media_type}; charset=utf-8" if media_type == "text/event-stream" else media_type,
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            }
+        )
+
+    async def _non_streaming_with_failover(
+        self,
+        url: str,
+        method: str,
+        data: Optional[Dict[str, Any]],
+        endpoint: str,
+        is_openai_endpoint: bool,
+        username: Optional[str],
+        original_group: Optional[str],
+        tried_models: set,
+        model_name: Optional[str]
+    ):
+        """
+        Handle non-streaming requests with automatic failover.
+
+        Args:
+            url: Target URL
+            method: HTTP method
+            data: Request data
+            endpoint: API endpoint
+            is_openai_endpoint: Whether this is an OpenAI-compatible endpoint
+            username: Username for logging
+            original_group: Original group name (if model came from a group)
+            tried_models: Set of models already tried
+            model_name: Model name for logging
+
+        Returns:
+            Response from Ollama
+        """
+        last_error = None
+        current_url = url
+        current_data = data.copy() if data else {}
+
+        for attempt in range(MAX_FAILOVER_RETRIES + 1):
+            client = await self._get_http_client()
+            current_model = current_data.get('model') or model_name or 'unknown'
+
+            try:
+                logger.info(f"Sending request to Ollama: {current_url} (attempt {attempt + 1})")
+
+                if method.upper() == "GET":
+                    response = await client.get(current_url)
+                elif method.upper() == "POST":
+                    response = await client.post(current_url, json=current_data)
+                elif method.upper() == "DELETE":
+                    response = await client.delete(current_url, json=current_data)
+                else:
+                    raise HTTPException(status_code=405, detail="Method not allowed")
+
+                # Check response status
+                if response.status_code >= 400:
+                    error_text = response.text
+                    logger.error(f"Ollama error ({response.status_code}): {error_text}")
+                    logger.error(f"Request URL: {current_url}")
+                    if current_data:
+                        logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
+
+                    # Check if we should failover (5xx errors only)
+                    should_failover = (
+                        response.status_code >= 500 and
+                        original_group and
+                        attempt < MAX_FAILOVER_RETRIES
+                    )
+
+                    if should_failover:
+                        fallback_model = self._get_fallback_model(original_group, current_model)
+
+                        if fallback_model and fallback_model not in tried_models:
+                            logger.warning(f"[FAILOVER] Error {response.status_code}, trying fallback model: {fallback_model}")
+                            tried_models.add(fallback_model)
+
+                            # Update data with fallback model
+                            current_data = data.copy() if data else {}
+                            current_data['model'] = fallback_model
+                            current_data = await self._resolve_model_groups(current_data)
+                            current_data = self._map_model_to_ollama(current_data)
+
+                            # Select new node URL for fallback
+                            new_base_url = await self._select_node_url(fallback_model)
+                            current_url = f"{new_base_url}{endpoint}"
+
+                            last_error = HTTPException(
+                                status_code=response.status_code,
+                                detail=f"Ollama error: {error_text}"
+                            )
+                            continue
+
+                    # No failover - raise error
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Ollama error: {error_text}"
+                    )
+
+                # Success! Process response
+                try:
+                    response_data = response.json()
+                except:
+                    if username and model_name:
+                        await self._log_user_activity(
+                            username=username,
+                            model_name=model_name,
+                            request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                            prompt_tokens=0,
+                            completion_tokens=0,
+                            total_tokens=0
+                        )
+                    return response.text
+
+                # Map model names in response
+                if endpoint == "/api/tags":
+                    response_data = self._map_models_list(response_data)
+                elif endpoint == "/v1/models":
+                    response_data = self._map_openai_models_list(response_data)
+                elif is_openai_endpoint:
+                    response_data = self._map_model_from_ollama(response_data)
+                else:
+                    response_data = self._map_native_ollama_response(response_data)
+
+                # Extract token usage for logging
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
+
+                if isinstance(response_data, dict):
+                    if 'prompt_eval_count' in response_data:
+                        prompt_tokens = response_data.get('prompt_eval_count', 0)
+                    if 'eval_count' in response_data:
+                        completion_tokens = response_data.get('eval_count', 0)
+                    if 'total_duration' in response_data and 'load_duration' in response_data:
+                        total_tokens = prompt_tokens + completion_tokens
+
+                    if 'usage' in response_data:
+                        usage = response_data['usage']
+                        prompt_tokens = usage.get('prompt_tokens', 0)
+                        completion_tokens = usage.get('completion_tokens', 0)
+                        total_tokens = usage.get('total_tokens', 0)
+
+                # Log user activity
+                if username and model_name:
+                    await self._log_user_activity(
+                        username=username,
+                        model_name=model_name,
+                        request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+                    )
+
+                return response_data
+
+            except httpx.RequestError as e:
+                logger.error(f"Failed to connect to Ollama: {str(e)}")
+
+                # Check if we should failover
+                should_failover = original_group and attempt < MAX_FAILOVER_RETRIES
+
+                if should_failover:
+                    fallback_model = self._get_fallback_model(original_group, current_model)
+
+                    if fallback_model and fallback_model not in tried_models:
+                        logger.warning(f"[FAILOVER] Connection error, trying fallback model: {fallback_model}")
+                        tried_models.add(fallback_model)
+
+                        current_data = data.copy() if data else {}
+                        current_data['model'] = fallback_model
+                        current_data = await self._resolve_model_groups(current_data)
+                        current_data = self._map_model_to_ollama(current_data)
+
+                        new_base_url = await self._select_node_url(fallback_model)
+                        current_url = f"{new_base_url}{endpoint}"
+
+                        last_error = HTTPException(
+                            status_code=503,
+                            detail=f"Failed to connect to Ollama: {str(e)}"
+                        )
+                        continue
+
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Failed to connect to Ollama: {str(e)}"
+                )
+
+            except HTTPException:
+                raise
+
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Proxy error: {str(e)}"
+                )
+
+        # All retries exhausted
+        if last_error:
+            raise last_error
+        raise HTTPException(
+            status_code=500,
+            detail="All fallback attempts failed"
+        )
+
 
 # Global proxy instance
 ollama_proxy = OllamaProxy()
-
