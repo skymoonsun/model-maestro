@@ -1,0 +1,15 @@
+{
+  "repo": "skymoonsun/ollama-proxy-api",
+  "language": "python",
+  "framework": "fastapi",
+  "defaultBranch": "develop",
+  "testCommand": "cd /root/projects/ollama-proxy-api && python -m pytest tests/ -v",
+  "testFramework": "pytest",
+  "claudeModel": "glm-5:cloud",
+  "maxReviewIterations": 3,
+  "conventions": {
+    "commitStyle": "conventional",
+    "branchPrefix": ["feature/", "fix/", "hotfix/"],
+    "prTarget": "develop"
+  }
+}

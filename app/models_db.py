@@ -288,7 +288,7 @@ class NodeLoadMetric(Base):
 class ModelRoutingRule(Base):
     """Manual routing rules for specific models (optional override)"""
     __tablename__ = "model_routing_rules"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     model_pattern = Column(String(255), nullable=False, index=True)  # "glm-*" or "qwen3-coder:*"
     preferred_node_id = Column(Integer, ForeignKey("ollama_nodes.id", ondelete="SET NULL"), nullable=True)
@@ -297,10 +297,58 @@ class ModelRoutingRule(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     # Relationships
     preferred_node = relationship("OllamaNode", foreign_keys=[preferred_node_id])
-    
+
     def __repr__(self):
         return f"<ModelRoutingRule(pattern='{self.model_pattern}', strategy='{self.load_balance_strategy}')>"
+
+
+# =============================================================================
+# MODEL GROUPS - DYNAMIC MODEL SELECTION
+# =============================================================================
+
+class ModelGroup(Base):
+    """Model group for dynamic model selection with fallback chain"""
+    __tablename__ = "model_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    strategy = Column(String(50), default='round_robin', nullable=False)  # 'round_robin', 'weighted', 'priority'
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    members = relationship("ModelGroupMember", back_populates="group", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<ModelGroup(name='{self.name}', strategy='{self.strategy}', active={self.is_active})>"
+
+
+class ModelGroupMember(Base):
+    """Member model within a model group"""
+    __tablename__ = "model_group_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("model_groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    model_display_name = Column(String(255), nullable=False, index=True)  # References ModelMapping.display_name
+    capability_tags = Column(ARRAY(String), nullable=True)  # ["vision", "code", "reasoning"]
+    weight = Column(Integer, default=1, nullable=False)  # For weighted strategy
+    priority = Column(Integer, default=0, nullable=False)  # For priority strategy (lower = higher priority)
+    is_fallback = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    # Relationships
+    group = relationship("ModelGroup", back_populates="members")
+
+    # Unique constraint: one model per group
+    __table_args__ = (
+        UniqueConstraint('group_id', 'model_display_name', name='uq_group_model'),
+    )
+
+    def __repr__(self):
+        return f"<ModelGroupMember(group_id={self.group_id}, model='{self.model_display_name}', priority={self.priority}, fallback={self.is_fallback})>"
 
