@@ -15,6 +15,9 @@ from app.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
+# Maximum retries for failover (will try all fallback members in group)
+MAX_FAILOVER_RETRIES = 5
+
 
 # ============================================================================
 # TOOL CALL VALIDATION (LiteLLM-inspired)
@@ -468,6 +471,42 @@ class OllamaProxy:
 
         return data_copy
 
+    def _find_group_for_model(self, model_name: str) -> Optional[str]:
+        """
+        Find which group (if any) a model belongs to.
+
+        Args:
+            model_name: The model name (either group name or member display name)
+
+        Returns:
+            Group name if the model is a group or belongs to a group, None otherwise
+        """
+        # First check if model_name is a group name
+        if model_group_manager.is_group(model_name):
+            return model_name
+
+        # Check if model_name is a member of any group
+        for group_name, group_data in model_group_manager._groups.items():
+            members = group_data.get("members", [])
+            for member in members:
+                if member.model_display_name == model_name:
+                    return group_name
+
+        return None
+
+    def _get_fallback_model(self, group_name: str, failed_model: str) -> Optional[str]:
+        """
+        Get the next fallback model from a group after a failure.
+
+        Args:
+            group_name: Name of the model group
+            failed_model: The model that failed (display name)
+
+        Returns:
+            Next fallback model display name, or None if no fallback available
+        """
+        return model_group_manager.get_fallback(group_name, failed_model)
+
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Map model names in request data from client format to Ollama format
@@ -893,7 +932,11 @@ class OllamaProxy:
         username: Optional[str] = None
     ):
         """
-        Proxy request to Ollama
+        Proxy request to Ollama with automatic failover for model groups.
+
+        If the initial request fails (HTTP 5xx, connection error, timeout),
+        and the model is part of a group with fallback members, retry with
+        the fallback model.
 
         Args:
             method: HTTP method (GET, POST, DELETE)
@@ -908,14 +951,27 @@ class OllamaProxy:
         # Ensure model mappings and groups are loaded from database
         await self._ensure_mappings_loaded()
 
+        # Track original model name and group for failover
+        original_model = None
+        original_group = None
+        tried_models: set = set()
+
         # Step 1: Resolve model groups (if model name is a group, pick appropriate member)
         if data:
+            # Store original model name before resolution
+            original_model = data.get('model') or data.get('name')
             data = await self._resolve_model_groups(data)
+
+            # Check if original model was a group (for failover)
+            if original_model:
+                original_group = self._find_group_for_model(original_model)
 
         # Extract model name for node selection and logging
         model_name = None
         if data and isinstance(data, dict):
             model_name = data.get('model') or data.get('name')
+            if model_name:
+                tried_models.add(model_name)
 
         # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
         base_url = await self._select_node_url(model_name or '')
@@ -924,21 +980,37 @@ class OllamaProxy:
         # Step 2: Map model names (display_name -> real_name)
         if data:
             data = self._map_model_to_ollama(data)
-        
+
         # Validate data for POST requests
         if method.upper() == "POST" and not data:
             raise HTTPException(
                 status_code=400,
                 detail="Request body is required for POST requests"
             )
-        
+
         # Detect if this is an OpenAI-compatible endpoint (for SSE formatting)
         is_openai_endpoint = endpoint.startswith("/v1/")
-        
+
+        # ============================================================
+        # FAILOVER WRAPPER
+        # ============================================================
+        # For streaming: failover handled inside generator
+        # For non-streaming: failover handled in try-except below
+
         try:
             if method.upper() == "POST" and stream:
-                # Handle streaming response with persistent HTTP client
-                async def stream_generator():
+                # Handle streaming response with failover support
+                return await self._stream_with_failover(
+                    url=url,
+                    data=data,
+                    is_openai_endpoint=is_openai_endpoint,
+                    username=username,
+                    original_group=original_group,
+                    tried_models=tried_models,
+                    original_data=data.copy() if data else None,
+                    endpoint=endpoint,
+                    base_url=base_url
+                )
                     client = await self._get_http_client()
                     
                     # Always log streaming requests for debugging
