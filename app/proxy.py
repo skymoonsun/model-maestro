@@ -1511,9 +1511,9 @@ class OllamaProxy:
                                                         logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
                                                         yield line + b'\n'
 
-                                        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                                            logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {line[:100]!r}")
-                                            yield line + b'\n'
+                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                        logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {line[:100]!r}")
+                                        yield line + b'\n'
 
                         # Log user activity after streaming
                         if username and current_model:
