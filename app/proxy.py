@@ -9,7 +9,7 @@ import uuid
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
-from app.config import get_settings, model_mapper
+from app.config import get_settings, model_mapper, model_group_manager
 from app.user_manager import user_manager
 from app.auth import get_current_user
 
@@ -375,10 +375,11 @@ class OllamaProxy:
             return self.base_url
     
     async def _ensure_mappings_loaded(self):
-        """Ensure model mappings are loaded from database"""
+        """Ensure model mappings and groups are loaded from database"""
         # Only load once at startup, rely on cache invalidation
         if not self._mappings_loaded:
             await model_mapper.ensure_loaded()
+            await model_group_manager.ensure_loaded()
             self._mappings_loaded = True
     
     async def _get_http_client(self) -> httpx.AsyncClient:
@@ -413,35 +414,93 @@ class OllamaProxy:
             await self._http_client.aclose()
             self._http_client = None
     
+    async def _resolve_model_groups(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Resolve model group names to actual model names in request data.
+
+        If a model name is a group, it's resolved to an appropriate member based on:
+        - Request capabilities (vision detection)
+        - Group strategy (round_robin/weighted/priority)
+        - Member capabilities and priorities
+
+        If not a group, the model name is left unchanged (backward compatible).
+
+        Args:
+            data: Request data with potential model field
+
+        Returns:
+            Modified data with resolved model names
+        """
+        if not data:
+            return data
+
+        data_copy = data.copy()
+
+        # Handle 'model' field - resolve groups first
+        if 'model' in data_copy:
+            original_model = data_copy['model']
+            resolved_model = await model_group_manager.resolve_model(original_model, data_copy)
+            if resolved_model != original_model:
+                logger.info(f"[ModelGroup] Resolved group '{original_model}' -> '{resolved_model}'")
+            data_copy['model'] = resolved_model
+
+        # Handle 'name' field (used in show, delete, pull, push) - resolve groups
+        if 'name' in data_copy:
+            original_name = data_copy['name']
+            resolved_name = await model_group_manager.resolve_model(original_name)
+            if resolved_name != original_name:
+                logger.info(f"[ModelGroup] Resolved group '{original_name}' -> '{resolved_name}'")
+            data_copy['name'] = resolved_name
+
+        # Handle 'source' and 'destination' fields (used in copy)
+        if 'source' in data_copy:
+            original_source = data_copy['source']
+            resolved_source = await model_group_manager.resolve_model(original_source)
+            if resolved_source != original_source:
+                logger.info(f"[ModelGroup] Resolved group '{original_source}' -> '{resolved_source}'")
+            data_copy['source'] = resolved_source
+        if 'destination' in data_copy:
+            original_dest = data_copy['destination']
+            resolved_dest = await model_group_manager.resolve_model(original_dest)
+            if resolved_dest != original_dest:
+                logger.info(f"[ModelGroup] Resolved group '{original_dest}' -> '{resolved_dest}'")
+            data_copy['destination'] = resolved_dest
+
+        return data_copy
+
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Map model names in request data from client format to Ollama format
-        
+
+        Note: This should be called AFTER _resolve_model_groups to ensure
+        groups are resolved first. Group resolution must happen before mapping
+        because it needs to know the actual model name.
+
         Args:
             data: Request data with potential model field
-        
+
         Returns:
             Modified data with real model names
         """
         if not data:
             return data
-        
+
         data_copy = data.copy()
-        
+
         # Handle 'model' field
         if 'model' in data_copy:
             data_copy['model'] = model_mapper.get_real_model_name(data_copy['model'])
-        
+
         # Handle 'name' field (used in show, delete, pull, push)
         if 'name' in data_copy:
             data_copy['name'] = model_mapper.get_real_model_name(data_copy['name'])
-        
+
         # Handle 'source' and 'destination' fields (used in copy)
         if 'source' in data_copy:
             data_copy['source'] = model_mapper.get_real_model_name(data_copy['source'])
         if 'destination' in data_copy:
             data_copy['destination'] = model_mapper.get_real_model_name(data_copy['destination'])
-        
+
         return data_copy
     
     async def _map_model_to_display(self, real_name: str) -> str:
@@ -835,30 +894,34 @@ class OllamaProxy:
     ):
         """
         Proxy request to Ollama
-        
+
         Args:
             method: HTTP method (GET, POST, DELETE)
             endpoint: Ollama API endpoint
             data: Request body data
             stream: Whether to stream the response
             username: Username for logging and limit checking
-        
+
         Returns:
             Response from Ollama (mapped model names)
         """
-        # Ensure model mappings are loaded from database
+        # Ensure model mappings and groups are loaded from database
         await self._ensure_mappings_loaded()
-        
+
+        # Step 1: Resolve model groups (if model name is a group, pick appropriate member)
+        if data:
+            data = await self._resolve_model_groups(data)
+
         # Extract model name for node selection and logging
         model_name = None
         if data and isinstance(data, dict):
             model_name = data.get('model') or data.get('name')
-        
+
         # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
         base_url = await self._select_node_url(model_name or '')
         url = f"{base_url}{endpoint}"
-        
-        # Map model names in request
+
+        # Step 2: Map model names (display_name -> real_name)
         if data:
             data = self._map_model_to_ollama(data)
         
