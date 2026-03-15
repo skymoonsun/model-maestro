@@ -27,6 +27,7 @@ from app.admin_config import router as admin_config_router
 from app.admin_dashboard import router as admin_dashboard_router
 from app.admin_models import router as admin_models_router
 from app.admin_nodes import router as admin_nodes_router
+from app.admin_groups import router as admin_groups_router
 from app.openclaw import router as openclaw_router
 from app.user_manager import user_manager
 
