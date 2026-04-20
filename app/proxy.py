@@ -365,7 +365,9 @@ class OllamaProxy:
                     return self.base_url
                 
                 # Select best node using load balancer
-                selected_node = await load_balancer.select_node(nodes, session)
+                selected_node = await load_balancer.select_node(
+                    nodes, strategy="least_loaded", session=session
+                )
                 
                 if selected_node:
                     logger.info(f"[LB] Selected node {selected_node['node_name']} for model {model_name}")
