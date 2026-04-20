@@ -370,8 +370,11 @@ class OllamaProxy:
                 )
                 
                 if selected_node:
-                    logger.info(f"[LB] Selected node {selected_node['node_name']} for model {model_name}")
-                    return selected_node['base_url']
+                    node_name = selected_node.get('node_name') or selected_node.get('name', 'unknown')
+                    node_base_url = selected_node.get('base_url')
+                    logger.info(f"[LB] Selected node {node_name} for model {model_name}")
+                    if node_base_url:
+                        return node_base_url
                 
                 return self.base_url
                 
