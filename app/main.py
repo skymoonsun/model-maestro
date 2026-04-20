@@ -392,6 +392,39 @@ async def embeddings(
     )
 
 
+@app.post("/api/show", tags=["Ollama Native API"])
+async def show_model(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    Show model information (details, parameters, template, capabilities, etc.)
+    
+    Request body:
+    ```json
+    {"model": "glm-5.1:cloud"}
+    ```
+    
+    Optional parameters:
+    - verbose (bool): Returns full data for verbose response fields
+    - system (str): Override the system prompt for display purposes
+    
+    Requires JWT authentication
+    """
+    body = await request.body()
+    data = json.loads(body.decode('utf-8')) if body else {}
+    
+    model_name = data.get('model', '')
+    logger.info(f"User {username} requesting show for model {model_name}")
+    
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/api/show",
+        data=data,
+        username=username
+    )
+
+
 # ============================================================================
 # Search Provider Mock Endpoints (Brave Search Compatible)
 # ============================================================================

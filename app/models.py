@@ -54,7 +54,9 @@ class OllamaEmbeddingsRequest(BaseModel):
 
 class OllamaShowRequest(BaseModel):
     """Ollama show model request"""
-    name: str
+    model: str
+    verbose: Optional[bool] = None
+    system: Optional[str] = None
 
 
 class OllamaCopyRequest(BaseModel):
