@@ -54,7 +54,9 @@ class OllamaEmbeddingsRequest(BaseModel):
 
 class OllamaShowRequest(BaseModel):
     """Ollama show model request"""
-    name: str
+    model: str
+    verbose: Optional[bool] = None
+    system: Optional[str] = None
 
 
 class OllamaCopyRequest(BaseModel):
@@ -609,4 +611,74 @@ class ModelPullStatusResponse(BaseModel):
     completed_nodes: int
     failed_nodes: int
     results: List[Dict[str, Any]]  # [{node_id, node_name, status, error}]
+
+
+# =============================================================================
+# MODEL GROUPS - DYNAMIC MODEL SELECTION
+# =============================================================================
+
+class ModelGroupMemberRequest(BaseModel):
+    """Add member to model group"""
+    model_display_name: str
+    capability_tags: Optional[List[str]] = None
+    weight: int = 1
+    priority: int = 0
+    is_fallback: bool = False
+    is_active: bool = True
+
+
+class ModelGroupCreateRequest(BaseModel):
+    """Create model group request"""
+    name: str
+    description: Optional[str] = None
+    strategy: str = "round_robin"  # round_robin, weighted, priority
+    is_active: bool = True
+    members: Optional[List[ModelGroupMemberRequest]] = None
+
+
+class ModelGroupUpdateRequest(BaseModel):
+    """Update model group request"""
+    description: Optional[str] = None
+    strategy: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ModelGroupMemberResponse(BaseModel):
+    """Model group member response"""
+    id: int
+    model_display_name: str
+    capability_tags: Optional[List[str]] = None
+    weight: int = 1
+    priority: int = 0
+    is_fallback: bool = False
+    is_active: bool = True
+
+
+class ModelGroupResponse(BaseModel):
+    """Model group response"""
+    id: int
+    name: str
+    description: Optional[str] = None
+    strategy: str = "round_robin"
+    is_active: bool = True
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ModelGroupDetailResponse(BaseModel):
+    """Model group response with members"""
+    id: int
+    name: str
+    description: Optional[str] = None
+    strategy: str = "round_robin"
+    is_active: bool = True
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    members: List[ModelGroupMemberResponse] = []
+
+
+class ModelGroupListResponse(BaseModel):
+    """List of model groups"""
+    groups: List[ModelGroupResponse]
+    total: int
 

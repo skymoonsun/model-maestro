@@ -27,6 +27,7 @@ from app.admin_config import router as admin_config_router
 from app.admin_dashboard import router as admin_dashboard_router
 from app.admin_models import router as admin_models_router
 from app.admin_nodes import router as admin_nodes_router
+from app.admin_groups import router as admin_groups_router
 from app.openclaw import router as openclaw_router
 from app.user_manager import user_manager
 
@@ -388,6 +389,39 @@ async def embeddings(
         method="POST",
         endpoint="/api/embeddings",
         data=request.model_dump(exclude_none=True),
+        username=username
+    )
+
+
+@app.post("/api/show", tags=["Ollama Native API"])
+async def show_model(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    Show model information (details, parameters, template, capabilities, etc.)
+    
+    Request body:
+    ```json
+    {"model": "glm-5.1:cloud"}
+    ```
+    
+    Optional parameters:
+    - verbose (bool): Returns full data for verbose response fields
+    - system (str): Override the system prompt for display purposes
+    
+    Requires JWT authentication
+    """
+    body = await request.body()
+    data = json.loads(body.decode('utf-8')) if body else {}
+    
+    model_name = data.get('model', '')
+    logger.info(f"User {username} requesting show for model {model_name}")
+    
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/api/show",
+        data=data,
         username=username
     )
 

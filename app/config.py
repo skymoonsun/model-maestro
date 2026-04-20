@@ -1,11 +1,14 @@
 """Configuration management"""
 
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -564,8 +567,309 @@ class ModelMappingManager:
             ]
 
 
+class ModelGroupManager:
+    """
+    Manage model groups for dynamic model selection with fallback chains.
+
+    Model groups allow routing requests to different models based on:
+    - Capabilities (vision support, code generation, etc.)
+    - Strategy (round_robin, weighted, priority)
+    - Fallback chains (if one model fails, try the next)
+
+    Groups are stored in DB and cached in memory for fast lookups.
+    """
+
+    def __init__(self):
+        # Cache: group_name -> {group: ModelGroup, members: List[ModelGroupMember]}
+        self._groups: Dict[str, Dict[str, Any]] = {}
+        # Cache: group_name -> round_robin_index
+        self._round_robin_indices: Dict[str, int] = {}
+        # Track loaded state
+        self._cache_loaded = False
+
+    async def ensure_loaded(self):
+        """Load groups from database (once on startup or after cache invalidation)"""
+        if self._cache_loaded:
+            return
+
+        try:
+            from app.repositories.model_group_repository import ModelGroupRepository
+            from app.database import async_session_maker
+
+            async with async_session_maker() as session:
+                repo = ModelGroupRepository(session)
+                groups = await repo.get_all_groups(active_only=True)
+
+                self._groups = {}
+                for group in groups:
+                    members = await repo.get_members_by_group_name(group.name)
+                    active_members = [m for m in members if m.is_active]
+                    self._groups[group.name] = {
+                        "group": group,
+                        "members": active_members,
+                    }
+
+                self._cache_loaded = True
+                print(f"[ModelGroupManager] Loaded {len(self._groups)} model groups from database")
+
+        except Exception as e:
+            print(f"[ModelGroupManager] Error loading groups from DB: {e}")
+            self._groups = {}
+
+    def is_group(self, model_name: str) -> bool:
+        """Check if a model name is a group"""
+        return model_name in self._groups
+
+    def _detect_vision_request(self, messages: List[Dict[str, Any]]) -> bool:
+        """
+        Detect if request contains images (vision capability needed).
+
+        Checks for:
+        - image_url content in messages
+        - base64 encoded images in content
+
+        Args:
+            messages: List of chat messages
+
+        Returns:
+            True if vision capability is needed
+        """
+        if not messages:
+            return False
+
+        for message in messages:
+            content = message.get("content")
+            if not content:
+                continue
+
+            # Handle string content (might contain base64 image)
+            if isinstance(content, str):
+                # Check for base64 image data URL pattern
+                if "data:image/" in content:
+                    return True
+                continue
+
+            # Handle list content (OpenAI format with image_url)
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+
+                    # Check for image_url type
+                    if part.get("type") == "image_url":
+                        return True
+
+                    # Check for image base64 in text
+                    if part.get("type") == "text" and isinstance(part.get("text"), str):
+                        if "data:image/" in part.get("text", ""):
+                            return True
+
+                    # Check for image field
+                    if "image" in part:
+                        return True
+
+        return False
+
+    def _select_by_capability(
+        self, members: List[Any], needs_vision: bool
+    ) -> Optional[Any]:
+        """
+        Select a member based on capability requirements.
+
+        Args:
+            members: List of ModelGroupMember objects
+            needs_vision: Whether vision capability is needed
+
+        Returns:
+            Selected ModelGroupMember or None if no match
+        """
+        if not members:
+            return None
+
+        if needs_vision:
+            # Find members with vision capability
+            vision_members = [
+                m
+                for m in members
+                if m.capability_tags and "vision" in m.capability_tags
+            ]
+            if vision_members:
+                # Return highest priority vision-capable member
+                return min(vision_members, key=lambda m: m.priority)
+
+        # No special capability needed or no capable members found
+        # Return highest priority member
+        return min(members, key=lambda m: m.priority) if members else None
+
+    def _select_by_strategy(
+        self, members: List[Any], strategy: str, group_name: str
+    ) -> Optional[Any]:
+        """
+        Select a member based on the group's strategy.
+
+        Strategies:
+        - round_robin: Cycle through members in order
+        - weighted: Random selection based on weights
+        - priority: Always select highest priority (lowest number)
+
+        Args:
+            members: List of ModelGroupMember objects
+            strategy: Selection strategy
+            group_name: Group name (for round_robin state tracking)
+
+        Returns:
+            Selected ModelGroupMember or None
+        """
+        if not members:
+            return None
+
+        if strategy == "priority":
+            # Always select lowest priority number
+            return min(members, key=lambda m: m.priority)
+
+        elif strategy == "weighted":
+            # Weighted random selection
+            import random
+
+            total_weight = sum(m.weight for m in members)
+            if total_weight == 0:
+                return members[0]
+
+            r = random.uniform(0, total_weight)
+            cumulative = 0
+            for member in members:
+                cumulative += member.weight
+                if r <= cumulative:
+                    return member
+            return members[-1]
+
+        else:  # round_robin (default)
+            # Cycle through members
+            current_index = self._round_robin_indices.get(group_name, 0)
+            sorted_members = sorted(members, key=lambda m: m.priority)
+            selected = sorted_members[current_index % len(sorted_members)]
+            self._round_robin_indices[group_name] = current_index + 1
+            return selected
+
+    async def resolve_model(
+        self, model_name: str, request_data: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Resolve a model name to an actual model name.
+
+        If model_name is a group, selects the appropriate member based on:
+        1. Request capabilities (vision detection)
+        2. Group strategy (round_robin/weighted/priority)
+        3. Member capabilities and priorities
+
+        If model_name is not a group, returns it unchanged (backward compatible).
+
+        Args:
+            model_name: Model name from client request
+            request_data: Optional request body (for capability detection)
+
+        Returns:
+            Actual model name to use (display_name from member)
+        """
+        await self.ensure_loaded()
+
+        # Not a group - return as-is (backward compatible)
+        if model_name not in self._groups:
+            return model_name
+
+        group_data = self._groups[model_name]
+        group = group_data["group"]
+        members = group_data["members"]
+
+        if not members:
+            logger.warning(f"[ModelGroupManager] Group '{model_name}' has no active members")
+            return model_name
+
+        # Detect if vision capability is needed
+        needs_vision = False
+        if request_data:
+            messages = request_data.get("messages", [])
+            needs_vision = self._detect_vision_request(messages)
+
+        # First, try capability-based selection
+        selected = self._select_by_capability(members, needs_vision)
+
+        # If no capable member found, fall back to strategy selection
+        if not selected:
+            selected = self._select_by_strategy(members, group.strategy, model_name)
+
+        if selected:
+            logger.info(
+                f"[ModelGroupManager] Group '{model_name}' -> '{selected.model_display_name}' "
+                f"(strategy={group.strategy}, vision={needs_vision})"
+            )
+            return selected.model_display_name
+
+        # Fallback: return group name (will be handled by model_mapper)
+        return model_name
+
+    def get_fallback(
+        self, group_name: str, failed_model: str
+    ) -> Optional[str]:
+        """
+        Get the next fallback model from a group after a failure.
+
+        Args:
+            group_name: Name of the group
+            failed_model: The model that failed
+
+        Returns:
+            Next fallback model name or None if no fallback available
+        """
+        if group_name not in self._groups:
+            return None
+
+        group_data = self._groups[group_name]
+        members = group_data["members"]
+
+        # Find fallback members (is_fallback=True)
+        fallback_members = [
+            m for m in members if m.is_fallback and m.model_display_name != failed_model
+        ]
+
+        if not fallback_members:
+            return None
+
+        # Return highest priority fallback
+        fallback_members.sort(key=lambda m: m.priority)
+        return fallback_members[0].model_display_name
+
+    def get_group_info(self, group_name: str) -> Optional[Dict[str, Any]]:
+        """Get cached group info (group + members)"""
+        return self._groups.get(group_name)
+
+    def invalidate_cache(self, group_name: Optional[str] = None):
+        """
+        Invalidate cache for a specific group or all groups.
+
+        Args:
+            group_name: Specific group to invalidate, or None for all
+        """
+        if group_name:
+            self._groups.pop(group_name, None)
+            self._round_robin_indices.pop(group_name, None)
+        else:
+            self._groups.clear()
+            self._round_robin_indices.clear()
+
+        self._cache_loaded = False
+
+    async def reload(self):
+        """Force reload all groups from database"""
+        self.invalidate_cache()
+        await self.ensure_loaded()
+
+
 # Global model mapping manager instance
 model_mapper = ModelMappingManager()
+
+# Global model group manager instance
+model_group_manager = ModelGroupManager()
 
 # Global Redis manager instance (will be set by main.py)
 from app.redis import RedisManager
