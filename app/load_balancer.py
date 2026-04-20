@@ -58,6 +58,11 @@ class LoadBalancer:
         if len(healthy_nodes) == 1:
             return healthy_nodes[0]
         
+        # Normalize node name key (can be "name" or "node_name")
+        for n in healthy_nodes:
+            if "name" not in n and "node_name" in n:
+                n["name"] = n["node_name"]
+        
         if strategy == "least_loaded":
             return await self._select_least_loaded(healthy_nodes, session)
         elif strategy == "round_robin":
