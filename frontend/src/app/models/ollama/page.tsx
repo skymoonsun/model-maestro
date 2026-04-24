@@ -204,6 +204,7 @@ export default function OllamaModelsPage() {
                                     <TableHead>Size</TableHead>
                                     <TableHead>Status</TableHead>
                                     <TableHead>Display Name</TableHead>
+                                    <TableHead>Nodes</TableHead>
                                     <TableHead className="text-right">Action</TableHead>
                                 </TableRow>
                             </TableHeader>
@@ -221,6 +222,22 @@ export default function OllamaModelsPage() {
                                                 <Badge variant="outline" className="text-amber-400 border-amber-400/30 bg-amber-400/10">
                                                     Unmapped
                                                 </Badge>
+                                            )}
+                                        </TableCell>
+                                        <TableCell>
+                                            {m.display_name ? (
+                                                <span className="text-sm">{m.display_name}</span>
+                                            ) : (
+                                                <Link href="/models/mappings">
+                                                    <Button variant="ghost" size="sm" className="text-xs text-blue-400">Map →</Button>
+                                                </Link>
+                                            )}
+                                        </TableCell>
+                                        <TableCell>
+                                            {m.nodes && m.nodes.length > 0 ? (
+                                                <span className="text-xs text-muted-foreground">{m.nodes.join(', ')}</span>
+                                            ) : (
+                                                <span className="text-xs text-muted-foreground">—</span>
                                             )}
                                         </TableCell>
                                         <TableCell>
@@ -257,7 +274,7 @@ export default function OllamaModelsPage() {
                                 ))}
                                 {filtered.length === 0 && (
                                     <TableRow>
-                                        <TableCell colSpan={5} className="text-center text-muted-foreground py-12">
+                                        <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
                                             {search ? 'No results found' : 'No models found on Ollama server'}
                                         </TableCell>
                                     </TableRow>

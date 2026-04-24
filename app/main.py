@@ -211,50 +211,57 @@ async def health():
 @app.get("/api/tags", tags=["Ollama Native API"])
 async def list_models(username: str = Depends(get_current_user)):
     """
-    List available models (filtered by user access and mapped display names)
-    
+    List available models from all healthy nodes (filtered by user access and mapped display names)
+
     Requires JWT authentication
     """
     logger.info(f"User {username} requesting model list")
-    
-    # Get all models from Ollama
-    all_models_response = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/api/tags",
-        username=username
-    )
-    
+
+    # Get all models from all healthy nodes
+    from app.node_manager import node_manager
+
+    all_models_response = await node_manager.get_all_models_from_nodes()
+
+    # If no nodes responded, fallback to proxy (single node)
+    if not all_models_response.get("models"):
+        logger.warning("[ModelList] No models from nodes, falling back to proxy")
+        all_models_response = await ollama_proxy.proxy_request(
+            method="GET",
+            endpoint="/api/tags",
+            username=username
+        )
+
     # Get user's model access
     user_models_data = await user_manager.get_user_models(username)
-    
+
     # If user_models_data is None, deny access
     if not user_models_data:
         logger.warning(f"User {username} not found or has no model access")
         return {"models": []}
-    
+
     # Get all mappings from database
     await model_mapper.ensure_loaded()
     all_mappings = model_mapper.get_all_mappings()
-    
+
     # Apply model mapping to display names
     if isinstance(all_models_response, dict) and "models" in all_models_response:
         # Use a dict to track unique display names and avoid duplicates
         models_dict = {}
-        
+
         # First, add all models from Ollama with reverse mapping
         for model in all_models_response["models"]:
             model_name = model.get("name") or model.get("model")
             if model_name:
                 # Get ALL display names for this real model
                 display_names = model_mapper.get_all_display_names_for_real_name(model_name)
-                
+
                 for display_name in display_names:
                     if display_name not in models_dict:
                         model_copy = model.copy()
                         model_copy["name"] = display_name
                         model_copy["model"] = display_name
                         models_dict[display_name] = model_copy
-        
+
         # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
         # This allows multiple display names to point to the same real model
         for display_name, real_name in all_mappings.items():
@@ -266,20 +273,20 @@ async def list_models(username: str = Depends(get_current_user)):
                 model_entry["name"] = display_name
                 model_entry["model"] = display_name
                 models_dict[display_name] = model_entry
-        
+
         mapped_models = list(models_dict.values())
-        
+
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
             return {"models": mapped_models}
-        
+
         allowed_models = set(user_models_data["models"])
         filtered_models = [
             model for model in mapped_models
             if model.get("name") in allowed_models or model.get("model") in allowed_models
         ]
         return {"models": filtered_models}
-    
+
     return all_models_response
 
 
@@ -535,43 +542,71 @@ async def brave_search_mock(
 @app.get("/v1/models", tags=["OpenAI Compatible API"])
 async def openai_list_models(username: str = Depends(get_current_user)):
     """
-    List available models in OpenAI format (filtered by user access and mapped display names)
-    
+    List available models in OpenAI format from all healthy nodes
+    (filtered by user access and mapped display names)
+
     Requires JWT authentication
     """
     logger.info(f"User {username} requesting OpenAI model list")
-    
-    # Get all models from Ollama
-    all_models_response = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/v1/models",
-        username=username
-    )
-    
+
+    # Get all models from all healthy nodes (in Ollama native format)
+    from app.node_manager import node_manager
+
+    native_models_response = await node_manager.get_all_models_from_nodes()
+
+    # If no nodes responded, fallback to proxy (single node)
+    if not native_models_response.get("models"):
+        logger.warning("[ModelList] No models from nodes, falling back to proxy")
+        native_models_response = await ollama_proxy.proxy_request(
+            method="GET",
+            endpoint="/api/tags",
+            username=username
+        )
+
+    # Convert Ollama native format to OpenAI format
+    openai_models = []
+    if isinstance(native_models_response, dict) and "models" in native_models_response:
+        for model in native_models_response["models"]:
+            model_id = model.get("name") or model.get("model")
+            if model_id:
+                openai_model = {
+                    "id": model_id,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "ollama",
+                }
+                # Preserve extra fields if present
+                for key in ("size", "digest", "details"):
+                    if key in model:
+                        openai_model[key] = model[key]
+                openai_models.append(openai_model)
+
+    all_models_response = {"object": "list", "data": openai_models}
+
     # Get user's model access
     user_models_data = await user_manager.get_user_models(username)
-    
+
     # If user_models_data is None, deny access
     if not user_models_data:
         logger.warning(f"User {username} not found or has no model access")
         return {"object": "list", "data": []}
-    
+
     # Get all mappings from database
     await model_mapper.ensure_loaded()
     all_mappings = model_mapper.get_all_mappings()
-    
+
     # Apply model mapping to display names
     if isinstance(all_models_response, dict) and "data" in all_models_response:
         # Use a dict to track unique display names and avoid duplicates
         models_dict = {}
-        
+
         # First, add all models from Ollama with reverse mapping
         for model in all_models_response["data"]:
             model_id = model.get("id")
             if model_id:
                 # Get ALL display names for this real model
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
-                
+
                 for display_name in display_names:
                     if display_name not in models_dict:
                         model_copy = model.copy()
@@ -581,7 +616,7 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                         if ctx_len:
                             model_copy["max_model_len"] = ctx_len
                         models_dict[display_name] = model_copy
-        
+
         # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
         for display_name, real_name in all_mappings.items():
             if display_name not in models_dict:
@@ -594,16 +629,16 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                 if ctx_len:
                     model_entry["max_model_len"] = ctx_len
                 models_dict[display_name] = model_entry
-        
+
         mapped_models = list(models_dict.values())
-        
+
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
             return {
                 "object": all_models_response.get("object", "list"),
                 "data": mapped_models
             }
-        
+
         allowed_models = set(user_models_data["models"])
         filtered_models = [
             model for model in mapped_models
@@ -613,7 +648,7 @@ async def openai_list_models(username: str = Depends(get_current_user)):
             "object": all_models_response.get("object", "list"),
             "data": filtered_models
         }
-    
+
     return all_models_response
 
 

@@ -386,6 +386,104 @@ class NodeManager:
             except Exception as e:
                 yield f'{{"error": "Failed to pull to {node.name}: {str(e)}"}}\n'
     
+    async def get_all_models_from_nodes(self) -> Dict[str, Any]:
+        """
+        Fetch models from all healthy, active nodes concurrently and merge results.
+
+        Deduplicates by model name, keeping the first occurrence's details.
+        Returns Ollama-compatible format: {"models": [...], "nodes_queried": int, "nodes_failed": int}
+
+        Falls back to an empty model list if no nodes are available.
+        """
+        from app.database import async_session_maker
+
+        nodes_to_query = []
+
+        try:
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                active_nodes = await node_repo.list_active()
+
+                for node in active_nodes:
+                    if node.health_status in ("healthy", "unknown"):
+                        nodes_to_query.append({
+                            "id": node.id,
+                            "name": node.name,
+                            "base_url": node.base_url,
+                            "api_key": node.api_key,
+                        })
+        except Exception as e:
+            logger.error(f"[ModelAggregation] Error fetching nodes from DB: {e}")
+            return {"models": [], "nodes_queried": 0, "nodes_failed": 0}
+
+        if not nodes_to_query:
+            logger.warning("[ModelAggregation] No healthy nodes found for model listing")
+            return {"models": [], "nodes_queried": 0, "nodes_failed": 0}
+
+        async def _fetch_node_models(node_info: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], bool]:
+            """Fetch models from a single node. Returns (node_name, models, success)."""
+            try:
+                client = await self.get_client()
+                headers = {}
+                if node_info["api_key"]:
+                    headers["Authorization"] = f"Bearer {node_info['api_key']}"
+
+                response = await client.get(
+                    f"{node_info['base_url'].rstrip('/')}/api/tags",
+                    headers=headers,
+                    timeout=15.0,
+                )
+
+                if response.status_code != 200:
+                    logger.warning(
+                        f"[ModelAggregation] Node {node_info['name']} returned {response.status_code}"
+                    )
+                    return node_info["name"], [], False
+
+                data = response.json()
+                models = data.get("models", [])
+                return node_info["name"], models, True
+
+            except Exception as e:
+                logger.warning(f"[ModelAggregation] Error fetching from node {node_info['name']}: {e}")
+                return node_info["name"], [], False
+
+        # Fetch from all nodes concurrently
+        results = await asyncio.gather(
+            *[_fetch_node_models(n) for n in nodes_to_query],
+            return_exceptions=False,
+        )
+
+        # Merge models, deduplicating by name
+        seen_names = set()
+        merged_models = []
+        nodes_succeeded = 0
+        nodes_failed = 0
+
+        for node_name, models, success in results:
+            if success:
+                nodes_succeeded += 1
+            else:
+                nodes_failed += 1
+
+            for model in models:
+                model_name = model.get("name")
+                if model_name and model_name not in seen_names:
+                    seen_names.add(model_name)
+                    merged_models.append(model)
+
+        logger.info(
+            f"[ModelAggregation] Fetched {len(merged_models)} unique models "
+            f"from {nodes_succeeded}/{len(nodes_to_query)} nodes "
+            f"({nodes_failed} failed)"
+        )
+
+        return {
+            "models": merged_models,
+            "nodes_queried": nodes_succeeded,
+            "nodes_failed": nodes_failed,
+        }
+
     async def get_node_models(self, node_id: int, session) -> List[Dict[str, Any]]:
         """Get all models for a specific node"""
         model_repo = NodeModelRepository(session)

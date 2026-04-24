@@ -337,47 +337,78 @@ class OllamaProxy:
         self._http_client: Optional[httpx.AsyncClient] = None
         self._use_load_balancing = False  # Will be enabled when nodes are configured
     
-    async def _select_node_url(self, model_name: str) -> str:
+    # HTTP status codes that should trigger a retry on another node
+    # (model might be available on a different node)
+    NODE_RETRYABLE_STATUS_CODES = {404, 423, 429, 500, 502, 503, 504}
+
+    async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> str:
         """
         Select the best node URL for a model using load balancing.
-        
+
+        Args:
+            model_name: The model name to route
+            exclude_nodes: List of base_url strings to exclude (already tried nodes)
+
         Falls back to self.base_url if load balancing is not configured or no nodes available.
         """
         try:
             from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.load_balancer import load_balancer
-            
+
             async with async_session_maker() as session:
                 # Get real model name
                 real_model_name = model_mapper.get_real_model_name(model_name)
-                
+
                 # Get available nodes for this model
                 nodes = await node_manager.get_nodes_for_model(real_model_name, session)
-                
+
                 if not nodes:
                     # Try display name as fallback
                     nodes = await node_manager.get_nodes_for_model(model_name, session)
-                
+
                 if not nodes:
-                    # No nodes have this model - use default
+                    # No nodes have this model - use default (if not excluded)
+                    if exclude_nodes and self.base_url in exclude_nodes:
+                        logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
+                        return ""
                     logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
                     return self.base_url
-                
+
+                # Filter out excluded nodes
+                if exclude_nodes:
+                    filtered_nodes = [
+                        n for n in nodes
+                        if n.get('base_url') not in exclude_nodes
+                    ]
+                    if filtered_nodes:
+                        nodes = filtered_nodes
+                        logger.info(
+                            f"[LB] Filtered to {len(nodes)} nodes for model {model_name} "
+                            f"(excluded {len(exclude_nodes)} tried nodes)"
+                        )
+                    else:
+                        # All known nodes excluded, try default if not excluded
+                        if self.base_url not in exclude_nodes:
+                            logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
+                            return self.base_url
+                        logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
+                        return ""
+
                 # Select best node using load balancer
                 selected_node = await load_balancer.select_node(
                     nodes, strategy="least_loaded", session=session
                 )
-                
+
                 if selected_node:
                     node_name = selected_node.get('node_name') or selected_node.get('name', 'unknown')
                     node_base_url = selected_node.get('base_url')
                     logger.info(f"[LB] Selected node {node_name} for model {model_name}")
                     if node_base_url:
                         return node_base_url
-                
+
                 return self.base_url
-                
+
         except Exception as e:
             logger.error(f"[LB] Error selecting node: {e}, falling back to default URL")
             return self.base_url
@@ -937,11 +968,13 @@ class OllamaProxy:
         username: Optional[str] = None
     ):
         """
-        Proxy request to Ollama with automatic failover for model groups.
+        Proxy request to Ollama with automatic failover.
 
-        If the initial request fails (HTTP 5xx, connection error, timeout),
-        and the model is part of a group with fallback members, retry with
-        the fallback model.
+        Failover strategy (two levels):
+        1. Node retry: On retryable errors (404, 423, 429, 5xx, connection errors),
+           try the same model on a different node.
+        2. Model fallback: If all nodes are exhausted and the model belongs to a group,
+           try the next fallback model in the group (only for 5xx and connection errors).
 
         Args:
             method: HTTP method (GET, POST, DELETE)
@@ -960,6 +993,7 @@ class OllamaProxy:
         original_model = None
         original_group = None
         tried_models: set = set()
+        tried_nodes: set = set()  # Track node base_urls already tried
 
         # Step 1: Resolve model groups (if model name is a group, pick appropriate member)
         if data:
@@ -981,6 +1015,8 @@ class OllamaProxy:
         # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
         base_url = await self._select_node_url(model_name or '')
         url = f"{base_url}{endpoint}"
+        if base_url:
+            tried_nodes.add(base_url)
 
         # Step 2: Map model names (display_name -> real_name)
         if data:
@@ -1012,6 +1048,7 @@ class OllamaProxy:
                     username=username,
                     original_group=original_group,
                     tried_models=tried_models,
+                    tried_nodes=tried_nodes,
                     original_data=data.copy() if data else None,
                     endpoint=endpoint,
                     base_url=base_url
@@ -1027,6 +1064,7 @@ class OllamaProxy:
                 username=username,
                 original_group=original_group,
                 tried_models=tried_models,
+                tried_nodes=tried_nodes,
                 model_name=model_name
             )
 
@@ -1051,6 +1089,7 @@ class OllamaProxy:
         username: Optional[str],
         original_group: Optional[str],
         tried_models: set,
+        tried_nodes: set,
         original_data: Optional[Dict[str, Any]],
         endpoint: str,
         base_url: str
@@ -1058,8 +1097,9 @@ class OllamaProxy:
         """
         Handle streaming requests with automatic failover.
 
-        If initial connection fails (HTTP 5xx, connection error), try fallback models.
-        Failover only happens BEFORE streaming starts.
+        Two-level failover:
+        1. Node retry: On retryable errors (404, 423, 429, 5xx), try same model on another node.
+        2. Model fallback: If all nodes exhausted and model is in a group, try next fallback model.
 
         Args:
             url: Target URL
@@ -1068,6 +1108,7 @@ class OllamaProxy:
             username: Username for logging
             original_group: Original group name (if model came from a group)
             tried_models: Set of models already tried
+            tried_nodes: Set of node base_urls already tried
             original_data: Original request data before mapping
             endpoint: API endpoint
             base_url: Base URL for node selection
@@ -1083,7 +1124,7 @@ class OllamaProxy:
 
         async def stream_generator_with_failover():
             """Generator that handles failover for streaming requests"""
-            nonlocal tried_models
+            nonlocal tried_models, tried_nodes
 
             # Store error info for potential failover
             last_error = None
@@ -1126,14 +1167,34 @@ class OllamaProxy:
                             logger.error(f"Request URL: {current_url}")
                             logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
 
-                            # Check if we should failover (5xx errors only)
-                            should_failover = (
+                            # === NODE-LEVEL RETRY ===
+                            # Try the same model on a different node first
+                            if resp.status_code in self.NODE_RETRYABLE_STATUS_CODES and attempt < MAX_FAILOVER_RETRIES:
+                                # Add current node to tried list
+                                current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
+                                tried_nodes.add(current_base_url)
+
+                                new_base_url = await self._select_node_url(
+                                    current_model, exclude_nodes=list(tried_nodes)
+                                )
+                                if new_base_url:
+                                    logger.warning(
+                                        f"[NODE RETRY] Stream error {resp.status_code} from {current_base_url}, "
+                                        f"trying node {new_base_url} for model {current_model}"
+                                    )
+                                    current_url = f"{new_base_url}{endpoint}"
+                                    continue
+                                logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+
+                            # === MODEL-LEVEL FALLBACK ===
+                            # Only for 5xx errors and connection errors, try a different model from the group
+                            should_model_failover = (
                                 resp.status_code >= 500 and
                                 original_group and
                                 attempt < MAX_FAILOVER_RETRIES
                             )
 
-                            if should_failover:
+                            if should_model_failover:
                                 # Try to get fallback model
                                 fallback_model = self._get_fallback_model(original_group, current_model)
 
@@ -1147,9 +1208,11 @@ class OllamaProxy:
                                     current_data = await self._resolve_model_groups(current_data)
                                     current_data = self._map_model_to_ollama(current_data)
 
-                                    # Select new node URL for fallback
+                                    # Select new node URL for fallback (reset tried_nodes for new model)
                                     new_base_url = await self._select_node_url(fallback_model)
                                     current_url = f"{new_base_url}{endpoint}"
+                                    if new_base_url:
+                                        tried_nodes.add(new_base_url)
 
                                     # Log failover attempt
                                     logger.info(f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})")
@@ -1541,12 +1604,29 @@ class OllamaProxy:
 
                 except httpx.RequestError as e:
                     logger.error(f"Network error while streaming to Ollama: {str(e)}")
-
-                    # Check if we should failover
-                    should_failover = original_group and attempt < MAX_FAILOVER_RETRIES
                     current_model = current_data.get('model', 'unknown')
 
-                    if should_failover:
+                    # === NODE-LEVEL RETRY ===
+                    # Try the same model on a different node first
+                    if attempt < MAX_FAILOVER_RETRIES:
+                        current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
+                        tried_nodes.add(current_base_url)
+
+                        new_base_url = await self._select_node_url(
+                            current_model, exclude_nodes=list(tried_nodes)
+                        )
+                        if new_base_url:
+                            logger.warning(
+                                f"[NODE RETRY] Connection error from {current_base_url}, "
+                                f"trying node {new_base_url} for model {current_model}"
+                            )
+                            current_url = f"{new_base_url}{endpoint}"
+                            last_error = e
+                            continue
+                        logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+
+                    # === MODEL-LEVEL FALLBACK ===
+                    if original_group and attempt < MAX_FAILOVER_RETRIES:
                         fallback_model = self._get_fallback_model(original_group, current_model)
 
                         if fallback_model and fallback_model not in tried_models:
@@ -1560,6 +1640,8 @@ class OllamaProxy:
 
                             new_base_url = await self._select_node_url(fallback_model)
                             current_url = f"{new_base_url}{endpoint}"
+                            if new_base_url:
+                                tried_nodes.add(new_base_url)
 
                             last_error = e
                             continue
@@ -1609,10 +1691,15 @@ class OllamaProxy:
         username: Optional[str],
         original_group: Optional[str],
         tried_models: set,
+        tried_nodes: set,
         model_name: Optional[str]
     ):
         """
         Handle non-streaming requests with automatic failover.
+
+        Two-level failover:
+        1. Node retry: On retryable errors (404, 423, 429, 5xx), try same model on another node.
+        2. Model fallback: If all nodes exhausted and model is in a group, try next fallback model.
 
         Args:
             url: Target URL
@@ -1623,6 +1710,7 @@ class OllamaProxy:
             username: Username for logging
             original_group: Original group name (if model came from a group)
             tried_models: Set of models already tried
+            tried_nodes: Set of node base_urls already tried
             model_name: Model name for logging
 
         Returns:
@@ -1656,14 +1744,37 @@ class OllamaProxy:
                     if current_data:
                         logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
 
-                    # Check if we should failover (5xx errors only)
-                    should_failover = (
+                    # === NODE-LEVEL RETRY ===
+                    # Try the same model on a different node first
+                    if response.status_code in self.NODE_RETRYABLE_STATUS_CODES and attempt < MAX_FAILOVER_RETRIES:
+                        current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
+                        tried_nodes.add(current_base_url)
+
+                        new_base_url = await self._select_node_url(
+                            current_model, exclude_nodes=list(tried_nodes)
+                        )
+                        if new_base_url:
+                            logger.warning(
+                                f"[NODE RETRY] Error {response.status_code} from {current_base_url}, "
+                                f"trying node {new_base_url} for model {current_model}"
+                            )
+                            current_url = f"{new_base_url}{endpoint}"
+                            last_error = HTTPException(
+                                status_code=response.status_code,
+                                detail=f"Ollama error: {error_text}"
+                            )
+                            continue
+                        logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+
+                    # === MODEL-LEVEL FALLBACK ===
+                    # Only for 5xx errors, try a different model from the group
+                    should_model_failover = (
                         response.status_code >= 500 and
                         original_group and
                         attempt < MAX_FAILOVER_RETRIES
                     )
 
-                    if should_failover:
+                    if should_model_failover:
                         fallback_model = self._get_fallback_model(original_group, current_model)
 
                         if fallback_model and fallback_model not in tried_models:
@@ -1679,6 +1790,8 @@ class OllamaProxy:
                             # Select new node URL for fallback
                             new_base_url = await self._select_node_url(fallback_model)
                             current_url = f"{new_base_url}{endpoint}"
+                            if new_base_url:
+                                tried_nodes.add(new_base_url)
 
                             last_error = HTTPException(
                                 status_code=response.status_code,
@@ -1752,10 +1865,30 @@ class OllamaProxy:
             except httpx.RequestError as e:
                 logger.error(f"Failed to connect to Ollama: {str(e)}")
 
-                # Check if we should failover
-                should_failover = original_group and attempt < MAX_FAILOVER_RETRIES
+                # === NODE-LEVEL RETRY ===
+                # Try the same model on a different node first
+                if attempt < MAX_FAILOVER_RETRIES:
+                    current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
+                    tried_nodes.add(current_base_url)
 
-                if should_failover:
+                    new_base_url = await self._select_node_url(
+                        current_model, exclude_nodes=list(tried_nodes)
+                    )
+                    if new_base_url:
+                        logger.warning(
+                            f"[NODE RETRY] Connection error from {current_base_url}, "
+                            f"trying node {new_base_url} for model {current_model}"
+                        )
+                        current_url = f"{new_base_url}{endpoint}"
+                        last_error = HTTPException(
+                            status_code=503,
+                            detail=f"Failed to connect to Ollama: {str(e)}"
+                        )
+                        continue
+                    logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+
+                # === MODEL-LEVEL FALLBACK ===
+                if original_group and attempt < MAX_FAILOVER_RETRIES:
                     fallback_model = self._get_fallback_model(original_group, current_model)
 
                     if fallback_model and fallback_model not in tried_models:
@@ -1769,6 +1902,8 @@ class OllamaProxy:
 
                         new_base_url = await self._select_node_url(fallback_model)
                         current_url = f"{new_base_url}{endpoint}"
+                        if new_base_url:
+                            tried_nodes.add(new_base_url)
 
                         last_error = HTTPException(
                             status_code=503,

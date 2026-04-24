@@ -394,6 +394,7 @@ export interface OllamaModel {
   details?: Record<string, unknown>;
   is_mapped: boolean;
   display_name: string | null;
+  nodes?: string[] | null;
 }
 
 export interface SyncResult {

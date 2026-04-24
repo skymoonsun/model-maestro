@@ -307,6 +307,8 @@ class OllamaModelListItem(BaseModel):
     # Enriched fields (from our DB)
     is_mapped: bool = False
     display_name: Optional[str] = None
+    # Which nodes have this model
+    nodes: Optional[List[str]] = None
 
 class ModelShowResponse(BaseModel):
     """Detailed model info from Ollama /api/show"""
