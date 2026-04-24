@@ -108,6 +108,15 @@ function NodeCard({
         onError: (e) => toast.error(e.message),
     });
 
+    const toggleMut = useMutation({
+        mutationFn: (is_active: boolean) => nodesApi.update(node.id, { is_active }),
+        onSuccess: (_data, is_active) => {
+            qc.invalidateQueries({ queryKey: ['nodes'] });
+            toast.success(is_active ? 'Node activated' : 'Node deactivated');
+        },
+        onError: (e) => toast.error(e.message),
+    });
+
     useEffect(() => {
         if (editOpen) {
             setForm({
@@ -133,7 +142,14 @@ function NodeCard({
                             </Badge>
                         )}
                     </div>
-                    <HealthBadge status={node.health_status} />
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            checked={node.is_active}
+                            onCheckedChange={(v) => toggleMut.mutate(v)}
+                            disabled={toggleMut.isPending}
+                        />
+                        <HealthBadge status={node.health_status} />
+                    </div>
                 </div>
                 <p className="text-xs text-muted-foreground font-mono mt-1 truncate" title={node.base_url}>
                     {node.base_url}
