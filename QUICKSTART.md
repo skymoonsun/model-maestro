@@ -1,173 +1,229 @@
-# Hızlı Başlangıç Kılavuzu
+# Quick Start Guide
 
-## 1. Servisi Başlatın
+Get the Model Maestro gateway running in under 5 minutes.
+
+---
+
+## Prerequisites
+
+- Docker
+- Docker Compose
+
+---
+
+## 1. Launch the Full Stack
 
 ```bash
-# Docker Compose ile servisi başlatın
-docker-compose up -d
+# Clone the repository
+git clone <repository-url> && cd model-maestro
 
-# Logları kontrol edin
-docker-compose logs -f
+# Configure environment
+cp .env.example .env
+
+# Start all services (PostgreSQL + Redis + FastAPI + Next.js)
+docker compose -f docker-compose.dev.yml up --build -d
 ```
 
-## 2. İlk Kullanıcıyı Oluşturun
+---
+
+## 2. Seed the Database
 
 ```bash
-# Kullanıcı oluştur
-docker exec maestro create-user admin
-
-# Token'ı kaydedin (çıktıda gösterilecek)
+docker exec maestro python -m app.seeder
 ```
 
-## 3. API'yi Test Edin
+---
 
-### Health Check
+## 3. Verify Everything is Running
 
+| Service | URL | What to check |
+|---|---|---|
+| API | `http://localhost:8000` | Should return JSON with project info |
+| Admin Panel | `http://localhost:3000` | Login with `admin` / `ADMIN_PASSWORD` from `.env` |
+| API Docs | `http://localhost:8000/api/docs` | Basic-auth protected Swagger UI |
+
+**Health check:**
 ```bash
 curl http://localhost:8000/health
 ```
 
-### Model Listesi (Authentication gerekli)
+---
+
+## 4. Create Your First User
 
 ```bash
-# TOKEN değişkenini yukarıda aldığınız token ile değiştirin
-export TOKEN="your-jwt-token-here"
+# Create a user
+curl -X POST http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "developer"}'
 
-curl -X GET http://localhost:8000/api/tags \
-  -H "Authorization: Bearer $TOKEN"
+# The response contains the user's JWT token. Save it.
 ```
 
-### Chat Request
+---
+
+## 5. Test the LLM API
 
 ```bash
+# Set the token from the previous step
+export TOKEN="user-jwt-token-here"
+
+# List available models
+curl http://localhost:8000/api/tags \
+  -H "Authorization: Bearer $TOKEN"
+
+# Chat completion
 curl -X POST http://localhost:8000/api/chat \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-oss:120b",
-    "messages": [
-      {"role": "user", "content": "Merhaba!"}
-    ]
+    "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-## 4. CLI Komutları
+---
 
-### Tüm Kullanıcıları Listele
+## 6. Add Model Mappings
 
-```bash
-docker exec maestro list-users
-```
-
-### Kullanıcı Bilgilerini Gör
+Model mappings translate display names to real model names on Ollama.
 
 ```bash
-docker exec maestro show-user admin
-```
-
-### Token'ı Yenile
-
-```bash
-docker exec maestro refresh-token admin
-```
-
-### Yeni Kullanıcı Ekle
-
-```bash
-docker exec maestro create-user developer
-```
-
-### Kullanıcı Sil
-
-```bash
-docker exec maestro delete-user developer
-```
-
-## 5. Model Mapping Ekleme
-
-Yeni bir cloud model eklemek için Admin API kullanın:
-
-```bash
-# Admin token'ı ayarlayın
-export ADMIN_TOKEN="your-admin-token-here"
-
-# Yeni model mapping ekle
 curl -X POST http://localhost:8000/admin/model-mappings \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "display_name": "yeni-model:versyon",
-    "real_name": "yeni-model:versyon-cloud"
+    "display_name": "gpt-oss:120b",
+    "real_name": "gpt-oss:120b-cloud",
+    "context_length": 128000
   }'
+```
 
-# Tüm mapping'leri listeleyin
-curl -X GET http://localhost:8000/admin/model-mappings \
+Mappings take effect immediately — no restart required.
+
+---
+
+## 7. Add Ollama Nodes
+
+```bash
+curl -X POST http://localhost:8000/admin/nodes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "main-server",
+    "base_url": "http://host.docker.internal:11434",
+    "priority": 100
+  }'
+```
+
+The gateway will automatically discover models on the node and run health checks.
+
+---
+
+## 8. Assign Models to Users
+
+```bash
+# Assign specific models
+curl -X POST http://localhost:8000/admin/users/developer/models \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"models": ["gpt-oss:120b", "deepseek-v3.1:671b"]}'
+
+# Or grant access to all models
+curl -X POST http://localhost:8000/admin/users/developer/models/all \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-**Not**: Model mapping'ler PostgreSQL'de saklanır ve anında etkili olur (restart gerekmez).
+---
 
-## 6. Model Mapping Mantığı
-
-### Client → Proxy → Ollama
-
-1. Client `gpt-oss:120b` gönderir
-2. Proxy PostgreSQL'den mapping'i okur
-3. Ollama'ya `gpt-oss:120b-cloud` olarak iletir
-
-### Ollama → Proxy → Client
-
-1. Ollama `gpt-oss:120b-cloud` döner
-2. Proxy reverse mapping yapar
-3. Client'a `gpt-oss:120b` döner
-
-### Model Listesi (/api/tags)
-
-- Ollama'dan tüm modelleri al
-- Cloud modellerin `-cloud` suffix'ini kaldır
-- Local modelleri olduğu gibi bırak
-- Cloud modellerden `remote_host` alanını kaldır (tüm modeller local gibi görünür)
-
-## 6. Sorun Giderme
-
-### Servisi Durdur
+## 9. Set Usage Limits (Optional)
 
 ```bash
-docker-compose down
+curl -X POST http://localhost:8000/admin/users/developer/limits \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"request_limit": 1000, "token_limit": 1000000}'
 ```
 
-### Servisi Yeniden Başlat
+Use `null` for unlimited.
+
+---
+
+## 10. OpenAI Compatible Usage
+
+Point your IDE (Cursor, Antigravity, Claude Code) to:
+
+```
+Base URL: http://localhost:8000/v1
+API Key: Bearer <user-jwt-token>
+Model: gpt-oss:120b
+```
+
+Or test via curl:
 
 ```bash
-docker-compose restart
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss:120b",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
 ```
 
-### Logları İzle
+---
+
+## Common Commands
 
 ```bash
-docker-compose logs -f maestro
+# View logs
+docker compose -f docker-compose.dev.yml logs -f maestro
+
+# Restart the API
+docker compose -f docker-compose.dev.yml restart maestro
+
+# Run migrations manually
+docker exec maestro alembic upgrade head
+
+# Re-run seeds
+docker exec maestro python -m app.seeder --reset
+docker exec maestro python -m app.seeder
+
+# Clear Redis cache
+docker exec maestro python scripts/clear_cache.py
+
+# Stop everything
+docker compose -f docker-compose.dev.yml down
 ```
 
-### Container İçine Gir
+---
 
-```bash
-docker exec -it maestro /bin/bash
-```
+## Troubleshooting
 
-## Önemli Notlar
+**PostgreSQL not connecting:**
+- Check `DATABASE_URL` in `.env` matches the Docker Compose credentials.
+- Verify the container is healthy: `docker exec maestro-postgres pg_isready -U maestro_user -d maestro`
 
-⚠️ **Güvenlik**
-- `.env` dosyasındaki `JWT_SECRET_KEY` değerini mutlaka değiştirin
-- Token'ları güvenli bir şekilde saklayın
-- Production'da HTTPS kullanın
+**Redis not connecting:**
+- Check `REDIS_URL` points to `redis://redis:6379/0` inside Docker.
+- Verify: `docker exec maestro-redis redis-cli ping` → should return `PONG`
 
-📝 **Model İsimleri**
-- Client'tan: `gpt-oss:120b` (cloud suffix olmadan)
-- Ollama'ya: `gpt-oss:120b-cloud` (otomatik eklenir)
-- Yanıtta: `gpt-oss:120b` (otomatik kaldırılır)
+**Migration errors on startup:**
+- The `docker-entrypoint.sh` runs `alembic upgrade head` automatically.
+- If it fails, check the Postgres container is fully started before the API.
+- In `docker-compose.dev.yml`, `depends_on` with `condition: service_healthy` handles this.
 
-🔄 **Endpoint'ler**
-- Tüm Ollama API endpoint'leri desteklenir
-- Her istek JWT authentication gerektirir
-- Streaming desteklenir
+---
 
+## Security Reminders
+
+- Change `JWT_SECRET_KEY` before deploying to production.
+- Change `ADMIN_TOKEN` to a strong random string.
+- Use HTTPS in production.
+- Restrict `allow_origins` in CORS middleware to your frontend URL.
+
+---
+
+For the full setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
