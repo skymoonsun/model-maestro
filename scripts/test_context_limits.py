@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Ollama Cloud Model Context Length Limitleri Empirik Testi
+Model Maestro — Cloud Model Context Length Limitleri Empirik Testi
 
-Bu script, Ollama cloud modellerinin gerçek context limitlerini
+Bu script, cloud modellerinin gerçek context limitlerini
 binary search yöntemi ile tespit eder.
 
 Docker container içinde çalıştırma:
-  docker exec ollama-proxy python3 scripts/test_context_limits.py
+  docker exec maestro python3 scripts/test_context_limits.py
 
   # Belirli modelleri test et:
-  docker exec ollama-proxy python3 scripts/test_context_limits.py glm-5:cloud qwen3.5:cloud
+  docker exec maestro python3 scripts/test_context_limits.py glm-5:cloud qwen3.5:cloud
 
   # Farklı Ollama URL ile:
-  docker exec -e OLLAMA_BASE_URL=http://172.17.0.1:11434 ollama-proxy \
+  docker exec -e OLLAMA_BASE_URL=http://172.17.0.1:11434 maestro \
     python3 scripts/test_context_limits.py
 
 Lokal çalıştırma:

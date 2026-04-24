@@ -1,850 +1,589 @@
-# Ollama Proxy API
+<p align="center">
+  <img src="docs/assets/cover.png" alt="Model Maestro" width="720" />
+</p>
 
-FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama proxy servisi. Token kullanım takibi, kullanıcı bazlı model erişim kontrolü ve Redis tabanlı async background processing desteği ile production-ready çözüm.
+<p align="center">
+  <strong>Config-driven Unified LLM Gateway</strong>
+</p>
 
-## Özellikler
+<p align="center">
+  Route, load-balance and manage Ollama, OpenAI and other LLM providers through a single authenticated API.
+  Model Maestro gives you user-based access control, model mapping, token usage tracking, health-checked node pooling and a modern Next.js admin dashboard — all wired to PostgreSQL + Redis.
+</p>
 
-- 🔐 **JWT Authentication**: Token tabanlı güvenli erişim
-- 🔄 **Model Mapping**: Cloud modellerin isimlerini otomatik manipüle eder
-- 🐳 **Docker Support**: Kolay deployment için Docker ve Docker Compose
-- 🛠️ **Admin API**: Kullanıcı ve model yönetimi için RESTful API
-- 📡 **Full Ollama API**: Tüm Ollama endpoint'lerini destekler
-- ⚡ **Background Tasks**: Redis tabanlı async activity logging
-- 📊 **Token Usage Tracking**: Detaylı kullanım takibi ve limit yönetimi
-- 🔒 **Model Access Control**: Kullanıcı bazlı model erişim kontrolü
+<p align="center">
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white" />
+  </a>
+  <a href="https://fastapi.tiangolo.com/">
+    <img src="https://img.shields.io/badge/FastAPI-0.109.0-009688?logo=fastapi&logoColor=white" />
+  </a>
+  <a href="https://www.uvicorn.org/">
+    <img src="https://img.shields.io/badge/Uvicorn-0.27.0-000000?logo=uvicorn&logoColor=white" />
+  </a>
+  <a href="https://www.postgresql.org/">
+    <img src="https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql&logoColor=white" />
+  </a>
+  <a href="https://redis.io/">
+    <img src="https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white" />
+  </a>
+  <a href="https://nextjs.org/">
+    <img src="https://img.shields.io/badge/Next.js-16.1.6-000000?logo=next.js&logoColor=white" />
+  </a>
+  <a href="https://react.dev/">
+    <img src="https://img.shields.io/badge/React-19.2.3-61DAFB?logo=react&logoColor=black" />
+  </a>
+  <a href="https://tailwindcss.com/">
+    <img src="https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?logo=tailwindcss&logoColor=white" />
+  </a>
+  <a href="https://www.docker.com/">
+    <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" />
+  </a>
+</p>
 
-## Kurulum
+<p align="center">
+  <a href="#quick-start"><strong>Quick Start</strong></a> ·
+  <a href="#features"><strong>Features</strong></a> ·
+  <a href="#architecture"><strong>Architecture</strong></a> ·
+  <a href="#api-reference"><strong>API</strong></a> ·
+  <a href="#admin-panel"><strong>Admin Panel</strong></a>
+</p>
 
-### 1. Projeyi Klonlayın
+---
+
+<!-- TOC -->
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Configuration](#configuration)
+- [Admin Panel](#admin-panel)
+- [API Reference](#api-reference)
+  - [Authentication](#authentication)
+  - [LLM Endpoints](#llm-endpoints)
+  - [Admin Endpoints](#admin-endpoints)
+  - [OpenAI Compatible](#openai-compatible)
+- [Model Mapping & Routing](#model-mapping--routing)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [License](#license)
+
+<!-- /TOC -->
+
+---
+
+## Quick Start
+
+> Requires Docker & Docker Compose.
 
 ```bash
-git clone <repository-url>
-cd ollama-proxy-api
-```
+# 1. Clone
+git clone <repository-url> && cd model-maestro
 
-### 2. PostgreSQL Kurulumu
-
-Bu proje kullanıcı bilgileri ve model mapping'leri için PostgreSQL kullanır.
-
-#### Yerel PostgreSQL Kurulumu
-
-**macOS:**
-```bash
-brew install postgresql@15
-brew services start postgresql@15
-createdb ollama_proxy
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install postgresql postgresql-contrib
-sudo systemctl start postgresql
-sudo -u postgres createdb ollama_proxy
-sudo -u postgres createuser -P ollama_user
-```
-
-**Docker ile PostgreSQL (Opsiyonel):**
-```bash
-docker run -d \
-  --name ollama-postgres \
-  -e POSTGRES_DB=ollama_proxy \
-  -e POSTGRES_USER=ollama_user \
-  -e POSTGRES_PASSWORD=changeme \
-  -p 5432:5432 \
-  postgres:15-alpine
-```
-
-### 3. Environment Dosyasını Oluşturun
-
-```bash
+# 2. Configure
 cp .env.example .env
+
+# 3. Launch full stack (PostgreSQL + Redis + FastAPI + Next.js)
+docker compose -f docker-compose.dev.yml up --build -d
+
+# 4. Seed the database
+docker exec maestro python -m app.seeder
+
+# 5. Open the admin panel at http://localhost:3000
 ```
 
-`.env` dosyasını düzenleyin:
+| Service | URL | Notes |
+|---|---|---|
+| **API** | `http://localhost:8000` | FastAPI gateway |
+| **Admin Dashboard** | `http://localhost:3000` | Next.js admin panel |
+| **API Docs** | `http://localhost:8000/api/docs` | Basic-auth protected |
+
+For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
+
+---
+
+## Features
+
+- **JWT Authentication** — Bearer-token auth on every LLM request.
+- **Admin Dashboard** — Next.js 16 panel for visual management of users, nodes, models, groups and audit logs.
+- **Model Mapping** — Translate display names (`gpt-oss:120b`) to real names (`gpt-oss:120b-cloud`) via PostgreSQL with JSON-file caching.
+- **Multi-Node Load Balancing** — Round-robin, weighted and priority-based strategies across Ollama nodes.
+- **Model Groups** — Group models into logical units with fallback chains. Requests dynamically resolve to the best member based on capability tags (vision, tools) and strategy.
+- **Node Health Management** — Automatic health checks, model discovery and availability tracking.
+- **User-Level Access Control** — Per-user model allowlists and rate limits (requests / tokens per day).
+- **Token Usage Tracking** — Background-batched activity logs with prompt / completion / total token breakdowns.
+- **Tool Set Filtering** — Restrict which tools a model is allowed to invoke via configurable tool sets.
+- **Context Length Config** — Per-model context length stored in mappings (used by Cursor/Antigravity for usage bars).
+- **Streaming** — SSE-based streaming on `/api/chat`, `/api/generate` and `/v1/chat/completions`.
+- **OpenAI Compatible** — Drop-in `/v1/chat/completions` and `/v1/models` endpoints.
+- **Full Ollama API** — `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/copy`, `/api/delete`, `/api/pull`, `/api/push`, `/api/create`.
+- **Background Tasks** — Redis-backed async queue for activity logging, node health checks, model discovery and load cleanup.
+- **Audit Logs** — Every admin action is timestamped and queryable.
+- **PostgreSQL + Alembic** — Schema migrations run automatically on container startup.
+- **Redis Cache** — Hot-path caching for mappings, config and user usage data.
+
+---
+
+## Architecture
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Cursor     │     │  Antigravity │     │   Claude     │
+│   IDE        │     │   IDE        │     │   Code       │
+└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+       │                    │                    │
+       └────────────────────┼────────────────────┘
+                            │
+                     ┌──────┴──────┐
+                     │  Load       │
+                     │  Balancer   │
+                     └──────┬──────┘
+                            │
+       ┌────────────────────┼────────────────────┐
+       │                    │                    │
+┌──────┴──────┐    ┌────────┴────────┐   ┌──────┴──────┐
+│  Ollama     │    │    Ollama       │   │   OpenAI    │
+│  Node 1     │    │    Node 2       │   │   / Other   │
+└─────────────┘    └─────────────────┘   └─────────────┘
+```
+
+**Request Flow**
+
+```
+Client Request
+      │
+      ▼
+┌─────────────────┐
+│  JWT Middleware │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Model Group?    │──No──▶┌──────────────┐
+│ (resolve member)│       │ Model Mapper │
+└────────┬────────┘       │ (display→real)│
+         │Yes             └──────┬───────┘
+         │                        │
+         ▼                        ▼
+┌─────────────────┐       ┌──────────────┐
+│ Load Balancer   │──────▶│ Node Pool    │
+│ (pick healthy)  │       │ (health check│
+└────────┬────────┘       │  + retry)    │
+         │                └──────┬───────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐       ┌──────────────┐
+│ Ollama Proxy    │◀──────│ Ollama /     │
+│ (reverse map)   │       │ Provider API │
+└────────┬────────┘       └──────────────┘
+         │
+         ▼
+    Client Response
+```
+
+For the full architecture documentation, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **API Gateway** | Python 3.11, FastAPI, Uvicorn |
+| **Async HTTP** | httpx (HTTP/2) |
+| **Auth** | JWT (PyJWT) |
+| **Database** | PostgreSQL 15 + asyncpg + SQLAlchemy async |
+| **Migrations** | Alembic |
+| **Cache** | Redis 7 |
+| **Frontend** | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
+| **Background Tasks** | Redis-backed async queue |
+| **Deployment** | Docker, Docker Compose |
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and set:
 
 ```env
-# Ollama Configuration
+# Ollama
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-JWT_SECRET_KEY=super-secret-key-change-this-immediately
+JWT_SECRET_KEY=change-this-to-a-strong-secret
 LOG_LEVEL=INFO
 
-# PostgreSQL Configuration
-DATABASE_URL=postgresql+asyncpg://ollama_user:changeme@localhost:5432/ollama_proxy
+# PostgreSQL
+DATABASE_URL=postgresql+asyncpg://maestro_user:maestro_password@postgres:5432/maestro
 
-# Admin Token (admin endpoint'leri için)
-ADMIN_TOKEN=admin-super-secret-token-change-this-in-production
-```
+# Redis
+REDIS_URL=redis://redis:6379/0
 
-### 4. Model Mapping'i Yapılandırın
+# Admin Token (for /admin/* endpoints)
+ADMIN_TOKEN=change-this-for-production
 
-Model mapping'ler PostgreSQL veritabanında saklanır. İlk model mapping'leri Admin API ile oluşturun (aşağıdaki "İlk Model Mapping'leri Oluşturun" bölümüne bakın).
+# Admin Panel Login
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin
 
-### 5. Database Migration'ları Çalıştırın
-
-Docker container'ı başlatmadan önce veya başlattıktan sonra migration'ları çalıştırın:
-
-```bash
-# Container içinde migration çalıştırma
-docker-compose up -d
-docker exec ollama-proxy alembic upgrade head
-```
-
-### 6. Docker ile Çalıştırın
-
-**Development (PostgreSQL + Redis dahil):**
-```bash
-docker-compose -f docker-compose.dev.yml up -d
-```
-
-**Production (sadece FastAPI):**
-```bash
-docker-compose up -d
-```
-
-Servis `http://localhost:8000` adresinde çalışacaktır.
-
-**Not**: Development ortamında PostgreSQL ve Redis otomatik olarak başlatılır. Production ortamında bu servisler ayrı olarak yapılandırılmalıdır.
-
-### 7. İlk Model Mapping'leri Oluşturun (Gerekli)
-
-Admin API kullanarak model mapping'leri oluşturun:
-
-```bash
-# Model mapping'leri ekleyin
-curl -X POST http://localhost:8000/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"display_name": "gpt-oss:120b", "real_name": "gpt-oss:120b-cloud"}'
-
-curl -X POST http://localhost:8000/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"display_name": "deepseek-v3.1:671b", "real_name": "deepseek-v3.1:671b-cloud"}'
-
-curl -X POST http://localhost:8000/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"display_name": "qwen3-coder:480b", "real_name": "qwen3-coder:480b-cloud"}'
-
-# Tüm mapping'leri listeleyin
-curl -X GET http://localhost:8000/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Not**: Model mapping'ler PostgreSQL'de saklanır ve Redis cache'i otomatik olarak güncellenir.
-
-## Kullanıcı Yönetimi
-
-### Kullanıcı Oluşturma
-
-Admin API kullanarak kullanıcı oluşturun:
-
-```bash
-curl -X POST http://localhost:8000/admin/users \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"username": "john"}'
-```
-
-Detaylı bilgi için [Admin API - Kullanıcı Yönetimi](#admin-api) bölümüne bakın.
-
-## API Documentation
-
-Ollama Proxy API, Swagger UI ve ReDoc ile detaylı API dokümantasyonu sunar. Dokümantasyon endpoint'leri basic authentication ile korunmaktadır.
-
-### Swagger UI Erişimi
-
-```
-http://localhost:8000/api/docs
-```
-
-### ReDoc Erişimi
-
-```
-http://localhost:8000/api/redoc
-```
-
-### Authentication
-
-Dokümantasyon sayfalarına erişmek için basic authentication kullanılır. Kullanıcı adı ve şifre `.env` dosyasında tanımlanmalıdır:
-
-```env
+# Swagger / ReDoc Basic Auth
 DOCS_USERNAME=admin
-DOCS_PASSWORD=secure_docs_password_change_this
+DOCS_PASSWORD=admin
 ```
 
-Tarayıcı otomatik olarak kullanıcı adı ve şifre isteyecektir.
+---
 
-### OpenAPI Schema
+## Admin Panel
 
-OpenAPI JSON schema'ya erişim için:
+The Next.js dashboard (`http://localhost:3000`) provides a visual interface for everything.
 
-```
-http://localhost:8000/api/openapi.json
-```
+| Page | What you can do |
+|---|---|
+| **Dashboard** | Node health, model counts, user statistics |
+| **Users** | Create users, manage tokens, assign models, set limits |
+| **Ollama > Nodes** | Add/edit Ollama nodes, view health status, trigger discovery |
+| **Ollama > Models** | Browse discovered models per node |
+| **Models > Mappings** | Display↔Real name mappings, set context length, capabilities |
+| **Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
+| **Models > Config** | Per-model tool restrictions and settings |
+| **Tool Sets** | Create tool groups and assign to models |
+| **Settings** | System-wide configuration |
+| **Audit Logs** | Filterable history of all admin actions |
 
-**Not**: Bu endpoint de basic authentication gerektirir.
+**Default login:** username `admin`, password from `ADMIN_PASSWORD` in `.env`.
 
-## Admin API
+---
 
-Admin endpoint'leri ile kullanıcı ve model yönetimi yapabilirsiniz. Tüm admin endpoint'leri `ADMIN_TOKEN` gerektirir.
+## API Reference
+
+For the complete API reference with all request/response examples, see [`docs/API.md`](docs/API.md).
 
 ### Authentication
 
-Admin endpoint'leri için `.env` dosyasında tanımlı `ADMIN_TOKEN` kullanılır:
+Every LLM request requires:
 
-```bash
-Authorization: Bearer YOUR_ADMIN_TOKEN
+```
+Authorization: Bearer <jwt-token>
 ```
 
-### Kullanıcı Yönetimi Endpoint'leri
+Admin endpoints require:
 
-#### Kullanıcı Oluşturma
-
-```bash
-curl -X POST http://localhost:8000/admin/users \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"username": "john"}'
+```
+Authorization: Bearer <admin-token>
 ```
 
-**Response:**
-```json
-{
-  "username": "john",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "created_at": "2024-01-20T10:30:00.000000",
-  "updated_at": null,
-  "is_active": true
-}
-```
-
-#### Kullanıcı Listesini Görüntüleme
-
-```bash
-curl -X GET http://localhost:8000/admin/users \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-[
-  {
-    "username": "john",
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "created_at": "2024-01-20T10:30:00.000000",
-    "updated_at": null,
-    "is_active": true,
-    "has_all_models": false,
-    "models": ["gpt-oss:120b", "deepseek-v3.1:671b"]
-  }
-]
-```
-
-#### Kullanıcı Bilgilerini Görüntüleme
-
-```bash
-curl -X GET http://localhost:8000/admin/users/john \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-#### Token Yenileme
-
-```bash
-curl -X PUT http://localhost:8000/admin/users/john/token \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "username": "john",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "created_at": "2024-01-20T10:30:00.000000",
-  "updated_at": "2024-01-20T11:00:00.000000",
-  "is_active": true
-}
-```
-
-#### Kullanıcı Silme
-
-```bash
-curl -X DELETE http://localhost:8000/admin/users/john \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-### Model Atama Endpoint'leri
-
-#### Belirli Modelleri Kullanıcıya Atama
-
-```bash
-curl -X POST http://localhost:8000/admin/users/john/models \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "models": ["gpt-oss:120b", "deepseek-v3.1:671b", "qwen3-coder:480b"]
-  }'
-```
-
-**Response:**
-```json
-{
-  "username": "john",
-  "has_all_models": false,
-  "models": ["gpt-oss:120b", "deepseek-v3.1:671b", "qwen3-coder:480b"]
-}
-```
-
-#### Tüm Modellere Erişim Verme
-
-```bash
-curl -X POST http://localhost:8000/admin/users/john/models/all \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "username": "john",
-  "has_all_models": true,
-  "models": []
-}
-```
-
-#### Kullanıcının Modellerini Görüntüleme
-
-```bash
-curl -X GET http://localhost:8000/admin/users/john/models \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "username": "john",
-  "has_all_models": false,
-  "models": ["gpt-oss:120b", "deepseek-v3.1:671b"]
-}
-```
-
-#### Model Erişimini Kaldırma
-
-**Belirli bir modeli kaldırma:**
-```bash
-curl -X DELETE http://localhost:8000/admin/users/john/models/gpt-oss:120b \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Tüm model erişimini kaldırma:**
-```bash
-# "all" kullanarak tüm modelleri kaldır (has_all_models dahil)
-curl -X DELETE http://localhost:8000/admin/users/john/models/all \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Not**: `model_name="all"` kullanıldığında:
-- `has_all_models=True` ise → Tüm modellere erişim kaldırılır
-- Belirli modeller atanmışsa → Tüm atanmış modeller kaldırılır
-- Kullanıcı hiçbir modele erişemez hale gelir
-
-### Model Mapping Yönetimi
-
-#### Model Mapping Oluşturma
-
-```bash
-curl -X POST http://localhost:8000/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "display_name": "gpt-oss:120b",
-    "real_name": "gpt-oss:120b-cloud"
-  }'
-```
-
-**Response:**
-```json
-{
-  "display_name": "gpt-oss:120b",
-  "real_name": "gpt-oss:120b-cloud",
-  "created_at": "2024-01-20T10:30:00.000000"
-}
-```
-
-#### Model Mapping Listesini Görüntüleme
-
-```bash
-curl -X GET http://localhost:8000/admin/model-mappings \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-[
-  {
-    "display_name": "gpt-oss:120b",
-    "real_name": "gpt-oss:120b-cloud",
-    "created_at": "2024-01-20T10:30:00.000000"
-  },
-  {
-    "display_name": "deepseek-v3.1:671b",
-    "real_name": "deepseek-v3.1:671b-cloud",
-    "created_at": "2024-01-20T10:30:00.000000"
-  }
-]
-```
-
-#### Model Mapping Silme
-
-```bash
-curl -X DELETE http://localhost:8000/admin/model-mappings/gpt-oss:120b \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Not**: Model mapping ekleme/silme işlemlerinde cache otomatik olarak yenilenir.
-
-### Kullanıcı Limit Yönetimi
-
-Admin endpoint'leri ile kullanıcı bazlı request ve token limitleri tanımlayabilirsiniz.
-
-#### Kullanıcı Limitleri Tanımlama
-
-```bash
-curl -X POST http://localhost:8000/admin/users/john/limits \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "request_limit": 1000,
-    "token_limit": 1000000
-  }'
-```
-
-**Request body:**
-- `request_limit`: Günlük maksimum istek sayısı (null/sayı)
-- `token_limit`: Günlük maksimum token kullanımı (null/sayı)
-
-**Not**: `null` değeri limitsiz erişim anlamına gelir.
-
-**Response:**
-```json
-{
-  "username": "john",
-  "request_limit": 1000,
-  "token_limit": 1000000,
-  "created_at": "2024-01-20T10:30:00.000000",
-  "updated_at": "2024-01-20T11:00:00.000000"
-}
-```
-
-#### Kullanıcı Limitlerini Görüntüleme
-
-```bash
-curl -X GET http://localhost:8000/admin/users/john/limits \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "username": "john",
-  "request_limit": 1000,
-  "token_limit": 1000000,
-  "created_at": "2024-01-20T10:30:00.000000",
-  "updated_at": "2024-01-20T11:00:00.000000"
-}
-```
-
-#### Kullanıcı Limitlerini Kaldırma
-
-```bash
-curl -X DELETE http://localhost:8000/admin/users/john/limits \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-Bu işlem kullanıcı limitlerini kaldırır ve limitsiz erişim sağlar.
-
-### Kullanıcı Activity Logları
-
-Admin endpoint'leri ile kullanıcı aktivitelerini görüntüleyebilirsiniz.
-
-#### Kullanıcı Activity Loglarını Görüntüleme
-
-```bash
-curl -X GET "http://localhost:8000/admin/users/john/activity?limit=50&offset=0" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Query parameters:**
-- `limit`: Döndürülecek log sayısı (varsayılan: 100)
-- `offset`: Atlanacak log sayısı (varsayılan: 0)
-
-**Response:**
-```json
-{
-  "username": "john",
-  "activities": [
-    {
-      "model_name": "gpt-oss:120b",
-      "request_type": "chat",
-      "prompt_tokens": 150,
-      "completion_tokens": 300,
-      "total_tokens": 450,
-      "created_at": "2024-01-20T10:30:00.000000"
-    }
-  ],
-  "total_returned": 1,
-  "limit": 50,
-  "offset": 0
-}
-```
-
-#### Kullanıcı Token Kullanım İstatistikleri
-
-```bash
-curl -X GET "http://localhost:8000/admin/users/john/token-usage?start_date=2024-01-01&end_date=2024-01-31" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Query parameters:**
-- `start_date`: Başlangıç tarihi (ISO format: "2024-01-01")
-- `end_date`: Bitiş tarihi (ISO format: "2024-01-31")
-
-**Response:**
-```json
-{
-  "username": "john",
-  "usage": {
-    "prompt_tokens": 5000,
-    "completion_tokens": 10000,
-    "total_tokens": 15000,
-    "total_requests": 25
-  },
-  "period": {
-    "start_date": "2024-01-01",
-    "end_date": "2024-01-31"
-  }
-}
-```
-
-#### Kullanıcı Model Kullanım İstatistikleri
-
-```bash
-curl -X GET "http://localhost:8000/admin/users/john/model-usage?start_date=2024-01-01&end_date=2024-01-31" \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-**Response:**
-```json
-{
-  "username": "john",
-  "model_usage": [
-    {
-      "model_name": "gpt-oss:120b",
-      "request_count": 15,
-      "total_tokens": 8000
-    },
-    {
-      "model_name": "deepseek-v3.1:671b",
-      "request_count": 10,
-      "total_tokens": 7000
-    }
-  ],
-  "period": {
-    "start_date": "2024-01-01",
-    "end_date": "2024-01-31"
-  }
-}
-```
-
-### Model Erişim Kontrolü
-
-Kullanıcılar yalnızca kendilerine atanmış modellere erişebilir:
-
-- **has_all_models=true**: Kullanıcı tüm modellere erişebilir
-- **has_all_models=false**: Kullanıcı sadece `models` listesindeki modellere erişebilir
-
-Model erişim kontrolü şu endpoint'lerde çalışır:
-- `/api/generate`
-- `/api/chat`
-- `/api/embeddings`
-- `/api/show`
-- `/v1/chat/completions`
-
-Model listeleme endpoint'leri (`/api/tags`, `/v1/models`) kullanıcının erişebildiği modelleri döner.
-
-## API Kullanımı
-
-### Authentication
-
-Tüm API isteklerinde `Authorization` header'ı gereklidir:
-
-```bash
-Authorization: Bearer <your-jwt-token>
-```
-
-## Cursor IDE ile Kullanım
-
-Ollama Proxy API, OpenAI uyumlu endpoint'ler sunar, böylece Cursor IDE'de kullanabilirsiniz.
-
-### Kurulum
-
-1. **Cursor Settings** → **Models** → **Override OpenAI Base URL**
-2. Base URL: `https://ollama.gokaygunes.com/v1`
-3. API Key: `Bearer YOUR_JWT_TOKEN` (JWT token'ınızı buraya yazın)
-4. Model: `gpt-oss:120b` (veya herhangi bir model ismi)
-
-### OpenAI Compatible Endpoints
-
-- `POST /v1/chat/completions` - Chat completions (Cursor için)
-- `GET /v1/models` - Model listesi (OpenAI formatında)
-
-### Örnek Kullanım
-
-Cursor'da kod yazarken Ctrl+K veya Ctrl+L ile modelinizi kullanabilirsiniz. Model seçiminde Ollama modelleriniz görünecektir.
-
-### Chat Completion
+### LLM Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/chat` | Chat completions (Ollama format) |
+| `POST` | `/api/generate` | Text generation |
+| `POST` | `/api/embeddings` | Generate embeddings |
+| `GET`  | `/api/tags` | List available models |
+| `POST` | `/api/show` | Show model info |
+| `POST` | `/api/copy` | Copy model |
+| `DELETE`| `/api/delete` | Delete model |
+| `POST` | `/api/pull` | Pull model |
+| `POST` | `/api/push` | Push model |
+| `POST` | `/api/create` | Create model from Modelfile |
+
+**Example — Chat**
 
 ```bash
 curl -X POST http://localhost:8000/api/chat \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-oss:120b",
-    "messages": [
-      {"role": "user", "content": "Merhaba, nasılsın?"}
-    ]
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": false
   }'
 ```
 
-**Not**: İstek `gpt-oss:120b` ile gönderilir, ama arka planda Ollama'ya `gpt-oss:120b-cloud` olarak iletilir.
-
-### Text Generation
-
-```bash
-curl -X POST http://localhost:8000/api/generate \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-v3.1:671b",
-    "prompt": "Bir Python kodu yaz"
-  }'
-```
-
-### Embeddings
-
-```bash
-curl -X POST http://localhost:8000/api/embeddings \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "bge-m3:latest",
-    "prompt": "Merhaba dünya"
-  }'
-```
-
-### Model Listesi
-
-```bash
-curl -X GET http://localhost:8000/api/tags \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-Dönen modeller otomatik olarak `-cloud` suffix'i olmadan görüntülenir.
-
-### Streaming
-
-Streaming istekler için `stream: true` parametresi ekleyin:
+**Example — Streaming Chat**
 
 ```bash
 curl -X POST http://localhost:8000/api/chat \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-oss:120b",
-    "messages": [{"role": "user", "content": "Uzun bir hikaye anlat"}],
+    "messages": [{"role": "user", "content": "Tell me a story"}],
     "stream": true
   }'
 ```
 
-## Desteklenen Endpoint'ler
+### Admin Endpoints
 
-- `POST /api/generate` - Text generation
-- `POST /api/chat` - Chat completion
-- `POST /api/embeddings` - Generate embeddings
-- `GET /api/tags` - List models
-- `POST /api/show` - Show model info
-- `POST /api/copy` - Copy model
-- `DELETE /api/delete` - Delete model
-- `POST /api/pull` - Pull model
-- `POST /api/push` - Push model
-- `POST /api/create` - Create model from Modelfile
-
-### Model Mapping Mantığı
-
-**Client → Proxy → Ollama:**
-- Client `gpt-oss:120b` gönderir
-- Proxy mapping'i kontrol eder
-- Ollama'ya `gpt-oss:120b-cloud` olarak iletir
-
-**Ollama → Proxy → Client:**
-- Ollama `gpt-oss:120b-cloud` döner
-- Proxy reverse mapping yapar
-- Client'a `gpt-oss:120b` döner
-
-**Model Listesi (/api/tags):**
-- Ollama'dan tüm modelleri al
-- Cloud modellerin `-cloud` suffix'ini kaldır
-- Local modelleri olduğu gibi bırak
-- Cloud modellerden `remote_host` alanını kaldır (tüm modeller local gibi görünür)
-
-## Geliştirme
-
-### Local Olarak Çalıştırma
+**Users**
 
 ```bash
-# Virtual environment oluştur
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# veya
-venv\Scripts\activate  # Windows
-
-# Bağımlılıkları yükle
-pip install -r requirements.txt
-
-# Çalıştır
-uvicorn app.main:app --reload
-```
-
-### Local Geliştirme
-
-Local development için Admin API kullanın:
-
-```bash
-# Admin token'ı ayarlayın
-export ADMIN_TOKEN="your-admin-token"
-
-# Kullanıcı oluşturma
+# Create user
 curl -X POST http://localhost:8000/admin/users \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"username": "john"}'
+
+# List users
+curl http://localhost:8000/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Refresh token
+curl -X PUT http://localhost:8000/admin/users/john/token \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-## Güvenlik
-
-- JWT secret key'i mutlaka değiştirin (`.env` dosyasında)
-- Token'ları güvenli bir şekilde saklayın
-- HTTPS kullanın (production için)
-- Docker container'ı güvenlik güncellemeleri için düzenli olarak yeniden build edin
-
-## Background Tasks
-
-Ollama Proxy API, kullanıcı activity log'larını Redis tabanlı bir background task sistemi ile işler. Bu sistem:
-
-- ⚡ **Async Processing**: Kullanıcıyı bekletmeden log kaydı yapar
-- 🔄 **Batch Processing**: 50 log/batch ile verimli veritabanı işlemi
-- 💾 **Redis Queue**: Güvenilir ve hızlı kuyruk sistemi
-- 🛡️ **Error Resilient**: Hata durumunda bile log kaybı olmaz
-
-### Redis Cache Temizleme
-
-Eğer cache sorunları yaşıyorsanız:
+**Model Assignment**
 
 ```bash
-# Docker içinde
-docker exec ollama-proxy python scripts/clear_cache.py
+# Assign specific models
+curl -X POST http://localhost:8000/admin/users/john/models \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"models": ["gpt-oss:120b", "deepseek-v3.1:671b"]}'
 
-# Local
-python scripts/clear_cache.py
+# Grant access to all models
+curl -X POST http://localhost:8000/admin/users/john/models/all \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Bu script tüm `user_daily_usage` cache key'lerini temizler.
+**User Limits**
 
-### Background Task Konfigürasyonu
-
-`app/background_tasks.py` dosyasında konfigüre edilebilir:
-
-```python
-QUEUE_KEY = "activity_log_queue"  # Redis queue key
-BATCH_SIZE = 50                    # Batch size
-POLL_INTERVAL = 2.0                # Poll interval in seconds
-```
-
-## Sorun Giderme
-
-### Activity log kaydolmuyor
-
-Logs'da şu mesajları kontrol edin:
-```
-INFO:app.background_tasks:Starting background activity log processor
-INFO:app.background_tasks:Processed X activity logs
-```
-
-Eğer bu mesajlar görünmüyorsa, Redis bağlantısını kontrol edin.
-
-### Redis bağlantı hatası
-
-`.env` dosyasında Redis URL'ini kontrol edin:
-```env
-REDIS_URL=redis://localhost:6379/0
-```
-
-### Cache type hatası (WRONGTYPE)
-
-Eğer cache'de WRONGTYPE hatası alıyorsanız:
 ```bash
-python scripts/clear_cache.py
+# Set limits (null = unlimited)
+curl -X POST http://localhost:8000/admin/users/john/limits \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"request_limit": 1000, "token_limit": 1000000}'
 ```
 
-### Ollama'ya bağlanamıyor
+**Model Mappings**
 
-`.env` dosyasındaki `OLLAMA_BASE_URL` adresini kontrol edin:
+```bash
+# Create mapping with context length
+curl -X POST http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "gpt-oss:120b",
+    "real_name": "gpt-oss:120b-cloud",
+    "context_length": 128000,
+    "capabilities": ["completion", "tools"]
+  }'
 
-- Docker içinde (macOS/Windows): `http://host.docker.internal:11434`
-- Docker içinde (Linux): `http://localhost:11434` (ve `docker-compose.yml`'de `network_mode: "host"` kullanın)
-- Local: `http://localhost:11434`
-- Uzak sunucu: `http://sunucu-ip:11434`
+# List
+curl http://localhost:8000/admin/model-mappings \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
-**Linux'ta Docker Network Sorunu:**
-
-Linux sistemlerde container'dan host'a erişim için `docker-compose.yml` dosyasını şu şekilde güncelleyin:
-
-```yaml
-services:
-  ollama-proxy:
-    build: .
-    container_name: ollama-proxy
-    network_mode: "host"  # Bu satırı ekleyin
-    volumes:
-      - ./data:/app/data
-      - ./config:/app/config
-    env_file:
-      - .env
-    restart: unless-stopped
+# Delete
+curl -X DELETE http://localhost:8000/admin/model-mappings/gpt-oss:120b \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Ve `.env` dosyasında:
-```env
-OLLAMA_BASE_URL=http://localhost:11434
+**Nodes**
+
+```bash
+# Add node
+curl -X POST http://localhost:8000/admin/nodes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "main", "base_url": "http://localhost:11434", "priority": 100}'
+
+# Toggle activation
+curl -X PATCH http://localhost:8000/admin/nodes/1/toggle \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### 401 Unauthorized hatası
+**Model Groups**
 
-- Token'ın doğru gönderildiğinden emin olun
-- `Authorization: Bearer <token>` formatında olmalı
-- Token'ın geçerli olduğundan emin olun
-- Kullanıcının varolduğundan emin olun
+```bash
+# Create group
+curl -X POST http://localhost:8000/admin/model-groups \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "coding", "strategy": "round_robin", "description": "Code models"}'
 
-### Model bulunamıyor
+# Add member
+curl -X POST http://localhost:8000/admin/model-groups/coding/members \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model_display_name": "qwen3-coder:480b", "priority": 1}'
+```
 
-- Model isminin mapping'de doğru tanımlandığından emin olun
-- Ollama'da modelin kurulu olduğunu kontrol edin: `ollama list`
+### OpenAI Compatible
 
-## Lisans
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/chat/completions` | Chat completions (OpenAI format) |
+| `GET`  | `/v1/models` | Model list (OpenAI format) |
+
+**Example — OpenAI Compatible**
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss:120b",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+---
+
+## Model Mapping & Routing
+
+**Display Name → Real Name**
+
+```
+Client sends:       gpt-oss:120b
+Proxy looks up:     gpt-oss:120b → gpt-oss:120b-cloud
+Ollama receives:    gpt-oss:120b-cloud
+```
+
+**Real Name → Display Name**
+
+```
+Ollama returns:     gpt-oss:120b-cloud
+Proxy translates:   gpt-oss:120b-cloud → gpt-oss:120b
+Client sees:        gpt-oss:120b
+```
+
+**Model Groups**
+
+If the requested model is a group, the gateway resolves it dynamically:
+
+1. Detect if the request needs vision (image content in messages).
+2. Filter members by capability tags (`vision`, `tools`).
+3. Pick a member using the group's strategy:
+   - `round_robin` — cycle through members
+   - `weighted` — weighted random selection
+   - `priority` — always pick lowest priority number
+4. If the selected model fails, retry with the next member in priority order.
+
+---
+
+## Troubleshooting
+
+**Restart the full stack**
+
+```bash
+docker compose -f docker-compose.dev.yml down
+docker compose -f docker-compose.dev.yml up --build -d
+```
+
+**Run migrations manually**
+
+```bash
+docker exec maestro alembic upgrade head
+```
+
+**Re-run seeds**
+
+```bash
+docker exec maestro python -m app.seeder --reset
+docker exec maestro python -m app.seeder
+```
+
+**Clear cache**
+
+```bash
+docker exec maestro python scripts/clear_cache.py
+```
+
+**Check PostgreSQL health**
+
+```bash
+docker exec maestro-postgres pg_isready -U maestro_user -d maestro
+```
+
+**Check Redis**
+
+```bash
+docker exec maestro-redis redis-cli ping
+```
+
+**View logs**
+
+```bash
+# All services
+docker compose -f docker-compose.dev.yml logs -f
+
+# API only
+docker compose -f docker-compose.dev.yml logs -f maestro
+
+# Frontend only
+docker compose -f docker-compose.dev.yml logs -f frontend
+```
+
+---
+
+## Development
+
+### Project Structure
+
+```
+model-maestro/
+├── app/
+│   ├── main.py              # FastAPI app, routers, docs auth
+│   ├── proxy.py             # Proxy logic, model routing, failover
+│   ├── config.py            # Settings, ModelMappingManager, ModelGroupManager
+│   ├── auth.py              # JWT authentication
+│   ├── models.py            # Pydantic request/response models
+│   ├── models_db.py         # SQLAlchemy ORM models
+│   ├── database.py          # Async DB engine & session maker
+│   ├── redis.py             # Redis client & queue
+│   ├── load_balancer.py     # Node selection algorithms
+│   ├── node_manager.py      # Health checks, discovery, node CRUD
+│   ├── user_manager.py      # User CRUD
+│   ├── background_tasks.py  # Activity log processor, health checks
+│   ├── openclaw.py          # OpenClaw integration
+│   ├── admin*.py            # Admin API routers
+│   ├── repositories/        # Data access layer
+│   ├── services/            # Business logic layer
+│   └── seeds/               # DB seed migrations
+├── frontend/
+│   ├── src/app/             # Next.js App Router pages
+│   ├── src/components/      # React components (sidebar, shell, etc.)
+│   └── public/              # Static assets (logo, favicon)
+├── docs/                    # Documentation (architecture, API, setup)
+├── alembic/                 # Alembic migrations
+├── tests/                   # pytest suite
+├── docker-compose.dev.yml   # Dev stack (PG + Redis + API + Frontend)
+├── docker-compose.yml       # Production stack (API + Frontend only)
+└── Dockerfile               # FastAPI container
+```
+
+### Running Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+### Lint & Format
+
+```bash
+# Backend
+python -m black app/
+python -m ruff check app/
+
+# Frontend
+cd frontend && npm run lint
+```
+
+---
+
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System architecture, request flow, database schema
+- [`docs/API.md`](docs/API.md) — Complete API reference with all endpoints, requests and responses
+- [`docs/SETUP.md`](docs/SETUP.md) — Detailed setup guide, environment variables, production deployment
+- [`QUICKSTART.md`](QUICKSTART.md) — Get running in under 5 minutes
+
+---
+
+## License
 
 MIT
-
-## Katkıda Bulunma
-
-Pull request'ler kabul edilir. Büyük değişiklikler için önce bir issue açın.
-

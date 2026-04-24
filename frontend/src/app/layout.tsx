@@ -11,8 +11,11 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Ollama Proxy Admin",
-  description: "Ollama Proxy API Admin Panel",
+  title: "Model Maestro Admin",
+  description: "Model Maestro Admin Panel — Unified LLM Gateway",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({

@@ -1,4 +1,4 @@
-"""Ollama proxy logic and model name manipulation"""
+"""Proxy logic and model routing for Model Maestro"""
 
 from typing import Dict, Any, Optional, List, Tuple
 import httpx
@@ -530,18 +530,19 @@ class OllamaProxy:
 
         return None
 
-    def _get_fallback_model(self, group_name: str, failed_model: str) -> Optional[str]:
+    def _get_fallback_model(self, group_name: str, failed_model: str, tried_models: Optional[set] = None) -> Optional[str]:
         """
         Get the next fallback model from a group after a failure.
 
         Args:
             group_name: Name of the model group
             failed_model: The model that failed (display name)
+            tried_models: Set of model names already tried
 
         Returns:
             Next fallback model display name, or None if no fallback available
         """
-        return model_group_manager.get_fallback(group_name, failed_model)
+        return model_group_manager.get_fallback(group_name, failed_model, tried_models)
 
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1196,7 +1197,7 @@ class OllamaProxy:
 
                             if should_model_failover:
                                 # Try to get fallback model
-                                fallback_model = self._get_fallback_model(original_group, current_model)
+                                fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
 
                                 if fallback_model and fallback_model not in tried_models:
                                     logger.warning(f"[FAILOVER] Stream error {resp.status_code}, trying fallback model: {fallback_model}")
@@ -1627,7 +1628,7 @@ class OllamaProxy:
 
                     # === MODEL-LEVEL FALLBACK ===
                     if original_group and attempt < MAX_FAILOVER_RETRIES:
-                        fallback_model = self._get_fallback_model(original_group, current_model)
+                        fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
 
                         if fallback_model and fallback_model not in tried_models:
                             logger.warning(f"[FAILOVER] Connection error, trying fallback model: {fallback_model}")
@@ -1775,7 +1776,7 @@ class OllamaProxy:
                     )
 
                     if should_model_failover:
-                        fallback_model = self._get_fallback_model(original_group, current_model)
+                        fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
 
                         if fallback_model and fallback_model not in tried_models:
                             logger.warning(f"[FAILOVER] Error {response.status_code}, trying fallback model: {fallback_model}")
@@ -1889,7 +1890,7 @@ class OllamaProxy:
 
                 # === MODEL-LEVEL FALLBACK ===
                 if original_group and attempt < MAX_FAILOVER_RETRIES:
-                    fallback_model = self._get_fallback_model(original_group, current_model)
+                    fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
 
                     if fallback_model and fallback_model not in tried_models:
                         logger.warning(f"[FAILOVER] Connection error, trying fallback model: {fallback_model}")

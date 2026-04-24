@@ -13,6 +13,7 @@ from app.models import (
     ModelGroupDetailResponse,
     ModelGroupMemberResponse,
     ModelGroupListResponse,
+    MemberReorderRequest,
 )
 from app.auth import verify_admin
 from app.repositories.model_group_repository import ModelGroupRepository
@@ -261,6 +262,64 @@ async def delete_model_group(
         await session.commit()
 
         return None
+
+
+# ============================================================================
+# Member Reorder
+# ============================================================================
+
+@router.put("/{name}/members/reorder", response_model=ModelGroupDetailResponse)
+async def reorder_group_members(
+    name: str,
+    request: MemberReorderRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Reorder group members by updating their priorities.
+
+    Request body:
+    {
+        "members": [
+            {"id": 1, "priority": 0},
+            {"id": 2, "priority": 1},
+            {"id": 3, "priority": 2}
+        ]
+    }
+    """
+    from app.config import model_group_manager
+
+    async with async_session_maker() as session:
+        repo = ModelGroupRepository(session)
+
+        group = await repo.get_group_by_name(name)
+        if not group:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model group '{name}' not found"
+            )
+
+        member_priorities = [
+            {"id": m.id, "priority": m.priority}
+            for m in request.members
+        ]
+
+        members = await repo.reorder_members(name, member_priorities)
+
+        # Invalidate cache so resolve_model picks up new order
+        model_group_manager.invalidate_cache(name)
+
+        await session.commit()
+
+        return ModelGroupDetailResponse(
+            id=group.id,
+            name=group.name,
+            description=group.description,
+            strategy=group.strategy,
+            is_active=group.is_active,
+            created_at=group.created_at.isoformat() if group.created_at else None,
+            updated_at=group.updated_at.isoformat() if group.updated_at else None,
+            members=[_member_to_response(m) for m in members],
+        )
 
 
 # ============================================================================

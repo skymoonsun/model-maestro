@@ -231,7 +231,7 @@ async def reset_all():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="🌱 Ollama Proxy API - Database Seeder",
+        description="🌱 Model Maestro - Database Seeder",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Örnekler:
@@ -248,7 +248,7 @@ def main():
     args = parser.parse_args()
 
     logger.info("")
-    logger.info("🌱 Ollama Proxy API - Database Seeder")
+    logger.info("🌱 Model Maestro - Database Seeder")
     logger.info("─" * 40)
 
     if args.status:

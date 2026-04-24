@@ -10,7 +10,7 @@ NC := \033[0m # No Color
 COMPOSE ?= docker compose
 
 help: ## Show this help message
-	@echo "$(BLUE)Ollama Proxy API - Docker Management$(NC)"
+	@echo "$(BLUE)Model Maestro - Docker Management$(NC)"
 	@echo ""
 	@echo "$(GREEN)Development Commands:$(NC)"
 	@grep -E '^dev-[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-20s$(NC) %s\n", $$1, $$2}'
@@ -78,7 +78,7 @@ dev-clean: ## Stop and remove all development containers and volumes
 	fi
 
 dev-shell: ## Open shell in API container
-	docker exec -it ollama-proxy /bin/bash
+	docker exec -it maestro /bin/bash
 
 # ============================================================================
 # Production Environment
@@ -115,7 +115,7 @@ db-init: ## Initialize database (run migrations)
 	@echo "$(YELLOW)Waiting for PostgreSQL to be ready...$(NC)"
 	@sleep 5
 	@echo "$(GREEN)Running database migrations...$(NC)"
-	docker exec ollama-proxy alembic upgrade head
+	docker exec maestro alembic upgrade head
 	@echo "$(GREEN)✓ Database initialized$(NC)"
 
 db-migrate: ## Create new migration (provide MESSAGE="migration message")
@@ -124,26 +124,26 @@ db-migrate: ## Create new migration (provide MESSAGE="migration message")
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Creating new migration: $(MESSAGE)$(NC)"
-	docker exec ollama-proxy alembic revision --autogenerate -m "$(MESSAGE)"
+	docker exec maestro alembic revision --autogenerate -m "$(MESSAGE)"
 	@echo "$(GREEN)✓ Migration created$(NC)"
 
 db-upgrade: ## Upgrade database to latest migration
 	@echo "$(GREEN)Upgrading database...$(NC)"
-	docker exec ollama-proxy alembic upgrade head
+	docker exec maestro alembic upgrade head
 	@echo "$(GREEN)✓ Database upgraded$(NC)"
 
 db-downgrade: ## Downgrade database by one migration
 	@echo "$(YELLOW)Downgrading database...$(NC)"
-	docker exec ollama-proxy alembic downgrade -1
+	docker exec maestro alembic downgrade -1
 	@echo "$(GREEN)✓ Database downgraded$(NC)"
 
 db-reset: ## Reset database (drops and recreates)
 	@echo "$(RED)WARNING: This will delete ALL data in the database!$(NC)"
 	@read -p "Are you sure? (yes/no): " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
-		docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"; \
-		docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"; \
-		docker exec ollama-proxy alembic upgrade head; \
+		docker exec maestro-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"; \
+		docker exec maestro-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"; \
+		docker exec maestro alembic upgrade head; \
 		echo "$(GREEN)✓ Database reset complete$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
@@ -151,29 +151,29 @@ db-reset: ## Reset database (drops and recreates)
 
 db-fresh: ## Drop DB, recreate, run all migrations and seeders (no confirmation)
 	@echo "$(RED)Terminating connections and dropping database...$(NC)"
-	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'ollama_proxy' AND pid <> pg_backend_pid();" 2>/dev/null || true
-	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"
+	@docker exec maestro-postgres psql -U ollama_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'ollama_proxy' AND pid <> pg_backend_pid();" 2>/dev/null || true
+	@docker exec maestro-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"
 	@echo "$(GREEN)Creating fresh database...$(NC)"
-	@docker exec ollama-proxy-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"
+	@docker exec maestro-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"
 	@echo "$(GREEN)Running migrations...$(NC)"
-	@docker exec ollama-proxy alembic upgrade head
+	@docker exec maestro alembic upgrade head
 	@echo "$(GREEN)Running seeders...$(NC)"
-	@docker exec ollama-proxy python -m app.seeder
+	@docker exec maestro python -m app.seeder
 	@echo "$(GREEN)✓ Database fresh: migrations + seeds complete$(NC)"
 
 db-seed: ## Seed database with pending seeds (migration-style)
 	@echo "$(GREEN)Running pending seeds...$(NC)"
-	docker exec ollama-proxy python -m app.seeder
+	docker exec maestro python -m app.seeder
 	@echo "$(GREEN)✓ Database seeded$(NC)"
 
 db-seed-status: ## Show seed status (which seeds have been applied)
-	docker exec ollama-proxy python -m app.seeder --status
+	docker exec maestro python -m app.seeder --status
 
 db-seed-reset: ## Reset seed history (data stays, seeds will re-run)
 	@echo "$(RED)WARNING: This will reset seed history - all seeds will re-run on next db-seed!$(NC)"
 	@read -p "Are you sure? (yes/no): " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
-		docker exec ollama-proxy python -m app.seeder --reset; \
+		docker exec maestro python -m app.seeder --reset; \
 		echo "$(GREEN)✓ Seed history reset$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
@@ -183,7 +183,7 @@ db-seed-reset-all: ## Reset seed history AND remove seeded data
 	@echo "$(RED)WARNING: This will remove ALL seeded data and reset history!$(NC)"
 	@read -p "Are you sure? (yes/no): " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
-		docker exec ollama-proxy python -m app.seeder --reset-all; \
+		docker exec maestro python -m app.seeder --reset-all; \
 		echo "$(GREEN)✓ Seed data and history reset$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
@@ -194,12 +194,12 @@ db-shell: ## Open PostgreSQL shell
 	@echo "Database: ollama_proxy"
 	@echo "User: ollama_user"
 	@echo ""
-	docker exec -it ollama-proxy-postgres psql -U ollama_user -d ollama_proxy
+	docker exec -it maestro-postgres psql -U ollama_user -d ollama_proxy
 
 db-backup: ## Backup database to backups/ folder
 	@echo "$(GREEN)Creating database backup...$(NC)"
 	@mkdir -p backups
-	docker exec ollama-proxy-postgres pg_dump -U ollama_user ollama_proxy > backups/backup_$$(date +%Y%m%d_%H%M%S).sql
+	docker exec maestro-postgres pg_dump -U ollama_user ollama_proxy > backups/backup_$$(date +%Y%m%d_%H%M%S).sql
 	@echo "$(GREEN)✓ Backup created in backups/$(NC)"
 
 db-restore: ## Restore database from backup (provide BACKUP_FILE=path/to/backup.sql)
@@ -208,7 +208,7 @@ db-restore: ## Restore database from backup (provide BACKUP_FILE=path/to/backup.
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Restoring database from $(BACKUP_FILE)...$(NC)"
-	docker exec -i ollama-proxy-postgres psql -U ollama_user ollama_proxy < $(BACKUP_FILE)
+	docker exec -i maestro-postgres psql -U ollama_user ollama_proxy < $(BACKUP_FILE)
 	@echo "$(GREEN)✓ Database restored$(NC)"
 
 # ============================================================================
@@ -216,23 +216,23 @@ db-restore: ## Restore database from backup (provide BACKUP_FILE=path/to/backup.
 # ============================================================================
 
 redis-cli: ## Open Redis CLI
-	docker exec -it ollama-proxy-redis redis-cli
+	docker exec -it maestro-redis redis-cli
 
 redis-flush: ## Flush all Redis cache
 	@echo "$(RED)WARNING: This will clear ALL Redis cache!$(NC)"
 	@read -p "Are you sure? (yes/no): " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
-		docker exec ollama-proxy-redis redis-cli FLUSHALL; \
+		docker exec maestro-redis redis-cli FLUSHALL; \
 		echo "$(GREEN)✓ Redis cache cleared$(NC)"; \
 	else \
 		echo "$(YELLOW)Cancelled$(NC)"; \
 	fi
 
 redis-info: ## Show Redis info
-	docker exec ollama-proxy-redis redis-cli INFO
+	docker exec maestro-redis redis-cli INFO
 
 redis-keys: ## List all Redis keys
-	docker exec ollama-proxy-redis redis-cli KEYS "*"
+	docker exec maestro-redis redis-cli KEYS "*"
 
 # ============================================================================
 # Monitoring & Logs
@@ -243,7 +243,7 @@ status: ## Show status of all services
 	$(COMPOSE) -f docker-compose.dev.yml ps
 
 logs-api: ## Show API container logs
-	$(COMPOSE) -f docker-compose.dev.yml logs -f ollama-proxy
+	$(COMPOSE) -f docker-compose.dev.yml logs -f maestro
 
 logs-celery: ## Show Celery worker logs
 	$(COMPOSE) -f docker-compose.dev.yml logs -f celery-worker
@@ -258,7 +258,7 @@ logs-redis: ## Show Redis logs
 	$(COMPOSE) -f docker-compose.dev.yml logs -f redis
 
 stats: ## Show container resource usage
-	docker stats ollama-proxy ollama-proxy-postgres ollama-proxy-redis celery-worker celery-beat
+	docker stats maestro maestro-postgres maestro-redis celery-worker celery-beat
 
 health: ## Check health of all services
 	@echo "$(BLUE)Health Check:$(NC)"
@@ -267,10 +267,10 @@ health: ## Check health of all services
 	@curl -s http://localhost:8000/health | jq . || echo "$(RED)✗ API not responding$(NC)"
 	@echo ""
 	@echo "$(YELLOW)PostgreSQL:$(NC)"
-	@docker exec ollama-proxy-postgres pg_isready -U ollama_user -d ollama_proxy || echo "$(RED)✗ PostgreSQL not ready$(NC)"
+	@docker exec maestro-postgres pg_isready -U ollama_user -d ollama_proxy || echo "$(RED)✗ PostgreSQL not ready$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Redis:$(NC)"
-	@docker exec ollama-proxy-redis redis-cli ping || echo "$(RED)✗ Redis not responding$(NC)"
+	@docker exec maestro-redis redis-cli ping || echo "$(RED)✗ Redis not responding$(NC)"
 
 # ============================================================================
 # Quick Setup
@@ -298,7 +298,7 @@ setup: dev-up db-init ## Complete setup (start containers + initialize database)
 # ============================================================================
 
 restart-api: ## Restart only API container
-	$(COMPOSE) -f docker-compose.dev.yml restart ollama-proxy
+	$(COMPOSE) -f docker-compose.dev.yml restart maestro
 
 restart-celery: ## Restart Celery worker and beat
 	$(COMPOSE) -f docker-compose.dev.yml restart celery-worker celery-beat
@@ -335,8 +335,8 @@ frontend-logs: ## Show frontend logs
 
 frontend-install: ## Install npm dependencies in frontend container
 	@echo "$(YELLOW)Installing frontend dependencies...$(NC)"
-	docker exec ollama-proxy-frontend npm install
+	docker exec maestro-frontend npm install
 	@echo "$(GREEN)✓ Dependencies installed$(NC)"
 
 frontend-shell: ## Open shell in frontend container
-	docker exec -it ollama-proxy-frontend /bin/sh
+	docker exec -it maestro-frontend /bin/sh
