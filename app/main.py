@@ -76,6 +76,7 @@ app.include_router(admin_config_router)
 app.include_router(admin_dashboard_router)
 app.include_router(admin_models_router)
 app.include_router(admin_nodes_router)
+app.include_router(admin_groups_router)
 app.include_router(openclaw_router)
 
 # Basic Auth for documentation

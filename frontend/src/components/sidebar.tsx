@@ -16,6 +16,7 @@ import {
     Server,
     SlidersHorizontal,
     Network,
+    Group,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -51,6 +52,7 @@ const navigation: NavItem[] = [
         icon: Layers,
         children: [
             { label: 'Mappings', href: '/models/mappings', icon: Layers },
+            { label: 'Groups', href: '/models/groups', icon: Group },
             { label: 'Config', href: '/models/config', icon: SlidersHorizontal },
         ],
     },

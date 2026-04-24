@@ -47,6 +47,9 @@ export async function adminFetch<T>(path: string, options?: RequestInit): Promis
     const text = await res.text();
     throw new ApiError(text || res.statusText, res.status);
   }
+  if (res.status === 204) {
+    return undefined as T;
+  }
   return res.json();
 }
 
@@ -265,6 +268,40 @@ export const nodesApi = {
     streamFetch('/admin/nodes/pull-model-all', { name, stream: true }, onProgress),
   getMetrics: (nodeId: number) =>
     adminFetch<NodeMetrics>(`/admin/nodes/${nodeId}/metrics`),
+};
+
+// ==================== Model Groups ====================
+export const modelGroupsApi = {
+  list: () => adminFetch<ModelGroupListResponse>('/admin/model-groups'),
+  get: (name: string) => adminFetch<ModelGroupDetail>(`/admin/model-groups/${encodeURIComponent(name)}`),
+  create: (data: ModelGroupCreate) =>
+    adminFetch<ModelGroupDetail>('/admin/model-groups', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (name: string, data: Partial<ModelGroupCreate>) =>
+    adminFetch<ModelGroupDetail>(`/admin/model-groups/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (name: string) =>
+    adminFetch<void>(`/admin/model-groups/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+  addMember: (name: string, data: ModelGroupMemberCreate) =>
+    adminFetch<ModelGroupMember>(`/admin/model-groups/${encodeURIComponent(name)}/members`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  removeMember: (name: string, memberId: number) =>
+    adminFetch<void>(`/admin/model-groups/${encodeURIComponent(name)}/members/${memberId}`, {
+      method: 'DELETE',
+    }),
+  reorderMembers: (name: string, members: { id: number; priority: number }[]) =>
+    adminFetch<ModelGroupDetail>(`/admin/model-groups/${encodeURIComponent(name)}/members/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ members }),
+    }),
 };
 
 // ==================== Audit Logs ====================
@@ -553,3 +590,48 @@ export interface NodeMetrics {
   total_requests_today: number;
   avg_response_time_ms: number | null;
 }
+
+// ==================== Model Group Types ====================
+export interface ModelGroupMember {
+  id: number;
+  model_display_name: string;
+  capability_tags: string[] | null;
+  weight: number;
+  priority: number;
+  is_active: boolean;
+}
+
+export interface ModelGroupSummary {
+  id: number;
+  name: string;
+  description: string | null;
+  strategy: string;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ModelGroupDetail extends ModelGroupSummary {
+  members: ModelGroupMember[];
+}
+
+export interface ModelGroupListResponse {
+  groups: ModelGroupSummary[];
+  total: number;
+}
+
+export type ModelGroupCreate = {
+  name: string;
+  description?: string | null;
+  strategy?: string;
+  is_active?: boolean;
+  members?: ModelGroupMemberCreate[];
+};
+
+export type ModelGroupMemberCreate = {
+  model_display_name: string;
+  capability_tags?: string[] | null;
+  weight?: number;
+  priority?: number;
+  is_active?: boolean;
+};

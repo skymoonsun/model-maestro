@@ -809,17 +809,21 @@ class ModelGroupManager:
         return model_name
 
     def get_fallback(
-        self, group_name: str, failed_model: str
+        self, group_name: str, failed_model: str, tried_models: Optional[set] = None
     ) -> Optional[str]:
         """
-        Get the next fallback model from a group after a failure.
+        Get the next model from a group by priority order after a failure.
+
+        Iterates through all active members in priority order (lowest number first),
+        skipping any model already in tried_models.
 
         Args:
             group_name: Name of the group
             failed_model: The model that failed
+            tried_models: Set of model names already tried (including the failed one)
 
         Returns:
-            Next fallback model name or None if no fallback available
+            Next model name or None if all members exhausted
         """
         if group_name not in self._groups:
             return None
@@ -827,17 +831,19 @@ class ModelGroupManager:
         group_data = self._groups[group_name]
         members = group_data["members"]
 
-        # Find fallback members (is_fallback=True)
-        fallback_members = [
-            m for m in members if m.is_fallback and m.model_display_name != failed_model
-        ]
+        # Build the set of models to skip
+        skip = set()
+        if tried_models:
+            skip = set(tried_models)
+        skip.add(failed_model)
 
-        if not fallback_members:
-            return None
+        # Try members in priority order, skipping already-tried models
+        sorted_members = sorted(members, key=lambda m: m.priority)
+        for member in sorted_members:
+            if member.model_display_name not in skip:
+                return member.model_display_name
 
-        # Return highest priority fallback
-        fallback_members.sort(key=lambda m: m.priority)
-        return fallback_members[0].model_display_name
+        return None
 
     def get_group_info(self, group_name: str) -> Optional[Dict[str, Any]]:
         """Get cached group info (group + members)"""

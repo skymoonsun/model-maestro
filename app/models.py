@@ -684,3 +684,14 @@ class ModelGroupListResponse(BaseModel):
     groups: List[ModelGroupResponse]
     total: int
 
+
+class MemberReorderItem(BaseModel):
+    """Single item for member reorder request"""
+    id: int
+    priority: int
+
+
+class MemberReorderRequest(BaseModel):
+    """Reorder members by updating their priorities"""
+    members: List[MemberReorderItem]
+

@@ -69,7 +69,7 @@ class ModelGroupRepository:
         return result.rowcount > 0
 
     async def get_group_with_members(self, name: str) -> Optional[Tuple[ModelGroup, List[ModelGroupMember]]]:
-        """Get group with all its members"""
+        """Get group with all its members ordered by priority"""
         stmt = (
             select(ModelGroup)
             .options(selectinload(ModelGroup.members))
@@ -79,7 +79,8 @@ class ModelGroupRepository:
         group = result.scalar_one_or_none()
         if not group:
             return None
-        return (group, list(group.members))
+        members = sorted(group.members, key=lambda m: m.priority)
+        return (group, members)
 
     async def get_vision_capable_member(self, group_name: str) -> Optional[ModelGroupMember]:
         """Get the first vision-capable member from a group"""
@@ -169,3 +170,32 @@ class ModelGroupRepository:
         stmt = select(ModelGroup.id).where(ModelGroup.name == name)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none() is not None
+
+    async def reorder_members(self, group_name: str, member_priorities: list) -> List[ModelGroupMember]:
+        """
+        Update priority of multiple members at once.
+
+        Args:
+            group_name: Name of the group
+            member_priorities: List of dicts with 'id' and 'priority' keys
+
+        Returns:
+            Updated list of members ordered by priority
+        """
+        group = await self.get_group_by_name(group_name)
+        if not group:
+            return []
+
+        members = await self.get_members_by_group_name(group_name)
+        member_map = {m.id: m for m in members}
+
+        for item in member_priorities:
+            member_id = item.get("id")
+            priority = item.get("priority")
+            if member_id in member_map:
+                member_map[member_id].priority = priority
+
+        await self.session.flush()
+
+        # Return updated members sorted by new priority
+        return await self.get_members_by_group_name(group_name)

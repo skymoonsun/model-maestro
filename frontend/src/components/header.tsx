@@ -11,6 +11,7 @@ const pageTitles: Record<string, string> = {
     '/users': 'Users',
     '/models/mappings': 'Model Mappings',
     '/models/ollama': 'Ollama Models',
+    '/models/groups': 'Model Groups',
     '/models/config': 'Model Config',
     '/nodes': 'Nodes',
     '/tool-sets': 'Tool Sets',
