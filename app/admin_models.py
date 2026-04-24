@@ -13,7 +13,7 @@ Endpoints:
 import httpx
 import json
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -44,40 +44,62 @@ def _get_ollama_url() -> str:
 @router.get("/ollama", response_model=List[OllamaModelListItem])
 async def list_ollama_models(admin: str = Depends(verify_admin)):
     """
-    Ollama sunucusundaki tüm modelleri listele.
-    
+    Tüm sağlıklı node'lardaki modelleri listele (aggregate).
+
     Her model için proxy'deki mapping bilgisi de eklenir:
     - is_mapped: Bu model bir mapping'e sahip mi?
     - display_name: Proxy'deki display name (varsa)
+    - nodes: Bu model hangi node'larda mevcut
     """
-    ollama_url = _get_ollama_url()
-    
+    from app.node_manager import node_manager
+    from app.database import async_session_maker
+    from app.repositories.node_repository import NodeModelRepository
+
+    # Fetch models from all healthy nodes
+    all_models_response = await node_manager.get_all_models_from_nodes()
+
+    # If no nodes responded, fallback to default Ollama URL
+    if not all_models_response.get("models"):
+        ollama_url = _get_ollama_url()
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(f"{ollama_url}/api/tags")
+                response.raise_for_status()
+                data = response.json()
+                all_models_response = {"models": data.get("models", [])}
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"Ollama'ya bağlanılamadı: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Ollama hatası: {e.response.text}")
+
+    # Build model-to-nodes mapping from database
+    model_nodes_map: Dict[str, List[str]] = {}
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(f"{ollama_url}/api/tags")
-            response.raise_for_status()
-            data = response.json()
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Ollama'ya bağlanılamadı: {str(e)}")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Ollama hatası: {e.response.text}")
-    
-    models = data.get("models", [])
-    
+        async with async_session_maker() as session:
+            distribution = await node_manager.get_model_distribution(session)
+            for entry in distribution:
+                model_name = entry.get("model_name", "")
+                nodes = entry.get("nodes", [])
+                model_nodes_map[model_name] = nodes
+    except Exception as e:
+        logger.warning(f"Failed to get model distribution: {e}")
+
+    models = all_models_response.get("models", [])
+
     # Mapping bilgisini ekle
     # Reverse: real_name -> display_name
     await model_mapper.ensure_loaded()
     result = []
     for m in models:
         model_name = m.get("name", "")
-        
+
         # ":latest" eki ile veya eksiz hallerini de kontrol et
         options = [model_name]
         if ":" not in model_name:
             options.append(f"{model_name}:latest")
         elif model_name.endswith(":latest"):
             options.append(model_name.replace(":latest", ""))
-            
+
         mapped_display = None
         for opt in options:
             disp_names = model_mapper.get_all_display_names_for_real_name(opt)
@@ -85,7 +107,10 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
             if disp_names and disp_names != [opt]:
                 mapped_display = disp_names[0]
                 break
-        
+
+        # Find which nodes have this model
+        model_node_list = model_nodes_map.get(model_name)
+
         result.append(OllamaModelListItem(
             name=model_name,
             model=m.get("model"),
@@ -95,6 +120,7 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
             details=m.get("details"),
             is_mapped=mapped_display is not None,
             display_name=mapped_display,
+            nodes=model_node_list,
         ))
     
     return result
@@ -111,16 +137,31 @@ async def show_model(
 ):
     """
     Ollama'dan model detaylarını getir (/api/show).
-    
+
+    Modelin bulunduğu node'a istek atılır. Bulunamazsa default node'a fallback edilir.
     Capabilities, details, model_info gibi bilgiler döner.
     query param: name=glm-5:cloud
     """
-    ollama_url = _get_ollama_url()
-    
+    from app.node_manager import node_manager
+    from app.database import async_session_maker
+
+    # Find which node has this model
+    show_url = None
+    try:
+        async with async_session_maker() as session:
+            nodes = await node_manager.get_nodes_for_model(name, session)
+            if nodes:
+                show_url = nodes[0]["base_url"].rstrip("/")
+    except Exception:
+        pass
+
+    if not show_url:
+        show_url = _get_ollama_url().rstrip("/")
+
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                f"{ollama_url}/api/show",
+                f"{show_url}/api/show",
                 json={"name": name}
             )
             response.raise_for_status()
@@ -129,7 +170,7 @@ async def show_model(
         raise HTTPException(status_code=502, detail=f"Ollama'ya bağlanılamadı: {str(e)}")
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=f"Model bulunamadı: {name}")
-    
+
     return ModelShowResponse(
         name=name,
         capabilities=data.get("capabilities"),
@@ -232,38 +273,54 @@ async def delete_ollama_model(
 async def sync_all_capabilities(admin: str = Depends(verify_admin)):
     """
     Tüm mapped modellerin capabilities'ini Ollama'dan çekerek DB'ye yaz.
-    
-    Her model için /api/show çağrılır, capabilities alanı alınır ve
-    model_mappings tablosuna kaydedilir.
+
+    Her model için, modelin bulunduğu node'a /api/show çağrılır.
+    Eğer model hiçbir node'da bulunamazsa, default node'a fallback edilir.
     """
     from app.repositories.model_mapping_repository import ModelMappingRepository
+    from app.node_manager import node_manager
     from app.database import async_session_maker
-    
-    ollama_url = _get_ollama_url()
-    
+
     results = []
     synced = 0
     failed = 0
-    
+
     async with async_session_maker() as session:
         repo = ModelMappingRepository(session)
         mappings = await repo.list_all()
-        
+
         async with httpx.AsyncClient(timeout=15) as client:
             for mapping in mappings:
                 try:
+                    # Find which node has this model
+                    show_url = None
+                    try:
+                        nodes = await node_manager.get_nodes_for_model(mapping.real_name, session)
+                        if nodes:
+                            show_url = nodes[0]["base_url"].rstrip("/")
+                        else:
+                            # Fallback: try display name
+                            nodes = await node_manager.get_nodes_for_model(mapping.display_name, session)
+                            if nodes:
+                                show_url = nodes[0]["base_url"].rstrip("/")
+                    except Exception:
+                        pass
+
+                    if not show_url:
+                        show_url = _get_ollama_url().rstrip("/")
+
                     response = await client.post(
-                        f"{ollama_url}/api/show",
+                        f"{show_url}/api/show",
                         json={"name": mapping.real_name}
                     )
                     response.raise_for_status()
                     data = response.json()
-                    
+
                     capabilities = data.get("capabilities", [])
-                    
+
                     # DB'ye kaydet
                     mapping.capabilities = capabilities
-                    
+
                     results.append({
                         "display_name": mapping.display_name,
                         "real_name": mapping.real_name,
@@ -272,7 +329,7 @@ async def sync_all_capabilities(admin: str = Depends(verify_admin)):
                     })
                     synced += 1
                     logger.info(f"Capabilities synced: {mapping.display_name} -> {capabilities}")
-                    
+
                 except Exception as e:
                     results.append({
                         "display_name": mapping.display_name,
@@ -283,12 +340,12 @@ async def sync_all_capabilities(admin: str = Depends(verify_admin)):
                     })
                     failed += 1
                     logger.warning(f"Capabilities sync failed: {mapping.display_name} - {e}")
-        
+
         await session.commit()
-    
+
     # Cache'i yenile
     await model_mapper.reload()
-    
+
     return SyncCapabilitiesResponse(
         synced=synced,
         failed=failed,
