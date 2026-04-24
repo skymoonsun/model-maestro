@@ -64,7 +64,7 @@ function LoginForm() {
             <Card className="w-full max-w-md">
                 <CardHeader className="text-center">
                     <div className="flex justify-center mb-4">
-                        <img src="/logo.png" alt="Model Maestro" className="h-12 w-auto" />
+                        <img src="/logo.png" alt="Model Maestro" width={200} height={54} className="h-12 w-auto" />
                     </div>
                     <CardTitle className="text-xl">Model Maestro Admin</CardTitle>
                     <CardDescription>Enter your credentials to access the panel</CardDescription>
