@@ -1,4 +1,4 @@
-"""Main FastAPI application - Ollama Proxy with JWT Authentication"""
+"""Model Maestro - Unified LLM Gateway with JWT Authentication"""
 
 from typing import Any, Dict
 from fastapi import FastAPI, Depends, Request, HTTPException, status
@@ -51,8 +51,8 @@ app.config.redis_manager = redis_manager
 
 # Create FastAPI app with docs disabled (we'll add auth)
 app = FastAPI(
-    title="Ollama Proxy API",
-    description="JWT authenticated proxy for Ollama with cloud model mapping",
+    title="Model Maestro",
+    description="Unified LLM gateway with model routing, load balancing, and multi-provider support",
     version="1.0.0",
     docs_url=None,  # Disable default docs
     redoc_url=None,  # Disable default redoc
@@ -139,7 +139,7 @@ async def startup_event():
     from sqlalchemy import text
     from app.database import async_session_maker
     
-    logger.info("Starting Ollama Proxy API with streaming support and PostgreSQL")
+    logger.info("Starting Model Maestro with streaming support and PostgreSQL")
     
     # Connect to Redis
     await redis_manager.connect()
@@ -172,7 +172,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("Shutting down Ollama Proxy API")
+    logger.info("Shutting down Model Maestro")
     
     # Stop background tasks
     from app.background_tasks import stop_background_tasks
@@ -193,7 +193,7 @@ async def shutdown_event():
 async def root():
     """Root endpoint"""
     return {
-        "message": "Ollama Proxy API",
+        "message": "Model Maestro",
         "version": "1.0.0",
         "status": "running"
     }

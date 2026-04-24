@@ -14,7 +14,7 @@ docker-compose logs -f
 
 ```bash
 # Kullanıcı oluştur
-docker exec ollama-proxy create-user admin
+docker exec maestro create-user admin
 
 # Token'ı kaydedin (çıktıda gösterilecek)
 ```
@@ -56,31 +56,31 @@ curl -X POST http://localhost:8000/api/chat \
 ### Tüm Kullanıcıları Listele
 
 ```bash
-docker exec ollama-proxy list-users
+docker exec maestro list-users
 ```
 
 ### Kullanıcı Bilgilerini Gör
 
 ```bash
-docker exec ollama-proxy show-user admin
+docker exec maestro show-user admin
 ```
 
 ### Token'ı Yenile
 
 ```bash
-docker exec ollama-proxy refresh-token admin
+docker exec maestro refresh-token admin
 ```
 
 ### Yeni Kullanıcı Ekle
 
 ```bash
-docker exec ollama-proxy create-user developer
+docker exec maestro create-user developer
 ```
 
 ### Kullanıcı Sil
 
 ```bash
-docker exec ollama-proxy delete-user developer
+docker exec maestro delete-user developer
 ```
 
 ## 5. Model Mapping Ekleme
@@ -145,13 +145,13 @@ docker-compose restart
 ### Logları İzle
 
 ```bash
-docker-compose logs -f ollama-proxy
+docker-compose logs -f maestro
 ```
 
 ### Container İçine Gir
 
 ```bash
-docker exec -it ollama-proxy /bin/bash
+docker exec -it maestro /bin/bash
 ```
 
 ## Önemli Notlar

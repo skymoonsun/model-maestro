@@ -103,7 +103,7 @@ export function Sidebar() {
                             <Bot className="h-4 w-4 text-white" />
                         </div>
                         <div>
-                            <h1 className="text-sm font-semibold tracking-tight">Ollama Proxy</h1>
+                            <h1 className="text-sm font-semibold tracking-tight">Model Maestro</h1>
                             <p className="text-[10px] text-muted-foreground">Admin Panel</p>
                         </div>
                     </div>

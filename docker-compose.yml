@@ -1,9 +1,7 @@
-version: '3.8'
-
 services:
-  ollama-proxy:
+  maestro:
     build: .
-    container_name: ollama-proxy
+    container_name: maestro
     ports:
       - "8000:8000"
     volumes:
@@ -14,25 +12,26 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
-      - ollama-proxy-net
+      - maestro-net
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.prod
       args:
-        - BACKEND_URL=http://ollama-proxy:8000
-    container_name: ollama-proxy-frontend
+        - BACKEND_URL=http://maestro:8000
+    container_name: maestro-frontend
     ports:
       - "3000:3000"
     environment:
-      - BACKEND_URL=http://ollama-proxy:8000
+      - BACKEND_URL=http://maestro:8000
     restart: unless-stopped
     depends_on:
-      - ollama-proxy
+      - maestro
     networks:
-      - ollama-proxy-net
+      - maestro-net
 
 networks:
-  ollama-proxy-net:
+  maestro-net:
+    name: maestro-net
     driver: bridge

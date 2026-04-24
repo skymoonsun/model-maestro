@@ -68,7 +68,7 @@ function LoginForm() {
                             <Bot className="h-6 w-6 text-white" />
                         </div>
                     </div>
-                    <CardTitle className="text-xl">Ollama Proxy Admin</CardTitle>
+                    <CardTitle className="text-xl">Model Maestro Admin</CardTitle>
                     <CardDescription>Enter your credentials to access the panel</CardDescription>
                 </CardHeader>
                 <CardContent>

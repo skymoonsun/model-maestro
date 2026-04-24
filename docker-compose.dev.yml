@@ -1,21 +1,21 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    container_name: ollama-proxy-postgres
+    container_name: maestro-postgres
     environment:
-      POSTGRES_DB: ollama_proxy
-      POSTGRES_USER: ollama_user
-      POSTGRES_PASSWORD: ollama_password
+      POSTGRES_DB: maestro
+      POSTGRES_USER: maestro_user
+      POSTGRES_PASSWORD: maestro_password
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - maestro-net
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ollama_user -d ollama_proxy" ]
+      test: [ "CMD-SHELL", "pg_isready -U maestro_user -d maestro" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,21 +23,23 @@ services:
   # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: ollama-proxy-redis
+    container_name: maestro-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    networks:
+      - maestro-net
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  ollama-proxy:
+  maestro:
     build: .
-    container_name: ollama-proxy
+    container_name: maestro
     ports:
       - "8000:8000"
     volumes:
@@ -54,22 +56,31 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - maestro-net
 
   # Frontend Admin Panel
   frontend:
     build: ./frontend
-    container_name: ollama-proxy-frontend
+    container_name: maestro-frontend
     ports:
       - "3000:3000"
     environment:
-      - BACKEND_URL=http://ollama-proxy:8000
+      - BACKEND_URL=http://maestro:8000
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
     restart: unless-stopped
     depends_on:
-      - ollama-proxy
+      - maestro
+    networks:
+      - maestro-net
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  maestro-net:
+    name: maestro-net
+    driver: bridge

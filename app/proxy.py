@@ -1,4 +1,4 @@
-"""Ollama proxy logic and model name manipulation"""
+"""Proxy logic and model routing for Model Maestro"""
 
 from typing import Dict, Any, Optional, List, Tuple
 import httpx

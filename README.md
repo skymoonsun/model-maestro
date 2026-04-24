@@ -1,6 +1,6 @@
-# Ollama Proxy API
+# Model Maestro
 
-FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama proxy servisi. Token kullanım takibi, kullanıcı bazlı model erişim kontrolü ve Redis tabanlı async background processing desteği ile production-ready çözüm.
+Unified LLM Gateway — FastAPI tabanlı JWT authentication, model routing ve load balancing. Ollama, OpenAI ve diğer provider'ları tek noktada birleştirir. Token kullanım takibi, kullanıcı bazlı model erişim kontrolü ve Redis tabanlı async background processing ile production-ready çözüm.
 
 ## Özellikler
 
@@ -19,7 +19,7 @@ FastAPI tabanlı JWT authentication ve cloud model mapping özellikli Ollama pro
 
 ```bash
 git clone <repository-url>
-cd ollama-proxy-api
+cd maestro-api
 ```
 
 ### 2. PostgreSQL Kurulumu
@@ -87,7 +87,7 @@ Docker container'ı başlatmadan önce veya başlattıktan sonra migration'ları
 ```bash
 # Container içinde migration çalıştırma
 docker-compose up -d
-docker exec ollama-proxy alembic upgrade head
+docker exec maestro alembic upgrade head
 ```
 
 ### 6. Docker ile Çalıştırın
@@ -151,7 +151,7 @@ Detaylı bilgi için [Admin API - Kullanıcı Yönetimi](#admin-api) bölümüne
 
 ## API Documentation
 
-Ollama Proxy API, Swagger UI ve ReDoc ile detaylı API dokümantasyonu sunar. Dokümantasyon endpoint'leri basic authentication ile korunmaktadır.
+Model Maestro, Swagger UI ve ReDoc ile detaylı API dokümantasyonu sunar. Dokümantasyon endpoint'leri basic authentication ile korunmaktadır.
 
 ### Swagger UI Erişimi
 
@@ -584,7 +584,7 @@ Authorization: Bearer <your-jwt-token>
 
 ## Cursor IDE ile Kullanım
 
-Ollama Proxy API, OpenAI uyumlu endpoint'ler sunar, böylece Cursor IDE'de kullanabilirsiniz.
+Model Maestro, OpenAI uyumlu endpoint'ler sunar, böylece Cursor IDE'de kullanabilirsiniz.
 
 ### Kurulum
 
@@ -739,7 +739,7 @@ curl -X POST http://localhost:8000/admin/users \
 
 ## Background Tasks
 
-Ollama Proxy API, kullanıcı activity log'larını Redis tabanlı bir background task sistemi ile işler. Bu sistem:
+Model Maestro, kullanıcı activity log'larını Redis tabanlı bir background task sistemi ile işler. Bu sistem:
 
 - ⚡ **Async Processing**: Kullanıcıyı bekletmeden log kaydı yapar
 - 🔄 **Batch Processing**: 50 log/batch ile verimli veritabanı işlemi
@@ -752,7 +752,7 @@ Eğer cache sorunları yaşıyorsanız:
 
 ```bash
 # Docker içinde
-docker exec ollama-proxy python scripts/clear_cache.py
+docker exec maestro python scripts/clear_cache.py
 
 # Local
 python scripts/clear_cache.py
@@ -811,9 +811,9 @@ Linux sistemlerde container'dan host'a erişim için `docker-compose.yml` dosyas
 
 ```yaml
 services:
-  ollama-proxy:
+  maestro:
     build: .
-    container_name: ollama-proxy
+    container_name: maestro
     network_mode: "host"  # Bu satırı ekleyin
     volumes:
       - ./data:/app/data

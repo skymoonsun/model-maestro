@@ -1,9 +1,9 @@
 {
-  "repo": "skymoonsun/ollama-proxy-api",
+  "repo": "skymoonsun/model-maestro",
   "language": "python",
   "framework": "fastapi",
   "defaultBranch": "develop",
-  "testCommand": "cd /root/projects/ollama-proxy-api && python -m pytest tests/ -v",
+  "testCommand": "cd /root/projects/model-maestro && python -m pytest tests/ -v",
   "testFramework": "pytest",
   "claudeModel": "glm-5:cloud",
   "maxReviewIterations": 3,

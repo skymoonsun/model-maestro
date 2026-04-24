@@ -1,8 +1,8 @@
-# CLAUDE.md — ollama-proxy-api
+# CLAUDE.md — Model Maestro
 
 ## Proje Hakkında
-Ollama-compatible proxy API. Cloud model'leri (kimi-k2.5, glm-5, qwen3.5 vs.) Ollama formatında sunar.
-IDE'ler (Cursor, Antigravity, Claude Code) ve OpenClaw gibi araçların Ollama API'si üzerinden cloud model'lere erişmesini sağlar.
+Unified LLM Gateway. Farklı provider'lardan (Ollama, OpenAI, vs.) gelen modelleri tek API altında birleştirir.
+IDE'ler (Cursor, Antigravity, Claude Code) ve diğer araçların standart API formatları üzerinden çoklu LLM'lere erişmesini sağlar.
 
 ## Tech Stack
 - **Python 3.10+**, FastAPI, Uvicorn
