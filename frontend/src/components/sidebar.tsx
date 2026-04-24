@@ -97,16 +97,8 @@ export function Sidebar() {
         <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 z-50">
             <div className="flex flex-col flex-grow bg-card border-r border-border">
                 {/* Logo */}
-                <div className="flex items-center h-16 px-6 border-b border-border">
-                    <div className="flex items-center gap-3">
-                        <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center">
-                            <Bot className="h-4 w-4 text-white" />
-                        </div>
-                        <div>
-                            <h1 className="text-sm font-semibold tracking-tight">Model Maestro</h1>
-                            <p className="text-[10px] text-muted-foreground">Admin Panel</p>
-                        </div>
-                    </div>
+                <div className="flex items-center h-16 px-4 border-b border-border">
+                    <img src="/logo.png" alt="Model Maestro" className="w-full h-auto max-h-10 object-contain" />
                 </div>
 
                 {/* Navigation */}

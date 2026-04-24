@@ -2,7 +2,7 @@
 
 import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Bot, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -64,9 +64,7 @@ function LoginForm() {
             <Card className="w-full max-w-md">
                 <CardHeader className="text-center">
                     <div className="flex justify-center mb-4">
-                        <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center">
-                            <Bot className="h-6 w-6 text-white" />
-                        </div>
+                        <img src="/logo.png" alt="Model Maestro" className="h-12 w-auto" />
                     </div>
                     <CardTitle className="text-xl">Model Maestro Admin</CardTitle>
                     <CardDescription>Enter your credentials to access the panel</CardDescription>

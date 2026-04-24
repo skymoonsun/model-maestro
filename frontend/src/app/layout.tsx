@@ -13,6 +13,9 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Model Maestro Admin",
   description: "Model Maestro Admin Panel — Unified LLM Gateway",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({
