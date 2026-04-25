@@ -70,77 +70,121 @@ class DashboardService:
         }
     
     async def _get_requests_stats(self, session: AsyncSession) -> Dict[str, Any]:
-        """Get request statistics"""
+        """Get request statistics with success/error breakdown"""
         now = datetime.utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = today_start - timedelta(days=today_start.weekday())
         month_start = today_start.replace(day=1)
-        
-        # Requests today
+
+        # Today
         today_result = await session.execute(
-            select(func.count(UserActivityLog.id)).where(
-                UserActivityLog.created_at >= today_start
-            )
+            select(
+                func.count(UserActivityLog.id).label("total"),
+                func.sum(case((UserActivityLog.status_code >= 200, 1), else_=0)).label("success"),
+                func.sum(case((UserActivityLog.status_code >= 400, 1), else_=0)).label("errors"),
+                func.avg(UserActivityLog.duration_ms).label("avg_duration")
+            ).where(UserActivityLog.created_at >= today_start)
         )
-        today = today_result.scalar() or 0
-        
-        # Requests this week
+        today_row = today_result.fetchone()
+
+        # This week
         week_result = await session.execute(
             select(func.count(UserActivityLog.id)).where(
                 UserActivityLog.created_at >= week_start
             )
         )
         this_week = week_result.scalar() or 0
-        
-        # Requests this month
+
+        # This month
         month_result = await session.execute(
             select(func.count(UserActivityLog.id)).where(
                 UserActivityLog.created_at >= month_start
             )
         )
         this_month = month_result.scalar() or 0
-        
+
+        # All-time total
+        total_result = await session.execute(
+            select(func.count(UserActivityLog.id))
+        )
+        total = total_result.scalar() or 0
+
+        # All-time avg duration
+        total_avg_result = await session.execute(
+            select(func.avg(UserActivityLog.duration_ms))
+        )
+        total_avg_duration = round(float(total_avg_result.scalar() or 0))
+
         return {
-            "today": today,
+            "today": today_row.total or 0,
+            "today_success": int(today_row.success or 0),
+            "today_errors": int(today_row.errors or 0),
+            "today_avg_duration": round(float(today_row.avg_duration or 0)),
             "this_week": this_week,
             "this_month": this_month,
+            "total": total,
+            "total_avg_duration": total_avg_duration,
         }
     
     async def _get_tokens_stats(self, session: AsyncSession) -> Dict[str, Any]:
-        """Get token usage statistics"""
+        """Get token usage statistics with prompt/completion breakdown"""
         now = datetime.utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = today_start - timedelta(days=today_start.weekday())
         month_start = today_start.replace(day=1)
-        
-        # Tokens today
+
+        # Today's token breakdown
         today_result = await session.execute(
-            select(func.sum(UserActivityLog.total_tokens)).where(
-                UserActivityLog.created_at >= today_start
-            )
+            select(
+                func.sum(UserActivityLog.prompt_tokens).label("prompt"),
+                func.sum(UserActivityLog.completion_tokens).label("completion"),
+                func.sum(UserActivityLog.total_tokens).label("total")
+            ).where(UserActivityLog.created_at >= today_start)
         )
-        today = today_result.scalar() or 0
-        
-        # Tokens this week
+        today_row = today_result.fetchone()
+
+        # This week's token breakdown
         week_result = await session.execute(
-            select(func.sum(UserActivityLog.total_tokens)).where(
-                UserActivityLog.created_at >= week_start
-            )
+            select(
+                func.sum(UserActivityLog.prompt_tokens).label("prompt"),
+                func.sum(UserActivityLog.completion_tokens).label("completion"),
+                func.sum(UserActivityLog.total_tokens).label("total")
+            ).where(UserActivityLog.created_at >= week_start)
         )
-        this_week = week_result.scalar() or 0
-        
-        # Tokens this month
+        week_row = week_result.fetchone()
+
+        # This month's token breakdown
         month_result = await session.execute(
-            select(func.sum(UserActivityLog.total_tokens)).where(
-                UserActivityLog.created_at >= month_start
+            select(
+                func.sum(UserActivityLog.prompt_tokens).label("prompt"),
+                func.sum(UserActivityLog.completion_tokens).label("completion"),
+                func.sum(UserActivityLog.total_tokens).label("total")
+            ).where(UserActivityLog.created_at >= month_start)
+        )
+        month_row = month_result.fetchone()
+
+        # All-time token breakdown
+        all_time_result = await session.execute(
+            select(
+                func.sum(UserActivityLog.prompt_tokens).label("prompt"),
+                func.sum(UserActivityLog.completion_tokens).label("completion"),
+                func.sum(UserActivityLog.total_tokens).label("total")
             )
         )
-        this_month = month_result.scalar() or 0
-        
+        all_time_row = all_time_result.fetchone()
+
+        def row_to_dict(row):
+            return {
+                "total": row.total or 0,
+                "prompt": row.prompt or 0,
+                "completion": row.completion or 0,
+            }
+
         return {
-            "today": today,
-            "this_week": this_week,
-            "this_month": this_month,
+            "today": row_to_dict(today_row),
+            "this_week": row_to_dict(week_row),
+            "this_month": row_to_dict(month_row),
+            "all_time": row_to_dict(all_time_row),
         }
     
     async def _get_models_stats(self, session: AsyncSession) -> Dict[str, Any]:

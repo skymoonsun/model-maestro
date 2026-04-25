@@ -19,8 +19,9 @@ import { useState, useEffect } from 'react';
 import { Copy, Save, X, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+function formatNumber(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return value.toLocaleString();
 }
@@ -308,19 +309,19 @@ export default function UserDetailPage() {
                             <Card>
                                 <CardContent className="p-4">
                                     <p className="text-xs text-muted-foreground">Prompt Tokens</p>
-                                    <p className="text-lg font-bold">{formatTokens(usage.prompt_tokens || 0)}</p>
+                                    <p className="text-lg font-bold">{formatNumber(usage.prompt_tokens || 0)}</p>
                                 </CardContent>
                             </Card>
                             <Card>
                                 <CardContent className="p-4">
                                     <p className="text-xs text-muted-foreground">Completion Tokens</p>
-                                    <p className="text-lg font-bold">{formatTokens(usage.completion_tokens || 0)}</p>
+                                    <p className="text-lg font-bold">{formatNumber(usage.completion_tokens || 0)}</p>
                                 </CardContent>
                             </Card>
                             <Card>
                                 <CardContent className="p-4">
                                     <p className="text-xs text-muted-foreground">Total Tokens</p>
-                                    <p className="text-lg font-bold">{formatTokens(usage.total_tokens || 0)}</p>
+                                    <p className="text-lg font-bold">{formatNumber(usage.total_tokens || 0)}</p>
                                 </CardContent>
                             </Card>
                         </div>
@@ -346,7 +347,7 @@ export default function UserDetailPage() {
                                             <TableRow key={i}>
                                                 <TableCell className="font-mono text-xs">{m.model_name}</TableCell>
                                                 <TableCell className="text-right text-xs">{(m.request_count || 0).toLocaleString()}</TableCell>
-                                                <TableCell className="text-right text-xs font-medium">{formatTokens(m.total_tokens || 0)}</TableCell>
+                                                <TableCell className="text-right text-xs font-medium">{formatNumber(m.total_tokens || 0)}</TableCell>
                                             </TableRow>
                                         ))}
                                     </TableBody>

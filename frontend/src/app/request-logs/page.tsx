@@ -13,8 +13,9 @@ import {
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+function formatNumber(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return value.toLocaleString();
 }
@@ -180,9 +181,9 @@ export default function RequestLogsPage() {
                     <TableCell className="font-mono text-xs">{log.username || '-'}</TableCell>
                     <TableCell className="font-mono text-xs">{log.model_name}</TableCell>
                     <TableCell className="text-xs">{log.request_type}</TableCell>
-                    <TableCell className="text-right text-xs">{formatTokens(log.prompt_tokens ?? 0)}</TableCell>
-                    <TableCell className="text-right text-xs">{formatTokens(log.completion_tokens ?? 0)}</TableCell>
-                    <TableCell className="text-right text-xs font-medium">{formatTokens(log.total_tokens ?? 0)}</TableCell>
+                    <TableCell className="text-right text-xs">{formatNumber(log.prompt_tokens ?? 0)}</TableCell>
+                    <TableCell className="text-right text-xs">{formatNumber(log.completion_tokens ?? 0)}</TableCell>
+                    <TableCell className="text-right text-xs font-medium">{formatNumber(log.total_tokens ?? 0)}</TableCell>
                     <TableCell><StatusBadge statusCode={log.status_code} /></TableCell>
                     <TableCell className="text-right text-xs">{formatDuration(log.duration_ms)}</TableCell>
                   </TableRow>
