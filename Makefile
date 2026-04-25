@@ -141,8 +141,8 @@ db-reset: ## Reset database (drops and recreates)
 	@echo "$(RED)WARNING: This will delete ALL data in the database!$(NC)"
 	@read -p "Are you sure? (yes/no): " confirm; \
 	if [ "$$confirm" = "yes" ]; then \
-		docker exec maestro-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"; \
-		docker exec maestro-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"; \
+		docker exec maestro-postgres psql -U maestro_user -d postgres -c "DROP DATABASE IF EXISTS maestro;"; \
+		docker exec maestro-postgres psql -U maestro_user -d postgres -c "CREATE DATABASE maestro;"; \
 		docker exec maestro alembic upgrade head; \
 		echo "$(GREEN)✓ Database reset complete$(NC)"; \
 	else \
@@ -151,10 +151,10 @@ db-reset: ## Reset database (drops and recreates)
 
 db-fresh: ## Drop DB, recreate, run all migrations and seeders (no confirmation)
 	@echo "$(RED)Terminating connections and dropping database...$(NC)"
-	@docker exec maestro-postgres psql -U ollama_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'ollama_proxy' AND pid <> pg_backend_pid();" 2>/dev/null || true
-	@docker exec maestro-postgres psql -U ollama_user -d postgres -c "DROP DATABASE IF EXISTS ollama_proxy;"
+	@docker exec maestro-postgres psql -U maestro_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'maestro' AND pid <> pg_backend_pid();" 2>/dev/null || true
+	@docker exec maestro-postgres psql -U maestro_user -d postgres -c "DROP DATABASE IF EXISTS maestro;"
 	@echo "$(GREEN)Creating fresh database...$(NC)"
-	@docker exec maestro-postgres psql -U ollama_user -d postgres -c "CREATE DATABASE ollama_proxy;"
+	@docker exec maestro-postgres psql -U maestro_user -d postgres -c "CREATE DATABASE maestro;"
 	@echo "$(GREEN)Running migrations...$(NC)"
 	@docker exec maestro alembic upgrade head
 	@echo "$(GREEN)Running seeders...$(NC)"
@@ -191,15 +191,15 @@ db-seed-reset-all: ## Reset seed history AND remove seeded data
 
 db-shell: ## Open PostgreSQL shell
 	@echo "$(YELLOW)Opening PostgreSQL shell...$(NC)"
-	@echo "Database: ollama_proxy"
-	@echo "User: ollama_user"
+	@echo "Database: maestro"
+	@echo "User: maestro_user"
 	@echo ""
-	docker exec -it maestro-postgres psql -U ollama_user -d ollama_proxy
+	docker exec -it maestro-postgres psql -U maestro_user -d maestro
 
 db-backup: ## Backup database to backups/ folder
 	@echo "$(GREEN)Creating database backup...$(NC)"
 	@mkdir -p backups
-	docker exec maestro-postgres pg_dump -U ollama_user ollama_proxy > backups/backup_$$(date +%Y%m%d_%H%M%S).sql
+	docker exec maestro-postgres pg_dump -U maestro_user maestro > backups/backup_$$(date +%Y%m%d_%H%M%S).sql
 	@echo "$(GREEN)✓ Backup created in backups/$(NC)"
 
 db-restore: ## Restore database from backup (provide BACKUP_FILE=path/to/backup.sql)
@@ -208,7 +208,7 @@ db-restore: ## Restore database from backup (provide BACKUP_FILE=path/to/backup.
 		exit 1; \
 	fi
 	@echo "$(YELLOW)Restoring database from $(BACKUP_FILE)...$(NC)"
-	docker exec -i maestro-postgres psql -U ollama_user ollama_proxy < $(BACKUP_FILE)
+	docker exec -i maestro-postgres psql -U maestro_user maestro < $(BACKUP_FILE)
 	@echo "$(GREEN)✓ Database restored$(NC)"
 
 # ============================================================================
@@ -267,7 +267,7 @@ health: ## Check health of all services
 	@curl -s http://localhost:8000/health | jq . || echo "$(RED)✗ API not responding$(NC)"
 	@echo ""
 	@echo "$(YELLOW)PostgreSQL:$(NC)"
-	@docker exec maestro-postgres pg_isready -U ollama_user -d ollama_proxy || echo "$(RED)✗ PostgreSQL not ready$(NC)"
+	@docker exec maestro-postgres pg_isready -U maestro_user -d maestro || echo "$(RED)✗ PostgreSQL not ready$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Redis:$(NC)"
 	@docker exec maestro-redis redis-cli ping || echo "$(RED)✗ Redis not responding$(NC)"
