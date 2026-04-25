@@ -12,31 +12,14 @@
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/">
     <img src="https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white" />
-  </a>
-  <a href="https://fastapi.tiangolo.com/">
     <img src="https://img.shields.io/badge/FastAPI-0.109.0-009688?logo=fastapi&logoColor=white" />
-  </a>
-  <a href="https://www.uvicorn.org/">
     <img src="https://img.shields.io/badge/Uvicorn-0.27.0-000000?logo=uvicorn&logoColor=white" />
-  </a>
-  <a href="https://www.postgresql.org/">
     <img src="https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql&logoColor=white" />
-  </a>
-  <a href="https://redis.io/">
     <img src="https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white" />
-  </a>
-  <a href="https://nextjs.org/">
     <img src="https://img.shields.io/badge/Next.js-16.1.6-000000?logo=next.js&logoColor=white" />
-  </a>
-  <a href="https://react.dev/">
     <img src="https://img.shields.io/badge/React-19.2.3-61DAFB?logo=react&logoColor=black" />
-  </a>
-  <a href="https://tailwindcss.com/">
     <img src="https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?logo=tailwindcss&logoColor=white" />
-  </a>
-  <a href="https://www.docker.com/">
     <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" />
   </a>
 </p>
