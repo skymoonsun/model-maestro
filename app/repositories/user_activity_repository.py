@@ -2,10 +2,10 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, text
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
 
-from app.models_db import UserActivityLog
+from app.models_db import UserActivityLog, User
 
 
 class UserActivityRepository:
@@ -21,7 +21,10 @@ class UserActivityRepository:
         request_type: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        total_tokens: int = 0
+        total_tokens: int = 0,
+        status_code: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+        error_message: Optional[str] = None
     ) -> UserActivityLog:
         """Log user activity"""
         activity_log = UserActivityLog(
@@ -30,7 +33,10 @@ class UserActivityRepository:
             request_type=request_type,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+            total_tokens=total_tokens or (prompt_tokens + completion_tokens),
+            status_code=status_code,
+            duration_ms=duration_ms,
+            error_message=error_message
         )
         
         self.session.add(activity_log)
@@ -116,6 +122,113 @@ class UserActivityRepository:
             {
                 "model_name": row.model_name,
                 "request_count": row.request_count,
+                "total_tokens": row.total_tokens or 0
+            }
+            for row in rows
+        ]
+
+    async def get_requests_log(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        user_id: Optional[int] = None,
+        model_name: Optional[str] = None,
+        status_code: Optional[int] = None,
+        status_category: Optional[str] = None,
+        request_type: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> Tuple[List[UserActivityLog], int]:
+        """Get paginated, filterable global request logs"""
+        # Build base query with filters
+        conditions = []
+        if user_id is not None:
+            conditions.append(UserActivityLog.user_id == user_id)
+        if model_name is not None:
+            conditions.append(UserActivityLog.model_name.ilike(f"%{model_name}%"))
+        if status_code is not None:
+            conditions.append(UserActivityLog.status_code == status_code)
+        if status_category is not None:
+            if status_category == "success":
+                conditions.append(UserActivityLog.status_code >= 200)
+                conditions.append(UserActivityLog.status_code < 300)
+            elif status_category == "error":
+                conditions.append(
+                    (UserActivityLog.status_code >= 400) | (UserActivityLog.status_code == None)
+                )
+        if request_type is not None:
+            conditions.append(UserActivityLog.request_type == request_type)
+        if start_date is not None:
+            conditions.append(UserActivityLog.created_at >= start_date)
+        if end_date is not None:
+            conditions.append(UserActivityLog.created_at <= end_date)
+
+        where_clause = and_(*conditions) if conditions else True
+
+        # Count total
+        count_stmt = select(func.count(UserActivityLog.id)).where(where_clause)
+        count_result = await self.session.execute(count_stmt)
+        total = count_result.scalar() or 0
+
+        # Fetch paginated results with user join for username
+        stmt = (
+            select(UserActivityLog, User.username)
+            .join(User, UserActivityLog.user_id == User.id, isouter=True)
+            .where(where_clause)
+            .order_by(UserActivityLog.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+
+        result = await self.session.execute(stmt)
+        rows = result.fetchall()
+
+        # Attach username to each log object for convenience
+        logs = []
+        for row in rows:
+            log = row[0]
+            log._username = row[1]
+            logs.append(log)
+
+        return logs, total
+
+    async def get_all_user_stats(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> List[dict]:
+        """Get aggregated per-user statistics"""
+        conditions = []
+        if start_date is not None:
+            conditions.append(UserActivityLog.created_at >= start_date)
+        if end_date is not None:
+            conditions.append(UserActivityLog.created_at <= end_date)
+
+        where_clause = and_(*conditions) if conditions else True
+
+        stmt = (
+            select(
+                User.username,
+                func.count(UserActivityLog.id).label("total_requests"),
+                func.sum(UserActivityLog.prompt_tokens).label("total_prompt_tokens"),
+                func.sum(UserActivityLog.completion_tokens).label("total_completion_tokens"),
+                func.sum(UserActivityLog.total_tokens).label("total_tokens")
+            )
+            .join(User, UserActivityLog.user_id == User.id)
+            .where(where_clause)
+            .group_by(User.id, User.username)
+            .order_by(func.sum(UserActivityLog.total_tokens).desc())
+        )
+
+        result = await self.session.execute(stmt)
+        rows = result.fetchall()
+
+        return [
+            {
+                "username": row.username,
+                "total_requests": row.total_requests or 0,
+                "total_prompt_tokens": row.total_prompt_tokens or 0,
+                "total_completion_tokens": row.total_completion_tokens or 0,
                 "total_tokens": row.total_tokens or 0
             }
             for row in rows

@@ -74,6 +74,9 @@ class UserActivityLog(Base):
     completion_tokens = Column(Integer, default=0, nullable=False)
     total_tokens = Column(Integer, default=0, nullable=False)
     request_type = Column(String(50), nullable=False)  # generate, chat, embeddings, etc.
+    status_code = Column(Integer, nullable=True)  # HTTP status: 200, 400, 429, 500
+    duration_ms = Column(Integer, nullable=True)  # Request duration in milliseconds
+    error_message = Column(Text, nullable=True)  # Error message for failed requests
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships

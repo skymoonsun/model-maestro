@@ -5,6 +5,7 @@ import httpx
 import json
 import logging
 import re
+import time
 import uuid
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
@@ -934,13 +935,16 @@ class OllamaProxy:
         request_type: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        total_tokens: int = 0
+        total_tokens: int = 0,
+        status_code: int = None,
+        duration_ms: int = None,
+        error_message: str = None
     ):
         """
         Log user activity for token usage and model access (batch processing)
-        
+
         Queues the activity log for background batch processing.
-        
+
         Args:
             username: Username
             model_name: Model name used
@@ -948,16 +952,22 @@ class OllamaProxy:
             prompt_tokens: Number of prompt tokens used
             completion_tokens: Number of completion tokens used
             total_tokens: Total tokens used
+            status_code: HTTP status code of the response
+            duration_ms: Request duration in milliseconds
+            error_message: Error message for failed requests
         """
         from app.background_tasks import queue_activity_log_async
-        
+
         await queue_activity_log_async(
             username=username,
             model_name=model_name,
             request_type=request_type,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+            total_tokens=total_tokens or (prompt_tokens + completion_tokens),
+            status_code=status_code,
+            duration_ms=duration_ms,
+            error_message=error_message
         )
     
     async def proxy_request(
@@ -987,6 +997,8 @@ class OllamaProxy:
         Returns:
             Response from Ollama (mapped model names)
         """
+        start_time = time.monotonic()
+
         # Ensure model mappings and groups are loaded from database
         await self._ensure_mappings_loaded()
 
@@ -1052,7 +1064,8 @@ class OllamaProxy:
                     tried_nodes=tried_nodes,
                     original_data=data.copy() if data else None,
                     endpoint=endpoint,
-                    base_url=base_url
+                    base_url=base_url,
+                    start_time=start_time
                 )
 
             # Non-streaming requests with failover support
@@ -1066,7 +1079,8 @@ class OllamaProxy:
                 original_group=original_group,
                 tried_models=tried_models,
                 tried_nodes=tried_nodes,
-                model_name=model_name
+                model_name=model_name,
+                start_time=start_time
             )
 
         except HTTPException:
@@ -1093,7 +1107,8 @@ class OllamaProxy:
         tried_nodes: set,
         original_data: Optional[Dict[str, Any]],
         endpoint: str,
-        base_url: str
+        base_url: str,
+        start_time: float
     ):
         """
         Handle streaming requests with automatic failover.
@@ -1586,13 +1601,16 @@ class OllamaProxy:
 
                         # Log user activity after streaming
                         if username and current_model:
+                            duration_ms = int((time.monotonic() - start_time) * 1000)
                             await self._log_user_activity(
                                 username=username,
                                 model_name=current_model,
                                 request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
                                 prompt_tokens=prompt_tokens,
                                 completion_tokens=completion_tokens,
-                                total_tokens=prompt_tokens + completion_tokens
+                                total_tokens=prompt_tokens + completion_tokens,
+                                status_code=200,
+                                duration_ms=duration_ms
                             )
 
                         # Send [DONE] if not already sent
@@ -1693,7 +1711,8 @@ class OllamaProxy:
         original_group: Optional[str],
         tried_models: set,
         tried_nodes: set,
-        model_name: Optional[str]
+        model_name: Optional[str],
+        start_time: float
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -1852,13 +1871,16 @@ class OllamaProxy:
 
                 # Log user activity
                 if username and model_name:
+                    duration_ms = int((time.monotonic() - start_time) * 1000)
                     await self._log_user_activity(
                         username=username,
                         model_name=model_name,
                         request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
-                        total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+                        total_tokens=total_tokens or (prompt_tokens + completion_tokens),
+                        status_code=200,
+                        duration_ms=duration_ms
                     )
 
                 return response_data
@@ -1927,6 +1949,18 @@ class OllamaProxy:
                 )
 
         # All retries exhausted
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+        error_msg = str(last_error.detail) if last_error else "All fallback attempts failed"
+        error_status = last_error.status_code if last_error else 500
+        if username and model_name:
+            await self._log_user_activity(
+                username=username,
+                model_name=model_name,
+                request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                status_code=error_status,
+                duration_ms=duration_ms,
+                error_message=error_msg[:500]
+            )
         if last_error:
             raise last_error
         raise HTTPException(

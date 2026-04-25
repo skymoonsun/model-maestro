@@ -363,11 +363,15 @@ class UserManager:
             
             return [
                 {
+                    "id": activity.id,
                     "model_name": activity.model_name,
                     "request_type": activity.request_type,
                     "prompt_tokens": activity.prompt_tokens,
                     "completion_tokens": activity.completion_tokens,
                     "total_tokens": activity.total_tokens,
+                    "status_code": activity.status_code,
+                    "duration_ms": activity.duration_ms,
+                    "error_message": activity.error_message,
                     "created_at": activity.created_at.isoformat() if activity.created_at else None
                 }
                 for activity in activities

@@ -22,11 +22,14 @@ async def queue_activity_log_async(
     request_type: str,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
-    total_tokens: int = 0
+    total_tokens: int = 0,
+    status_code: Optional[int] = None,
+    duration_ms: Optional[int] = None,
+    error_message: Optional[str] = None
 ):
     """
     Add activity log to Redis queue for background processing
-    
+
     Args:
         username: Username
         model_name: Model name
@@ -34,12 +37,15 @@ async def queue_activity_log_async(
         prompt_tokens: Number of prompt tokens
         completion_tokens: Number of completion tokens
         total_tokens: Total tokens used
+        status_code: HTTP status code of the response
+        duration_ms: Request duration in milliseconds
+        error_message: Error message for failed requests
     """
     try:
         if not redis_manager._connected or not redis_manager.redis_client:
             logger.warning("Redis not connected, skipping activity log")
             return
-        
+
         # Create log entry
         log_data = {
             "username": username,
@@ -48,6 +54,9 @@ async def queue_activity_log_async(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens or (prompt_tokens + completion_tokens),
+            "status_code": status_code,
+            "duration_ms": duration_ms,
+            "error_message": error_message,
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -152,7 +161,10 @@ async def process_batch(batch: List[Dict[str, Any]]):
                         request_type=log['request_type'],
                         prompt_tokens=log.get('prompt_tokens', 0),
                         completion_tokens=log.get('completion_tokens', 0),
-                        total_tokens=log.get('total_tokens', 0)
+                        total_tokens=log.get('total_tokens', 0),
+                        status_code=log.get('status_code'),
+                        duration_ms=log.get('duration_ms'),
+                        error_message=log.get('error_message')
                     )
                     
                     # Update daily usage cache (atomic increment)

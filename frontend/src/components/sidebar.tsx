@@ -17,6 +17,7 @@ import {
     SlidersHorizontal,
     Network,
     Group,
+    FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -58,6 +59,7 @@ const navigation: NavItem[] = [
     },
     { label: 'Tool Sets', href: '/tool-sets', icon: Wrench },
     { label: 'Settings', href: '/settings', icon: Settings },
+    { label: 'Request Logs', href: '/request-logs', icon: FileText },
     { label: 'Audit Logs', href: '/audit-logs', icon: ClipboardList },
 ];
 

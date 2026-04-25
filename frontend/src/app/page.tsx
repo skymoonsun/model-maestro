@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { dashboardApi, type DashboardStats, type ChartData, type ModelChartData } from '@/lib/api';
+import { dashboardApi, type DashboardStats, type ChartData, type ModelChartData, type UserStatsItem } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -12,6 +12,12 @@ import {
 } from 'recharts';
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#818cf8', '#7c3aed', '#4f46e5', '#4338ca'];
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return value.toLocaleString('tr-TR');
+}
 
 function StatsCards({ stats }: { stats: DashboardStats }) {
   const items = [
@@ -31,11 +37,7 @@ function StatsCards({ stats }: { stats: DashboardStats }) {
     },
     {
       label: 'Tokens Today',
-      value: (stats.tokens?.today || 0) >= 1_000_000
-        ? `${((stats.tokens?.today || 0) / 1_000_000).toFixed(1)}M`
-        : (stats.tokens?.today || 0) >= 1_000
-          ? `${((stats.tokens?.today || 0) / 1_000).toFixed(1)}K`
-          : (stats.tokens?.today || 0).toLocaleString('tr-TR'),
+      value: formatTokens(stats.tokens?.today || 0),
       icon: Key,
       gradient: 'from-amber-500/20 to-amber-600/5',
       iconColor: 'text-amber-400',
@@ -138,6 +140,36 @@ function RequestsChart({ data }: { data: ChartData[] }) {
   );
 }
 
+function TokensChart({ data }: { data: ChartData[] }) {
+  return (
+    <Card className="lg:col-span-2">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Token Usage (Last 7 Days)</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ResponsiveContainer width="100%" height={240}>
+          <AreaChart data={data}>
+            <defs>
+              <linearGradient id="tokenGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis dataKey="date" stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} />
+            <YAxis stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v: number) => formatTokens(v)} />
+            <ReTooltip
+              contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px' }}
+              labelStyle={{ color: '#a1a1aa' }}
+              formatter={(value: number) => [formatTokens(value), 'Tokens']}
+            />
+            <Area type="monotone" dataKey="count" stroke="#10b981" fill="url(#tokenGradient)" strokeWidth={2} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ModelsChart({ data }: { data: ModelChartData[] }) {
   return (
     <Card>
@@ -171,6 +203,44 @@ function ModelsChart({ data }: { data: ModelChartData[] }) {
   );
 }
 
+function UserStatsTable({ users }: { users: UserStatsItem[] }) {
+  if (!users || users.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Top Users by Token Usage</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="text-left font-medium text-muted-foreground px-4 py-2">User</th>
+              <th className="text-right font-medium text-muted-foreground px-4 py-2">Requests</th>
+              <th className="text-right font-medium text-muted-foreground px-4 py-2">Prompt Tokens</th>
+              <th className="text-right font-medium text-muted-foreground px-4 py-2">Completion Tokens</th>
+              <th className="text-right font-medium text-muted-foreground px-4 py-2">Total Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.slice(0, 10).map((user) => (
+              <tr key={user.username} className="border-b border-border/50 hover:bg-accent/50">
+                <td className="px-4 py-2 font-mono text-xs">{user.username}</td>
+                <td className="px-4 py-2 text-right text-xs">{user.total_requests.toLocaleString()}</td>
+                <td className="px-4 py-2 text-right text-xs">{formatTokens(user.total_prompt_tokens)}</td>
+                <td className="px-4 py-2 text-right text-xs">{formatTokens(user.total_completion_tokens)}</td>
+                <td className="px-4 py-2 text-right text-xs font-medium">{formatTokens(user.total_tokens)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
 function LoadingSkeleton() {
   return (
     <div className="space-y-6">
@@ -198,9 +268,19 @@ export default function DashboardPage() {
     queryFn: () => dashboardApi.getRequestsChart(),
   });
 
+  const { data: tokensChart } = useQuery({
+    queryKey: ['dashboard', 'tokens'],
+    queryFn: () => dashboardApi.getTokensChart(),
+  });
+
   const { data: modelsChart } = useQuery({
     queryKey: ['dashboard', 'models'],
     queryFn: () => dashboardApi.getModelsChart(),
+  });
+
+  const { data: userStats } = useQuery({
+    queryKey: ['dashboard', 'user-stats'],
+    queryFn: () => dashboardApi.getUserStats(),
   });
 
   if (statsLoading || !stats) return <LoadingSkeleton />;
@@ -215,8 +295,13 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <TokensChart data={tokensChart || []} />
         <ModelsChart data={modelsChart || []} />
       </div>
+
+      {userStats?.users && userStats.users.length > 0 && (
+        <UserStatsTable users={userStats.users} />
+      )}
     </div>
   );
 }
