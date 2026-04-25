@@ -338,6 +338,89 @@ class DashboardService:
             return int(period[:-1]) * 30
         return 7  # default 7 days
 
+    async def get_requests_log(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        username: Optional[str] = None,
+        model_name: Optional[str] = None,
+        status_code: Optional[int] = None,
+        status_category: Optional[str] = None,
+        request_type: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """Get paginated, filterable global request logs"""
+        from app.repositories import UserRepository, UserActivityRepository
+
+        user_id: Optional[int] = None
+        if username:
+            async with async_session_maker() as session:
+                user_repo = UserRepository(session)
+                user = await user_repo.get_by_username(username)
+                if user:
+                    user_id = user.id
+                else:
+                    # Username specified but not found — return empty result
+                    return {"logs": [], "total": 0, "limit": limit, "offset": offset}
+
+        async with async_session_maker() as session:
+            activity_repo = UserActivityRepository(session)
+            logs, total = await activity_repo.get_requests_log(
+                limit=limit,
+                offset=offset,
+                user_id=user_id,
+                model_name=model_name,
+                status_code=status_code,
+                status_category=status_category,
+                request_type=request_type,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            log_items = []
+            for log in logs:
+                log_items.append({
+                    "id": log.id,
+                    "username": getattr(log, '_username', None),
+                    "model_name": log.model_name,
+                    "request_type": log.request_type,
+                    "prompt_tokens": log.prompt_tokens,
+                    "completion_tokens": log.completion_tokens,
+                    "total_tokens": log.total_tokens,
+                    "status_code": log.status_code,
+                    "duration_ms": log.duration_ms,
+                    "error_message": log.error_message,
+                    "created_at": log.created_at.isoformat() if log.created_at else None
+                })
+
+            return {
+                "logs": log_items,
+                "total": total,
+                "limit": limit,
+                "offset": offset
+            }
+
+    async def get_all_user_stats(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> Dict[str, Any]:
+        """Get aggregated per-user statistics"""
+        from app.repositories import UserActivityRepository
+
+        async with async_session_maker() as session:
+            activity_repo = UserActivityRepository(session)
+            stats = await activity_repo.get_all_user_stats(
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            return {
+                "users": stats,
+                "total_users": len(stats)
+            }
+
 
 # Global dashboard service instance
 dashboard_service = DashboardService()

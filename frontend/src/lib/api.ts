@@ -126,6 +126,29 @@ export const dashboardApi = {
     const res = await adminFetch<{ labels: string[], data: number[] }>(`/admin/dashboard/charts/models?period=${period}`);
     return res.labels.map((label, i) => ({ model: label, count: res.data[i] }));
   },
+  getRequestLog: (params?: {
+    limit?: number; offset?: number; username?: string;
+    model_name?: string; status_code?: number; status_category?: string;
+    request_type?: string; start_date?: string; end_date?: string;
+  }) => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.offset) query.set('offset', String(params.offset));
+    if (params?.username) query.set('username', params.username);
+    if (params?.model_name) query.set('model_name', params.model_name);
+    if (params?.status_code !== undefined) query.set('status_code', String(params.status_code));
+    if (params?.status_category) query.set('status_category', params.status_category);
+    if (params?.request_type) query.set('request_type', params.request_type);
+    if (params?.start_date) query.set('start_date', params.start_date);
+    if (params?.end_date) query.set('end_date', params.end_date);
+    return adminFetch<RequestLogResponse>(`/admin/dashboard/requests-log?${query.toString()}`);
+  },
+  getUserStats: (params?: { start_date?: string; end_date?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.start_date) query.set('start_date', params.start_date);
+    if (params?.end_date) query.set('end_date', params.end_date);
+    return adminFetch<UserStatsResponse>(`/admin/dashboard/user-stats?${query.toString()}`);
+  },
 };
 
 // ==================== Users ====================
@@ -386,13 +409,15 @@ export interface UserLimits {
 
 export interface ActivityLog {
   id: number;
-  username: string;
-  model: string;
-  endpoint: string;
-  tokens_used: number;
-  request_time: number;
+  model_name: string;
+  request_type: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  status_code: number | null;
+  duration_ms: number | null;
+  error_message: string | null;
   created_at: string;
-  status_code: number;
 }
 
 export interface TokenUsage {
@@ -405,6 +430,40 @@ export interface ModelUsage {
   model: string;
   total_tokens: number;
   request_count: number;
+}
+
+export interface RequestLogResponse {
+  logs: RequestLogItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RequestLogItem {
+  id: number;
+  username: string | null;
+  model_name: string;
+  request_type: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  status_code: number | null;
+  duration_ms: number | null;
+  error_message: string | null;
+  created_at: string | null;
+}
+
+export interface UserStatsItem {
+  username: string;
+  total_requests: number;
+  total_tokens: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+}
+
+export interface UserStatsResponse {
+  users: UserStatsItem[];
+  total_users: number;
 }
 
 export interface ModelMapping {

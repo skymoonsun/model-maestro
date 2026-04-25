@@ -19,6 +19,34 @@ import { useState, useEffect } from 'react';
 import { Copy, Save, X, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return value.toLocaleString();
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms === null || ms === undefined) return '-';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${ms}ms`;
+}
+
+function StatusBadge({ statusCode }: { statusCode: number | null }) {
+  if (statusCode === null || statusCode === undefined) {
+    return <Badge variant="outline" className="text-muted-foreground">-</Badge>;
+  }
+  if (statusCode >= 200 && statusCode < 300) {
+    return <Badge variant="outline" className="text-emerald-400 border-emerald-400/30 bg-emerald-400/10">{statusCode}</Badge>;
+  }
+  if (statusCode >= 400 && statusCode < 500) {
+    return <Badge variant="outline" className="text-amber-400 border-amber-400/30 bg-amber-400/10">{statusCode}</Badge>;
+  }
+  if (statusCode >= 500) {
+    return <Badge variant="outline" className="text-red-400 border-red-400/30 bg-red-400/10">{statusCode}</Badge>;
+  }
+  return <Badge variant="outline">{statusCode}</Badge>;
+}
+
 export default function UserDetailPage() {
     const params = useParams();
     const username = params.username as string;
@@ -48,9 +76,18 @@ export default function UserDetailPage() {
         queryKey: ['users', username, 'activity'],
         queryFn: async () => {
             const res = await usersApi.getActivity(username);
-            // Backend returns { username, activities: [...], total_returned, limit, offset }
             return (res as any)?.activities ?? res;
         },
+    });
+
+    const { data: tokenUsage } = useQuery({
+        queryKey: ['users', username, 'token-usage'],
+        queryFn: () => usersApi.getTokenUsage(username),
+    });
+
+    const { data: modelUsage } = useQuery({
+        queryKey: ['users', username, 'model-usage'],
+        queryFn: () => usersApi.getModelUsage(username),
     });
 
     const [reqLimit, setReqLimit] = useState('');
@@ -121,6 +158,29 @@ export default function UserDetailPage() {
             prev.includes(model) ? prev.filter((m) => m !== model) : [...prev, model]
         );
     };
+
+    // Type-safe access to activity data
+    type ActivityItem = {
+        id: number;
+        model_name: string;
+        request_type: string;
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+        status_code: number | null;
+        duration_ms: number | null;
+        error_message: string | null;
+        created_at: string;
+    };
+    const activities: ActivityItem[] = (activity as any[]) || [];
+
+    // Type-safe access to token usage data
+    // Backend returns { username, usage: { prompt_tokens, completion_tokens, total_tokens, total_requests }, period }
+    const usage = (tokenUsage as any)?.usage;
+
+    // Type-safe access to model usage data
+    // Backend returns { username, model_usage: [...], period }
+    const modelUsageData = (modelUsage as any)?.model_usage;
 
     return (
         <div className="space-y-6">
@@ -236,35 +296,102 @@ export default function UserDetailPage() {
                 </TabsContent>
 
                 <TabsContent value="activity" className="mt-4">
+                    {/* Token Usage Summary */}
+                    {usage && (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                            <Card>
+                                <CardContent className="p-4">
+                                    <p className="text-xs text-muted-foreground">Total Requests</p>
+                                    <p className="text-lg font-bold">{(usage.total_requests || 0).toLocaleString()}</p>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardContent className="p-4">
+                                    <p className="text-xs text-muted-foreground">Prompt Tokens</p>
+                                    <p className="text-lg font-bold">{formatTokens(usage.prompt_tokens || 0)}</p>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardContent className="p-4">
+                                    <p className="text-xs text-muted-foreground">Completion Tokens</p>
+                                    <p className="text-lg font-bold">{formatTokens(usage.completion_tokens || 0)}</p>
+                                </CardContent>
+                            </Card>
+                            <Card>
+                                <CardContent className="p-4">
+                                    <p className="text-xs text-muted-foreground">Total Tokens</p>
+                                    <p className="text-lg font-bold">{formatTokens(usage.total_tokens || 0)}</p>
+                                </CardContent>
+                            </Card>
+                        </div>
+                    )}
+
+                    {/* Model Usage Breakdown */}
+                    {modelUsageData && Array.isArray(modelUsageData) && modelUsageData.length > 0 && (
+                        <Card className="mb-4">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-sm">Model Usage</CardTitle>
+                            </CardHeader>
+                            <CardContent className="p-0 overflow-x-auto">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Model</TableHead>
+                                            <TableHead className="text-right">Requests</TableHead>
+                                            <TableHead className="text-right">Total Tokens</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {modelUsageData.map((m: any, i: number) => (
+                                            <TableRow key={i}>
+                                                <TableCell className="font-mono text-xs">{m.model_name}</TableCell>
+                                                <TableCell className="text-right text-xs">{(m.request_count || 0).toLocaleString()}</TableCell>
+                                                <TableCell className="text-right text-xs font-medium">{formatTokens(m.total_tokens || 0)}</TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* Activity Log Table */}
                     <Card>
+                        <CardHeader className="pb-2">
+                            <CardTitle className="text-sm">Request Log</CardTitle>
+                        </CardHeader>
                         <CardContent className="p-0 overflow-x-auto">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
                                         <TableHead>Model</TableHead>
                                         <TableHead>Type</TableHead>
-                                        <TableHead>Prompt</TableHead>
-                                        <TableHead>Completion</TableHead>
-                                        <TableHead>Total</TableHead>
+                                        <TableHead className="text-right">Prompt</TableHead>
+                                        <TableHead className="text-right">Completion</TableHead>
+                                        <TableHead className="text-right">Total</TableHead>
+                                        <TableHead>Status</TableHead>
+                                        <TableHead className="text-right">Duration</TableHead>
                                         <TableHead>Time</TableHead>
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {activity?.map((log: { id: number; model_name: string; request_type: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; created_at: string }) => (
+                                    {activities.map((log) => (
                                         <TableRow key={log.id}>
                                             <TableCell className="font-mono text-xs">{log.model_name}</TableCell>
                                             <TableCell className="text-xs">{log.request_type}</TableCell>
-                                            <TableCell className="text-xs">{(log.prompt_tokens ?? 0).toLocaleString()}</TableCell>
-                                            <TableCell className="text-xs">{(log.completion_tokens ?? 0).toLocaleString()}</TableCell>
-                                            <TableCell className="text-xs font-medium">{(log.total_tokens ?? 0).toLocaleString()}</TableCell>
-                                            <TableCell className="text-xs text-muted-foreground">
-                                                {new Date(log.created_at).toLocaleString('en-US')}
+                                            <TableCell className="text-right text-xs">{(log.prompt_tokens ?? 0).toLocaleString()}</TableCell>
+                                            <TableCell className="text-right text-xs">{(log.completion_tokens ?? 0).toLocaleString()}</TableCell>
+                                            <TableCell className="text-right text-xs font-medium">{(log.total_tokens ?? 0).toLocaleString()}</TableCell>
+                                            <TableCell><StatusBadge statusCode={log.status_code} /></TableCell>
+                                            <TableCell className="text-right text-xs">{formatDuration(log.duration_ms)}</TableCell>
+                                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                                                {log.created_at ? new Date(log.created_at).toLocaleString('en-US') : '-'}
                                             </TableCell>
                                         </TableRow>
                                     ))}
-                                    {(!activity || activity.length === 0) && (
+                                    {activities.length === 0 && (
                                         <TableRow>
-                                            <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
+                                            <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
                                                 No activity yet
                                             </TableCell>
                                         </TableRow>

@@ -4,10 +4,12 @@ Provides statistics, charts, and system health information.
 """
 
 import logging
-from fastapi import APIRouter, Depends
+from datetime import datetime
+from typing import Optional
+from fastapi import APIRouter, Depends, Query
 
 from app.auth import verify_admin
-from app.models import DashboardStatsResponse, ChartDataResponse
+from app.models import DashboardStatsResponse, ChartDataResponse, RequestLogResponse, UserStatsResponse
 from app.services.dashboard_service import dashboard_service
 
 logger = logging.getLogger(__name__)
@@ -74,3 +76,80 @@ async def get_models_chart(
     """
     chart_data = await dashboard_service.get_models_chart(period)
     return ChartDataResponse(**chart_data)
+
+
+@router.get("/requests-log", response_model=RequestLogResponse, tags=["Admin - Dashboard"])
+async def get_requests_log(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    username: Optional[str] = Query(None),
+    model_name: Optional[str] = Query(None),
+    status_code: Optional[int] = Query(None),
+    status_category: Optional[str] = Query(None),
+    request_type: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get paginated, filterable request logs.
+
+    Query parameters:
+    - limit: Number of logs to return (default: 50, max: 200)
+    - offset: Number of logs to skip (default: 0)
+    - username: Filter by username (exact match)
+    - model_name: Filter by model name (partial match, case-insensitive)
+    - status_code: Filter by exact HTTP status code
+    - status_category: Filter by status category ("success" for 2xx, "error" for 4xx/5xx/null)
+    - request_type: Filter by request type (chat, generate, embeddings, etc.)
+    - start_date: Start date in ISO format (e.g., "2024-01-01")
+    - end_date: End date in ISO format (e.g., "2024-01-31")
+    """
+    start_dt = None
+    end_dt = None
+
+    if start_date:
+        start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+    if end_date:
+        end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+
+    result = await dashboard_service.get_requests_log(
+        limit=limit,
+        offset=offset,
+        username=username,
+        model_name=model_name,
+        status_code=status_code,
+        status_category=status_category,
+        request_type=request_type,
+        start_date=start_dt,
+        end_date=end_dt
+    )
+    return RequestLogResponse(**result)
+
+
+@router.get("/user-stats", response_model=UserStatsResponse, tags=["Admin - Dashboard"])
+async def get_user_stats(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get aggregated per-user statistics.
+
+    Query parameters:
+    - start_date: Start date in ISO format (e.g., "2024-01-01")
+    - end_date: End date in ISO format (e.g., "2024-01-31")
+    """
+    start_dt = None
+    end_dt = None
+
+    if start_date:
+        start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+    if end_date:
+        end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+
+    result = await dashboard_service.get_all_user_stats(
+        start_date=start_dt,
+        end_date=end_dt
+    )
+    return UserStatsResponse(**result)

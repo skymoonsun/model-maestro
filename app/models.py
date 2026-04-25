@@ -276,6 +276,42 @@ class ChartDataResponse(BaseModel):
     data: List[Any]
     period: Optional[str] = None
 
+# --- Request Log ---
+
+class RequestLogItem(BaseModel):
+    """Single request log entry"""
+    id: int
+    username: Optional[str] = None
+    model_name: str
+    request_type: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    status_code: Optional[int] = None
+    duration_ms: Optional[int] = None
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+
+class RequestLogResponse(BaseModel):
+    """Paginated request log response"""
+    logs: List[RequestLogItem]
+    total: int
+    limit: int
+    offset: int
+
+class UserStatsItem(BaseModel):
+    """Per-user aggregated statistics"""
+    username: str
+    total_requests: int = 0
+    total_tokens: int = 0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+
+class UserStatsResponse(BaseModel):
+    """All users aggregated statistics"""
+    users: List[UserStatsItem]
+    total_users: int
+
 # --- Audit Log ---
 
 class AuditLogResponse(BaseModel):
