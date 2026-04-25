@@ -5,7 +5,7 @@ import { dashboardApi, type DashboardStats, type ChartData, type ModelChartData,
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Users, Activity, Key, Bot, CheckCircle, XCircle, Layers } from 'lucide-react';
+import { Users, Activity, Key, Bot, CheckCircle, XCircle, Layers, Clock, Zap, ArrowDown, ArrowUp } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip,
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell
@@ -13,39 +13,62 @@ import {
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#818cf8', '#7c3aed', '#4f46e5', '#4338ca'];
 
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+function formatNumber(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return value.toLocaleString('tr-TR');
 }
 
+function formatDuration(ms: number | null): string {
+  if (ms === null || ms === 0) return '-';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
 function StatsCards({ stats }: { stats: DashboardStats }) {
+  const tokensToday = stats.tokens?.today?.total ?? (stats.tokens?.today as any) ?? 0;
+  const promptToday = stats.tokens?.today?.prompt ?? 0;
+  const completionToday = stats.tokens?.today?.completion ?? 0;
+  const tokensAllTime = stats.tokens?.all_time?.total ?? 0;
+  const promptAllTime = stats.tokens?.all_time?.prompt ?? 0;
+  const completionAllTime = stats.tokens?.all_time?.completion ?? 0;
+  const reqSuccess = stats.requests?.today_success ?? 0;
+  const reqErrors = stats.requests?.today_errors ?? 0;
+  const reqTotal = stats.requests?.total ?? 0;
+  const avgDuration = stats.requests?.today_avg_duration ?? 0;
+  const totalAvgDuration = stats.requests?.total_avg_duration ?? 0;
+
   const items = [
     {
       label: 'Total Users',
       value: stats.users?.total || 0,
+      sub: `${stats.users?.active_today || 0} active today`,
       icon: Users,
       gradient: 'from-blue-500/20 to-blue-600/5',
       iconColor: 'text-blue-400',
     },
     {
-      label: 'Requests Today',
+      label: 'Requests',
       value: (stats.requests?.today || 0).toLocaleString('tr-TR'),
+      sub: `${reqSuccess} success · ${reqErrors} errors · ${formatNumber(reqTotal)} total`,
       icon: Activity,
       gradient: 'from-emerald-500/20 to-emerald-600/5',
       iconColor: 'text-emerald-400',
     },
     {
-      label: 'Tokens Today',
-      value: formatTokens(stats.tokens?.today || 0),
-      icon: Key,
-      gradient: 'from-amber-500/20 to-amber-600/5',
-      iconColor: 'text-amber-400',
+      label: 'Avg Response',
+      value: formatDuration(avgDuration),
+      sub: totalAvgDuration > 0 ? `${formatDuration(totalAvgDuration)} all-time avg` : 'today only',
+      icon: Clock,
+      gradient: 'from-orange-500/20 to-orange-600/5',
+      iconColor: 'text-orange-400',
     },
     {
-      label: 'Total Models',
-      value: stats.models?.total_models || 0,
-      icon: Bot,
+      label: 'Tokens',
+      value: formatNumber(tokensToday),
+      sub: `${formatNumber(promptToday)} prompt · ${formatNumber(completionToday)} completion · ${formatNumber(tokensAllTime)} total`,
+      icon: Zap,
       gradient: 'from-violet-500/20 to-violet-600/5',
       iconColor: 'text-violet-400',
     },
@@ -61,6 +84,7 @@ function StatsCards({ stats }: { stats: DashboardStats }) {
               <div>
                 <p className="text-sm text-muted-foreground">{item.label}</p>
                 <p className="text-2xl font-bold mt-1">{item.value}</p>
+                {item.sub && <p className="text-xs text-muted-foreground mt-1">{item.sub}</p>}
               </div>
               <div className={`p-3 rounded-xl bg-background/50 ${item.iconColor}`}>
                 <item.icon className="h-5 w-5" />
@@ -156,11 +180,11 @@ function TokensChart({ data }: { data: ChartData[] }) {
               </linearGradient>
             </defs>
             <XAxis dataKey="date" stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} />
-            <YAxis stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v: number) => formatTokens(v)} />
+            <YAxis stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(v: number) => formatNumber(v)} />
             <ReTooltip
               contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px' }}
               labelStyle={{ color: '#a1a1aa' }}
-              formatter={(value: number) => [formatTokens(value), 'Tokens']}
+              formatter={(value: number) => [formatNumber(value), 'Tokens']}
             />
             <Area type="monotone" dataKey="count" stroke="#10b981" fill="url(#tokenGradient)" strokeWidth={2} />
           </AreaChart>
@@ -229,9 +253,9 @@ function UserStatsTable({ users }: { users: UserStatsItem[] }) {
               <tr key={user.username} className="border-b border-border/50 hover:bg-accent/50">
                 <td className="px-4 py-2 font-mono text-xs">{user.username}</td>
                 <td className="px-4 py-2 text-right text-xs">{user.total_requests.toLocaleString()}</td>
-                <td className="px-4 py-2 text-right text-xs">{formatTokens(user.total_prompt_tokens)}</td>
-                <td className="px-4 py-2 text-right text-xs">{formatTokens(user.total_completion_tokens)}</td>
-                <td className="px-4 py-2 text-right text-xs font-medium">{formatTokens(user.total_tokens)}</td>
+                <td className="px-4 py-2 text-right text-xs">{formatNumber(user.total_prompt_tokens)}</td>
+                <td className="px-4 py-2 text-right text-xs">{formatNumber(user.total_completion_tokens)}</td>
+                <td className="px-4 py-2 text-right text-xs font-medium">{formatNumber(user.total_tokens)}</td>
               </tr>
             ))}
           </tbody>

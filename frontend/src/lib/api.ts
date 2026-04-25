@@ -355,13 +355,35 @@ export interface DashboardStats {
   };
   requests: {
     today: number;
+    today_success: number;
+    today_errors: number;
+    today_avg_duration: number;
     this_week: number;
     this_month: number;
+    total: number;
+    total_avg_duration: number;
   };
   tokens: {
-    today: number;
-    this_week: number;
-    this_month: number;
+    today: {
+      total: number;
+      prompt: number;
+      completion: number;
+    };
+    this_week: {
+      total: number;
+      prompt: number;
+      completion: number;
+    };
+    this_month: {
+      total: number;
+      prompt: number;
+      completion: number;
+    };
+    all_time: {
+      total: number;
+      prompt: number;
+      completion: number;
+    };
   };
   models: {
     most_used: Record<string, unknown>[];
