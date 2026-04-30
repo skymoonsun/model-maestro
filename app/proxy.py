@@ -20,6 +20,27 @@ logger = logging.getLogger(__name__)
 # Maximum retries for failover (will try all fallback members in group)
 MAX_FAILOVER_RETRIES = 5
 
+# Streaming activity tracker — background tasks check this to avoid interrupting streams
+import asyncio as _asyncio
+_active_stream_count = 0
+_active_stream_lock = _asyncio.Lock()
+
+
+async def mark_stream_start():
+    global _active_stream_count
+    async with _active_stream_lock:
+        _active_stream_count += 1
+
+
+async def mark_stream_end():
+    global _active_stream_count
+    async with _active_stream_lock:
+        _active_stream_count = max(0, _active_stream_count - 1)
+
+
+def is_streaming_active() -> bool:
+    return _active_stream_count > 0
+
 
 # ============================================================================
 # TOOL CALL VALIDATION (LiteLLM-inspired)
@@ -2483,8 +2504,17 @@ class OllamaProxy:
                     yield b'data: [DONE]\n\n'
                     return
 
+        async def _tracked_stream():
+            """Wraps stream generator with streaming activity tracking."""
+            await mark_stream_start()
+            try:
+                async for chunk in stream_generator_with_failover():
+                    yield chunk
+            finally:
+                await mark_stream_end()
+
         return StreamingResponse(
-            stream_generator_with_failover(),
+            _tracked_stream(),
             media_type=f"{media_type}; charset=utf-8" if media_type == "text/event-stream" else media_type,
             headers={
                 "Cache-Control": "no-cache, no-transform",

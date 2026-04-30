@@ -216,12 +216,23 @@ async def list_models(username: str = Depends(get_current_user)):
 
     Requires JWT authentication
     """
+    global _models_cache_ts, _models_cache
     logger.info(f"User {username} requesting model list")
 
-    # Get all models from all healthy nodes
-    from app.node_manager import node_manager
+    # Use cached response if fresh enough
+    import time
+    now = time.monotonic()
+    if _models_cache and (now - _models_cache_ts) < _MODELS_CACHE_TTL:
+        all_models_response = _models_cache
+    else:
+        # Get all models from all healthy nodes
+        from app.node_manager import node_manager
 
-    all_models_response = await node_manager.get_all_models_from_nodes()
+        all_models_response = await node_manager.get_all_models_from_nodes()
+
+        # Cache the response
+        _models_cache = all_models_response
+        _models_cache_ts = now
 
     # If no nodes responded, fallback to proxy (single node)
     if not all_models_response.get("models"):
@@ -540,6 +551,12 @@ async def brave_search_mock(
 # OpenAI Compatible API Endpoints
 # ============================================================================
 
+# Model list cache to avoid hitting nodes on every /v1/models call
+_models_cache: Dict[str, Any] = {}
+_models_cache_ts: float = 0.0
+_MODELS_CACHE_TTL = 30.0  # seconds
+
+
 @app.get("/v1/models", tags=["OpenAI Compatible API"])
 async def openai_list_models(username: str = Depends(get_current_user)):
     """
@@ -548,12 +565,23 @@ async def openai_list_models(username: str = Depends(get_current_user)):
 
     Requires JWT authentication
     """
+    global _models_cache_ts, _models_cache
     logger.info(f"User {username} requesting OpenAI model list")
 
-    # Get all models from all healthy nodes (in Ollama native format)
-    from app.node_manager import node_manager
+    # Use cached response if fresh enough
+    import time
+    now = time.monotonic()
+    if _models_cache and (now - _models_cache_ts) < _MODELS_CACHE_TTL:
+        native_models_response = _models_cache
+    else:
+        # Get all models from all healthy nodes (in Ollama native format)
+        from app.node_manager import node_manager
 
-    native_models_response = await node_manager.get_all_models_from_nodes()
+        native_models_response = await node_manager.get_all_models_from_nodes()
+
+        # Cache the response
+        _models_cache = native_models_response
+        _models_cache_ts = now
 
     # If no nodes responded, fallback to proxy (single node)
     if not native_models_response.get("models"):

@@ -239,49 +239,74 @@ async def background_processor():
 # =============================================================================
 
 # Configuration for node tasks
-NODE_HEALTH_CHECK_INTERVAL = 60.0  # seconds
-MODEL_SYNC_INTERVAL = 300.0  # seconds (5 minutes)
+NODE_HEALTH_CHECK_INTERVAL = 120.0  # seconds (2 minutes)
+MODEL_SYNC_INTERVAL = 600.0  # seconds (10 minutes)
 NODE_TASK_SHUTDOWN_EVENT = asyncio.Event()
+
+
+async def _wait_for_idle(max_wait: float = 30.0, poll_interval: float = 2.0):
+    """Wait until no streams are active, up to max_wait seconds."""
+    from app.proxy import is_streaming_active
+    waited = 0.0
+    while is_streaming_active() and waited < max_wait:
+        await asyncio.sleep(poll_interval)
+        waited += poll_interval
 
 
 async def node_health_check_task():
     """
     Periodically check health of all active nodes.
     Updates node health status in database.
+    Uses concurrent checks to avoid blocking the event loop.
+    Defers when streams are active to avoid interrupting users.
     """
     logger.info("Starting node health check task")
-    
+
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
+            # Wait for idle if streams are active
+            await _wait_for_idle(max_wait=30.0)
+
             from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.repositories.node_repository import NodeRepository
-            
+
             async with async_session_maker() as session:
                 node_repo = NodeRepository(session)
                 nodes = await node_repo.list_active()
-                
-                for node in nodes:
+
+                # Check all nodes concurrently instead of sequentially
+                async def _check_one(node):
                     is_healthy, error = await node_manager.health_check_node(
                         node.base_url,
                         node.api_key,
-                        timeout=5.0
+                        timeout=3.0
                     )
-                    
+                    return node, is_healthy, error
+
+                results = await asyncio.gather(
+                    *[_check_one(n) for n in nodes],
+                    return_exceptions=True
+                )
+
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.warning(f"Health check error: {result}")
+                        continue
+                    node, is_healthy, error = result
                     status = "healthy" if is_healthy else "unhealthy"
                     await node_repo.update_health_status(
                         node.id,
                         status,
                         error if not is_healthy else None
                     )
-                    
                     logger.debug(f"Node '{node.name}' health: {status}")
-                
+
                 await session.commit()
-                
+
         except Exception as e:
             logger.error(f"Error in health check task: {e}")
-        
+
         # Wait for next interval or shutdown
         try:
             await asyncio.wait_for(
@@ -299,25 +324,29 @@ async def model_discovery_task():
     """
     Periodically discover models from all healthy nodes.
     Updates node_models table.
+    Defers when streams are active to avoid interrupting users.
     """
     logger.info("Starting model discovery task")
-    
+
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
+            # Wait for idle if streams are active
+            await _wait_for_idle(max_wait=60.0)
+
             from app.database import async_session_maker
             from app.node_manager import node_manager
-            
+
             async with async_session_maker() as session:
                 result = await node_manager.sync_all_nodes(session)
-                
+
                 logger.info(
                     f"Model discovery: {result['successful_nodes']}/{result['total_nodes']} nodes, "
                     f"{result['total_models']} models"
                 )
-                
+
                 if result['failed_nodes']:
                     logger.warning(f"Failed nodes: {result['failed_nodes']}")
-                    
+
         except Exception as e:
             logger.error(f"Error in model discovery task: {e}")
         
