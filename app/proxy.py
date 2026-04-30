@@ -1005,7 +1005,7 @@ class OllamaProxy:
                 return self.base_url
 
         except Exception as e:
-            logger.error(f"[LB] Error selecting node: {e}, falling back to default URL")
+            logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
             return self.base_url
     
     async def _ensure_mappings_loaded(self):
