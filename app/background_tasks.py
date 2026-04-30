@@ -505,6 +505,122 @@ async def node_load_cleanup_task():
     logger.info("Node load cleanup task stopped")
 
 
+# =============================================================================
+# MODEL KEEP-WARM TASK
+# =============================================================================
+# Ollama unloads models from VRAM after keep_alive timeout (default: 5 min).
+# This task proactively pings configured models every WARMUP_INTERVAL seconds
+# to prevent cold-start timeouts on scheduled/cron requests.
+# =============================================================================
+
+WARMUP_INTERVAL = 240.0  # seconds — ping every 4 min (before 5-min unload)
+WARMUP_SHUTDOWN_EVENT = asyncio.Event()
+
+# Models to keep warm. If empty, the task reads from model_mappings at startup.
+WARMUP_MODELS: list[str] = []
+
+
+async def _get_running_models() -> set[str]:
+    """Return set of real model names currently loaded in Ollama via /api/ps."""
+    try:
+        import httpx
+        from app.config import get_settings
+        settings = get_settings()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{settings.ollama_base_url}/api/ps")
+            if resp.status_code == 200:
+                data = resp.json()
+                return {m.get("model", "") for m in data.get("models", [])}
+    except Exception as e:
+        logger.warning(f"[WARMUP] Could not fetch /api/ps: {e}")
+    return set()
+
+
+async def _warmup_model(real_name: str):
+    """
+    Send a minimal /api/generate request to load the model into VRAM.
+    keep_alive=-1 keeps it loaded until the server restarts.
+    """
+    try:
+        import httpx
+        from app.config import get_settings
+        settings = get_settings()
+        payload = {
+            "model": real_name,
+            "prompt": "",          # empty prompt — just loads the model
+            "stream": False,
+            "keep_alive": -1,      # keep in VRAM forever
+        }
+        async with httpx.AsyncClient(timeout=600.0) as client:  # 10-min timeout for large models
+            resp = await client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json=payload,
+            )
+            if resp.status_code == 200:
+                logger.info(f"[WARMUP] ✅ Model '{real_name}' loaded and kept warm")
+            else:
+                logger.warning(f"[WARMUP] ⚠️ Unexpected status {resp.status_code} for '{real_name}'")
+    except Exception as e:
+        logger.warning(f"[WARMUP] ⚠️ Failed to warm '{real_name}': {e}")
+
+
+async def model_keep_warm_task():
+    """
+    Background task: keep configured models loaded in Ollama.
+
+    On each iteration:
+    1. Get the list of models to keep warm (from WARMUP_MODELS or DB mappings).
+    2. Check which ones are currently running via /api/ps.
+    3. For any model NOT running, send an empty generate request to preload it.
+    """
+    logger.info("[WARMUP] Model keep-warm task started")
+
+    while not WARMUP_SHUTDOWN_EVENT.is_set():
+        try:
+            from app.config import model_mapper
+
+            # Determine target models
+            targets: list[str] = list(WARMUP_MODELS)
+            if not targets:
+                # Fall back to all configured real model names from mappings
+                await model_mapper.ensure_loaded()
+                seen: set[str] = set()
+                for real_name in model_mapper._mappings.values():
+                    if real_name and real_name not in seen:
+                        seen.add(real_name)
+                        targets.append(real_name)
+
+            if not targets:
+                logger.debug("[WARMUP] No models configured, skipping")
+            else:
+                running = await _get_running_models()
+                cold_models = [m for m in targets if m not in running]
+
+                if cold_models:
+                    logger.info(f"[WARMUP] Cold models detected: {cold_models}")
+                    for model_name in cold_models:
+                        if WARMUP_SHUTDOWN_EVENT.is_set():
+                            break
+                        await _warmup_model(model_name)
+                else:
+                    logger.debug(f"[WARMUP] All {len(targets)} model(s) already warm")
+
+        except Exception as e:
+            logger.error(f"[WARMUP] Error in keep-warm task: {e}")
+
+        # Wait for next interval or shutdown
+        try:
+            await asyncio.wait_for(
+                WARMUP_SHUTDOWN_EVENT.wait(),
+                timeout=WARMUP_INTERVAL,
+            )
+            break  # Shutdown requested
+        except asyncio.TimeoutError:
+            pass  # Continue
+
+    logger.info("[WARMUP] Model keep-warm task stopped")
+
+
 async def start_background_tasks():
     """Start all background task processors"""
     # Start activity log processor
@@ -532,6 +648,7 @@ async def stop_background_tasks():
     # Signal shutdown
     SHUTDOWN_EVENT.set()
     NODE_TASK_SHUTDOWN_EVENT.set()
+    WARMUP_SHUTDOWN_EVENT.set()
     
     # Process remaining logs in queue
     try:
