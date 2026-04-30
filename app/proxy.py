@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
@@ -326,6 +327,293 @@ def convert_kimi_content_to_openai_delta(content: str, model: str) -> List[Dict[
         })
     
     return chunks
+
+
+# ============================================================================
+# DEEPSEEK TOOL CALL CONVERTER
+# ============================================================================
+# DeepSeek models use canonical XML format for tool calls that needs to be
+# converted to OpenAI's standard tool_calls format for Cursor IDE compatibility.
+#
+# DeepSeek format:
+#   <tool_calls>
+#   <invoke name="FunctionName">
+#   <parameter name="arg1">value1</parameter>
+#   <parameter name="arg2">value2</parameter>
+#   </invoke>
+#   </tool_calls>
+#
+# Also supports DSML-prefixed variants:
+#   <|DSML|tool_calls>
+#   <|DSML|invoke name="FunctionName">
+#   <|DSML|parameter name="arg1">value1</|DSML|parameter>
+#   </|DSML|tool_calls>
+#
+# OpenAI format (in delta):
+#   {"tool_calls": [{"index": 0, "id": "call_xxx", "type": "function",
+#     "function": {"name": "FunctionName", "arguments": "{...}"}}]}
+# ============================================================================
+
+# Regex to strip markdown code fences (```...``` or ~~~...~~~)
+_CODE_FENCE_RE = re.compile(r'(```[\s\S]*?```|~~~[\s\S]*?~~~)', re.MULTILINE)
+
+# DSML tag normalization regexes
+_DSML_OPEN_RE = re.compile(r'<\|DSML\|(\w+)([^>]*)>')
+_DSML_CLOSE_RE = re.compile(r'</\|DSML\|(\w+)>')
+_CANONICAL_OPEN_RE = re.compile(r'<(tool_calls|invoke|parameter)([^>]*)>')
+_CANONICAL_CLOSE_RE = re.compile(r'</(tool_calls|invoke|parameter)>')
+
+# Marker for suspicion buffering — partial tag prefixes
+_DEEPSEEK_TAG_PREFIXES = ['<tool_c', '<tool_ca', '<tool_cal', '<tool_call', '<tool_calls',
+                           '<|DSML', '<|DSML|', '<|DSML|t', '<|DSML|to', '<|DSML|too',
+                           '<|DSML|tool', '<|DSML|tool_']
+
+
+def _normalize_dsml_tags(text: str) -> str:
+    """Convert DSML-prefixed tags to canonical XML form for unified parsing.
+
+    <|DSML|tool_calls> → <tool_calls>
+    </|DSML|tool_calls> → </tool_calls>
+    <|DSML|invoke name="..."> → <invoke name="...">
+    <|DSML|parameter name="..."> → <parameter name="...">
+    """
+    text = _DSML_OPEN_RE.sub(r'<\1\2>', text)
+    text = _DSML_CLOSE_RE.sub(r'</\1>', text)
+    return text
+
+
+def _parse_xml_parameter_value(element: ET.Element) -> Any:
+    """Parse a <parameter> element's value, handling CDATA, nested XML, and JSON literals.
+
+    Handles:
+    - CDATA sections: element.text returns inner content
+    - Nested XML objects: <field>value</field> → {"field": "value"}
+    - Arrays: <item>v1</item><item>v2</item> → ["v1", "v2"]
+    - JSON literals: numbers, booleans, null
+    - Plain text strings
+    """
+    # Check for child elements
+    children = list(element)
+    if children:
+        # Has child elements — parse as structured data
+        # Check if all children are <item> (array pattern)
+        if all(c.tag == 'item' for c in children):
+            return [_parse_xml_text_value(c.text) for c in children]
+        # Otherwise parse as object
+        result = {}
+        for child in children:
+            child_value = _parse_xml_parameter_value(child)
+            key = child.tag
+            if key in result:
+                # Convert to array if duplicate keys
+                existing = result[key]
+                if isinstance(existing, list):
+                    existing.append(child_value)
+                else:
+                    result[key] = [existing, child_value]
+            else:
+                result[key] = child_value
+        return result
+
+    # No children — parse text content
+    raw_text = element.text
+    # ElementTree may leave CDATA closing marker remnants
+    if raw_text and raw_text.endswith(']]>'):
+        raw_text = raw_text[:-3]
+    return _parse_xml_text_value(raw_text)
+
+
+def _parse_xml_text_value(text: Optional[str]) -> Any:
+    """Parse text content as JSON literal if possible, otherwise return as string."""
+    if text is None:
+        return ""
+
+    text = text.strip()
+
+    if not text:
+        return ""
+
+    # Try JSON literals
+    try:
+        val = json.loads(text)
+        if isinstance(val, (int, float, bool)) or val is None:
+            return val
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    return text
+
+
+def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]:
+    """Parse DeepSeek XML tool call format from content and convert to OpenAI format.
+
+    Handles both canonical XML (<tool_calls><invoke><parameter>) and DSML-prefixed
+    (<|DSML|tool_calls><|DSML|invoke>) formats.
+
+    Code blocks (```...``` or ~~~...~~~) are stripped before parsing to prevent
+    false positives from XML examples inside markdown.
+
+    Args:
+        content: The content string that may contain DeepSeek tool calls
+
+    Returns:
+        Tuple of:
+        - clean_content: Content with tool call XML removed
+        - tool_calls: List of OpenAI-formatted tool call objects
+        - has_tool_calls: Whether any tool calls were found
+    """
+    if not content:
+        return content, [], False
+
+    # Quick check — if no tool_calls marker at all, skip
+    if '<tool_calls>' not in content and '</tool_calls>' not in content \
+            and '<|DSML|tool_calls>' not in content:
+        # Also check partial matches at end (streaming suspicion)
+        has_prefix = any(content.rstrip().endswith(p) for p in _DEEPSEEK_TAG_PREFIXES)
+        if not has_prefix:
+            return content, [], False
+
+    # Strip markdown code fences to avoid parsing XML examples
+    stripped = _CODE_FENCE_RE.sub('', content)
+
+    # Normalize DSML tags to canonical XML
+    normalized = _normalize_dsml_tags(stripped)
+
+    # Find <tool_calls>...</tool_calls> wrapper
+    start_idx = normalized.find('<tool_calls>')
+    if start_idx == -1:
+        return content, [], False
+
+    end_idx = normalized.find('</tool_calls>')
+    if end_idx == -1:
+        # Incomplete — might be a streaming partial, return as-is
+        return content, [], False
+
+    # Extract content before and after the tool call section
+    content_before = normalized[:start_idx].strip()
+    content_after = normalized[end_idx + len('</tool_calls>'):].strip()
+
+    # Extract the tool call section
+    section_content = normalized[start_idx + len('<tool_calls>'):end_idx]
+
+    # Parse each <invoke> block
+    tool_calls = []
+    tool_call_index = 0
+
+    # Use ElementTree for robust XML parsing
+    # Wrap in root to handle multiple invoke elements
+    xml_text = f'<root>{section_content}</root>'
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        logger.warning(f"[DEEPSEEK] Failed to parse XML tool calls: {e}")
+        logger.debug(f"[DEEPSEEK] XML was: {xml_text[:200]}")
+        # Fall back: try regex-based parsing
+        tool_calls = _parse_invoke_blocks_regex(section_content, tool_call_index)
+        if not tool_calls:
+            return content, [], False
+        tool_call_index = len(tool_calls)
+    else:
+        for invoke_elem in root.findall('invoke'):
+            func_name = invoke_elem.get('name', '')
+            if not func_name:
+                continue
+
+            # Parse parameters
+            arguments = {}
+            for param_elem in invoke_elem.findall('parameter'):
+                param_name = param_elem.get('name', '')
+                if not param_name:
+                    continue
+                param_value = _parse_xml_parameter_value(param_elem)
+                arguments[param_name] = param_value
+
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+
+            tool_call = {
+                "index": tool_call_index,
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": arguments_str
+                }
+            }
+            _sanitize_tool_call_arguments(tool_call)
+            tool_calls.append(tool_call)
+            tool_call_index += 1
+
+            logger.info(f"[DEEPSEEK] Parsed tool call: {func_name}({arguments_str[:80]}...)")
+
+    if not tool_calls:
+        return content, [], False
+
+    # Combine clean content
+    clean_content = f"{content_before} {content_after}".strip()
+
+    return clean_content, tool_calls, True
+
+
+def _parse_invoke_blocks_regex(section_content: str, start_index: int) -> List[Dict[str, Any]]:
+    """Fallback regex-based parser for <invoke> blocks when XML parsing fails.
+
+    Used when ElementTree can't parse malformed XML.
+    """
+    tool_calls = []
+    index = start_index
+
+    # Match <invoke name="...">...</invoke> blocks
+    invoke_pattern = re.compile(
+        r'<invoke\s+name=["\']([^"\']+)["\']>(.*?)</invoke>',
+        re.DOTALL
+    )
+
+    for match in invoke_pattern.finditer(section_content):
+        func_name = match.group(1)
+        invoke_body = match.group(2)
+
+        # Parse <parameter name="...">value</parameter>
+        arguments = {}
+        param_pattern = re.compile(
+            r'<parameter\s+name=["\']([^"\']+)["\']>(.*?)(?:</parameter>)',
+            re.DOTALL
+        )
+
+        for param_match in param_pattern.finditer(invoke_body):
+            param_name = param_match.group(1)
+            param_value = param_match.group(2).strip()
+
+            # Remove CDATA wrapper if present
+            if param_value.startswith('<![CDATA[') and param_value.endswith(']]>'):
+                param_value = param_value[9:-3]
+
+            # Try JSON parse
+            try:
+                param_value = json.loads(param_value)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            arguments[param_name] = param_value
+
+        arguments_str = json.dumps(arguments, ensure_ascii=False)
+
+        tool_call = {
+            "index": index,
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": func_name,
+                "arguments": arguments_str
+            }
+        }
+        _sanitize_tool_call_arguments(tool_call)
+        tool_calls.append(tool_call)
+        index += 1
+
+        logger.info(f"[DEEPSEEK] Parsed tool call (regex): {func_name}({arguments_str[:80]}...)")
+
+    return tool_calls
 
 
 class OllamaProxy:
@@ -668,17 +956,23 @@ class OllamaProxy:
                             # Keep 'reasoning' field as-is for clients that support it
                             # But also check for tool calls in reasoning
                             reasoning = delta.get('reasoning', '')
-                            if reasoning and '<|tool_calls_section_begin|>' in reasoning:
-                                clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
-                                
+                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning):
+                                # Route to appropriate parser based on format
+                                if '<|tool_calls_section_begin|>' in reasoning:
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
+                                    parser_name = 'KIMI'
+                                else:
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_deepseek_tool_calls(reasoning)
+                                    parser_name = 'DEEPSEEK'
+
                                 if has_tool_calls:
-                                    logger.info(f"[KIMI] Detected {len(tool_calls_from_reasoning)} tool call(s) in reasoning, converting to OpenAI format")
+                                    logger.info(f"[{parser_name}] Detected {len(tool_calls_from_reasoning)} tool call(s) in reasoning, converting to OpenAI format")
                                     # Update reasoning with clean content
                                     if clean_reasoning:
                                         delta['reasoning'] = clean_reasoning
                                     else:
                                         delta.pop('reasoning', None)
-                                    
+
                                     # Add tool_calls to delta (merge if already exists)
                                     existing_tool_calls = delta.get('tool_calls', [])
                                     delta['tool_calls'] = existing_tool_calls + tool_calls_from_reasoning
@@ -694,7 +988,7 @@ class OllamaProxy:
                             content = delta.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
                                 clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
-                                
+
                                 if has_tool_calls:
                                     logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
                                     # Update delta with clean content and tool_calls
@@ -703,8 +997,24 @@ class OllamaProxy:
                                     else:
                                         # If no clean content, remove content field entirely
                                         delta.pop('content', None)
-                                    
+
                                     # Add tool_calls to delta (merge if already exists from reasoning)
+                                    existing_tool_calls = delta.get('tool_calls', [])
+                                    delta['tool_calls'] = existing_tool_calls + tool_calls
+
+                            # DEEPSEEK TOOL CALL FIX: Convert DeepSeek's XML tool call format
+                            # to OpenAI's standard tool_calls format (in content)
+                            content = delta.get('content', '')
+                            if content and '<tool_calls>' in content and '</tool_calls>' in content:
+                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
+
+                                if has_tool_calls:
+                                    logger.info(f"[DEEPSEEK] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
+                                    if clean_content:
+                                        delta['content'] = clean_content
+                                    else:
+                                        delta.pop('content', None)
+
                                     existing_tool_calls = delta.get('tool_calls', [])
                                     delta['tool_calls'] = existing_tool_calls + tool_calls
                             
@@ -717,17 +1027,23 @@ class OllamaProxy:
                             # Keep 'reasoning' field as-is for clients that support it
                             # But also check for tool calls in reasoning
                             reasoning = message.get('reasoning', '')
-                            if reasoning and '<|tool_calls_section_begin|>' in reasoning:
-                                clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
-                                
+                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning):
+                                # Route to appropriate parser based on format
+                                if '<|tool_calls_section_begin|>' in reasoning:
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
+                                    parser_name = 'KIMI'
+                                else:
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_deepseek_tool_calls(reasoning)
+                                    parser_name = 'DEEPSEEK'
+
                                 if has_tool_calls:
-                                    logger.info(f"[KIMI] Detected {len(tool_calls_from_reasoning)} tool call(s) in message reasoning, converting to OpenAI format")
+                                    logger.info(f"[{parser_name}] Detected {len(tool_calls_from_reasoning)} tool call(s) in message reasoning, converting to OpenAI format")
                                     # Update reasoning with clean content
                                     if clean_reasoning:
                                         message['reasoning'] = clean_reasoning
                                     else:
                                         message.pop('reasoning', None)
-                                    
+
                                     # Add tool_calls to message (merge if already exists)
                                     existing_tool_calls = message.get('tool_calls', [])
                                     message['tool_calls'] = existing_tool_calls + tool_calls_from_reasoning
@@ -741,7 +1057,7 @@ class OllamaProxy:
                             content = message.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
                                 clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
-                                
+
                                 if has_tool_calls:
                                     logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
                                     # Update message with clean content and tool_calls
@@ -749,8 +1065,24 @@ class OllamaProxy:
                                         message['content'] = clean_content
                                     else:
                                         message['content'] = None
-                                    
+
                                     # Add tool_calls to message (merge if already exists from reasoning)
+                                    existing_tool_calls = message.get('tool_calls', [])
+                                    message['tool_calls'] = existing_tool_calls + tool_calls
+
+                            # DEEPSEEK TOOL CALL FIX: Convert DeepSeek's XML tool call format
+                            # to OpenAI's standard tool_calls format (non-streaming, in content)
+                            content = message.get('content', '')
+                            if content and '<tool_calls>' in content and '</tool_calls>' in content:
+                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
+
+                                if has_tool_calls:
+                                    logger.info(f"[DEEPSEEK] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
+                                    if clean_content:
+                                        message['content'] = clean_content
+                                    else:
+                                        message['content'] = None
+
                                     existing_tool_calls = message.get('tool_calls', [])
                                     message['tool_calls'] = existing_tool_calls + tool_calls
                             
@@ -1289,10 +1621,16 @@ class OllamaProxy:
                         kimi_suspicion_buffer = ""
                         current_model = current_data.get('model', 'unknown')
 
+                        # DeepSeek XML tool call buffering state
+                        deepseek_content_buffer = ""
+                        deepseek_buffering_active = False
+                        deepseek_suspicion_buffer = ""
+
                         in_thinking = False
                         think_suspicion = ""
 
                         is_kimi_model = 'kimi' in current_model.lower() or 'moonshot' in current_model.lower()
+                        is_deepseek_model = 'deepseek' in current_model.lower() or 'ds-' in current_model.lower()
 
                         async for chunk in resp.aiter_raw():
                             if not chunk:
@@ -1431,6 +1769,116 @@ class OllamaProxy:
                                                         logger.info(f"[KIMI DEBUG] Combined content is suspicious, buffering: {combined_for_detection!r}")
                                                         kimi_suspicion_buffer = combined_for_detection
                                                         continue
+
+                                                # ============================================================
+                                                # DEEPSEEK XML TOOL CALL HANDLING
+                                                # ============================================================
+                                                # DeepSeek models output tool calls as canonical XML:
+                                                #   <tool_calls><invoke name="..."><parameter name="...">val</parameter></invoke></tool_calls>
+                                                # We buffer these during streaming and convert to OpenAI tool_calls format.
+                                                if is_deepseek_model and deepseek_buffering_active:
+                                                    deepseek_content_buffer += content + reasoning
+
+                                                    # Check if the tool call section is complete
+                                                    if '</tool_calls>' in deepseek_content_buffer:
+                                                        logger.info(f"[DEEPSEEK] Tool call section complete, processing buffer ({len(deepseek_content_buffer)} chars)")
+
+                                                        clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
+
+                                                        if has_tool_calls:
+                                                            logger.info(f"[DEEPSEEK] Converted {len(tool_calls)} tool call(s) to OpenAI format")
+
+                                                            if clean_content:
+                                                                if '<tool_calls>' in clean_content or '</tool_calls>' in clean_content:
+                                                                    clean_content = re.sub(r'</?tool_calls>', '', clean_content).strip()
+                                                                content_chunk = {
+                                                                    "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                    "object": "chat.completion.chunk",
+                                                                    "model": model_mapper.get_display_model_name(current_model),
+                                                                    "choices": [{
+                                                                        "index": 0,
+                                                                        "delta": {"content": clean_content},
+                                                                        "finish_reason": None
+                                                                    }]
+                                                                }
+                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                                            tool_calls_chunk = {
+                                                                "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                "object": "chat.completion.chunk",
+                                                                "model": model_mapper.get_display_model_name(current_model),
+                                                                "choices": [{
+                                                                    "index": 0,
+                                                                    "delta": {"tool_calls": tool_calls},
+                                                                    "finish_reason": None
+                                                                }]
+                                                            }
+                                                            yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                                            finish_chunk = {
+                                                                "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
+                                                                "object": "chat.completion.chunk",
+                                                                "model": model_mapper.get_display_model_name(current_model),
+                                                                "choices": [{
+                                                                    "index": 0,
+                                                                    "delta": {},
+                                                                    "finish_reason": "tool_calls"
+                                                                }]
+                                                            }
+                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
+                                                        else:
+                                                            # Parsing failed — emit buffered content as plain text
+                                                            mapped_data = self._map_model_from_ollama(json.loads(json_str))
+                                                            if isinstance(mapped_data, dict) and 'choices' in mapped_data:
+                                                                choices = mapped_data.get('choices', [])
+                                                                if choices and len(choices) > 0:
+                                                                    choices[0]['delta']['content'] = deepseek_content_buffer
+                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            first_chunk_sent = True
+
+                                                        deepseek_content_buffer = ""
+                                                        deepseek_buffering_active = False
+                                                        continue
+                                                    else:
+                                                        # Still buffering — wait for more chunks
+                                                        continue
+
+                                                # DeepSeek: detect start of tool call section
+                                                if is_deepseek_model and '<tool_calls>' in (content + reasoning):
+                                                    deepseek_buffering_active = True
+                                                    deepseek_content_buffer = content + reasoning
+                                                    logger.info(f"[DEEPSEEK] Tool call section started, buffering")
+                                                    continue
+
+                                                # DeepSeek: suspicion buffering for partial <tool_calls tag
+                                                if is_deepseek_model:
+                                                    ds_combined = content + reasoning
+                                                    is_ds_suspicious = False
+                                                    if ds_combined and deepseek_suspicion_buffer:
+                                                        ds_combined = deepseek_suspicion_buffer + ds_combined
+                                                        deepseek_suspicion_buffer = ""
+
+                                                    if ds_combined:
+                                                        for prefix in _DEEPSEEK_TAG_PREFIXES:
+                                                            if len(ds_combined) >= len(prefix) and ds_combined.rstrip().endswith(prefix):
+                                                                # Check it's not a complete tag already
+                                                                if '<tool_calls>' not in ds_combined:
+                                                                    is_ds_suspicious = True
+                                                                    break
+                                                            # Partial match at end of string
+                                                            if len(ds_combined) < len(prefix) and prefix.startswith(ds_combined):
+                                                                is_ds_suspicious = True
+                                                                break
+
+                                                    if is_ds_suspicious:
+                                                        logger.info(f"[DEEPSEEK] Suspicious content, buffering: {ds_combined!r}")
+                                                        deepseek_suspicion_buffer = ds_combined
+                                                        continue
+                                                    elif deepseek_suspicion_buffer:
+                                                        # Previous suspicion resolved as non-tool content
+                                                        # Yield the buffered suspicion as content
+                                                        deepseek_suspicion_buffer = ""
 
                                                 # Normal processing
                                                 mapped_data = self._map_model_from_ollama(json_data)
@@ -1615,6 +2063,61 @@ class OllamaProxy:
 
                         # Send [DONE] if not already sent
                         if not done_marker_sent and is_openai_endpoint:
+                            # DeepSeek flush: if still buffering tool calls at stream end, try to parse
+                            if deepseek_buffering_active and deepseek_content_buffer:
+                                logger.info(f"[DEEPSEEK] Stream ended while buffering, attempting flush ({len(deepseek_content_buffer)} chars)")
+                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
+
+                                if has_tool_calls:
+                                    logger.info(f"[DEEPSEEK] Flushed {len(tool_calls)} tool call(s)")
+                                    if clean_content:
+                                        content_chunk = {
+                                            "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                            "object": "chat.completion.chunk",
+                                            "model": model_mapper.get_display_model_name(current_model),
+                                            "choices": [{"index": 0, "delta": {"content": clean_content}, "finish_reason": None}]
+                                        }
+                                        yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                    tool_calls_chunk = {
+                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                        "object": "chat.completion.chunk",
+                                        "model": model_mapper.get_display_model_name(current_model),
+                                        "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}]
+                                    }
+                                    yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                    finish_chunk = {
+                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                        "object": "chat.completion.chunk",
+                                        "model": model_mapper.get_display_model_name(current_model),
+                                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+                                    }
+                                    yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                else:
+                                    # Emit as plain text
+                                    text_chunk = {
+                                        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                        "object": "chat.completion.chunk",
+                                        "model": model_mapper.get_display_model_name(current_model),
+                                        "choices": [{"index": 0, "delta": {"content": deepseek_content_buffer}, "finish_reason": None}]
+                                    }
+                                    yield b'data: ' + json.dumps(text_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+
+                                deepseek_content_buffer = ""
+                                deepseek_buffering_active = False
+
+                            # DeepSeek: emit any remaining suspicion buffer
+                            if deepseek_suspicion_buffer:
+                                text_chunk = {
+                                    "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                                    "object": "chat.completion.chunk",
+                                    "model": model_mapper.get_display_model_name(current_model),
+                                    "choices": [{"index": 0, "delta": {"content": deepseek_suspicion_buffer}, "finish_reason": None}]
+                                }
+                                yield b'data: ' + json.dumps(text_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                deepseek_suspicion_buffer = ""
+
                             logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
                             yield b'data: [DONE]\n\n'
 
