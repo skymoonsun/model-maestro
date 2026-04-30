@@ -433,11 +433,10 @@ def _parse_xml_text_value(text: Optional[str]) -> Any:
     if not text:
         return ""
 
-    # Try JSON literals
+    # Try JSON parse (primitives, arrays, objects)
     try:
         val = json.loads(text)
-        if isinstance(val, (int, float, bool)) or val is None:
-            return val
+        return val
     except (json.JSONDecodeError, ValueError):
         pass
 
@@ -484,9 +483,9 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     if start_idx == -1:
         return content, [], False
 
-    end_idx = normalized.find('</tool_calls>')
+    end_idx = normalized.rfind('</tool_calls>')
     if end_idx == -1:
-        # Incomplete — might be a streaming partial, return as-is
+        # Incomplete - might be a streaming partial, return as-is
         return content, [], False
 
     # Extract content before and after the tool call section
@@ -496,41 +495,62 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     # Extract the tool call section
     section_content = normalized[start_idx + len('<tool_calls>'):end_idx]
 
-    # Parse each <invoke> block
+    # Remove nested <tool_calls> wrappers (DeepSeek sometimes wraps twice)
+    while '<tool_calls>' in section_content and '</tool_calls>' in section_content:
+        inner_start = section_content.find('<tool_calls>')
+        inner_end = section_content.rfind('</tool_calls>')
+        if inner_start != -1 and inner_end != -1:
+            section_content = (section_content[:inner_start] +
+                              section_content[inner_start + len('<tool_calls>'):inner_end] +
+                              section_content[inner_end + len('</tool_calls>'):])
+        else:
+            break
+
+    # Parse tool call blocks - supports three formats:
+    # 1. <invoke name="..."><parameter name="...">val</parameter></invoke> (canonical XML)
+    # 2. Ollama native format (plain text with function name + args)
+    # 3. Plain text between tags
     tool_calls = []
     tool_call_index = 0
 
-    # Use ElementTree for robust XML parsing
-    # Wrap in root to handle multiple invoke elements
-    xml_text = f'<root>{section_content}</root>'
+    # Try <invoke> format first (canonical XML with name attributes)
+    invoke_pattern = re.compile(
+        r'<invoke\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)</invoke>',
+        re.DOTALL
+    )
+    invoke_matches = list(invoke_pattern.finditer(section_content))
 
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as e:
-        logger.warning(f"[DEEPSEEK] Failed to parse XML tool calls: {e}")
-        logger.debug(f"[DEEPSEEK] XML was: {xml_text[:200]}")
-        # Fall back: try regex-based parsing
-        tool_calls = _parse_invoke_blocks_regex(section_content, tool_call_index)
-        if not tool_calls:
-            return content, [], False
-        tool_call_index = len(tool_calls)
-    else:
-        for invoke_elem in root.findall('invoke'):
-            func_name = invoke_elem.get('name', '')
-            if not func_name:
-                continue
+    if invoke_matches:
+        for match in invoke_matches:
+            func_name = match.group(1)
+            invoke_body = match.group(2)
 
-            # Parse parameters
+            # Parse <parameter> children
             arguments = {}
-            for param_elem in invoke_elem.findall('parameter'):
-                param_name = param_elem.get('name', '')
-                if not param_name:
-                    continue
-                param_value = _parse_xml_parameter_value(param_elem)
+            param_pattern = re.compile(
+                r'<parameter\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)(?:</parameter>)',
+                re.DOTALL
+            )
+            for param_match in param_pattern.finditer(invoke_body):
+                param_name = param_match.group(1)
+                param_value = param_match.group(2).strip()
+                # Remove CDATA wrapper if present
+                if param_value.startswith('<![CDATA[') and param_value.endswith(']]>'):
+                    param_value = param_value[9:-3]
+                # Try JSON parse
+                try:
+                    param_value = json.loads(param_value)
+                except (json.JSONDecodeError, ValueError):
+                    # Try ElementTree for nested XML structures
+                    if '<' in param_value and '>' in param_value:
+                        try:
+                            elem = ET.fromstring(f'<param>{param_value}</param>')
+                            param_value = _parse_xml_parameter_value(elem)
+                        except ET.ParseError:
+                            pass
                 arguments[param_name] = param_value
 
             arguments_str = json.dumps(arguments, ensure_ascii=False)
-
             tool_call = {
                 "index": tool_call_index,
                 "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -543,8 +563,110 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             _sanitize_tool_call_arguments(tool_call)
             tool_calls.append(tool_call)
             tool_call_index += 1
+            logger.info(f"[DEEPSEEK] Parsed invoke tool call: {func_name}({arguments_str[:80]}...)")
 
-            logger.info(f"[DEEPSEEK] Parsed tool call: {func_name}({arguments_str[:80]}...)")
+    if not tool_calls:
+        # Try Ollama native tool_call tags
+        # Content can be: "FunctionName\n{json_args}" or plain text
+        tool_call_pattern = re.compile(
+            r'<tool_call\s*>(.*?)</tool_call\s *>',
+            re.DOTALL
+        )
+        tc_matches = list(tool_call_pattern.finditer(section_content))
+
+        if not tc_matches:
+            # Broader pattern: everything between tags with possible attrs
+            tool_call_pattern2 = re.compile(
+                r'<tool_call[^>]*>(.*?)</tool_call\s *>',
+                re.DOTALL
+            )
+            tc_matches = list(tool_call_pattern2.finditer(section_content))
+
+        for tc_match in tc_matches:
+            tc_content = tc_match.group(1).strip()
+
+            # Try to split into name + JSON arguments
+            # Format 1: "FunctionName\n{...}" (name on first line, JSON args below)
+            # Format 2: "FunctionName(args)" (plain text)
+            # Format 3: Just text like "ToolRun Command \"...\""
+            func_name = ""
+            arguments = {}
+
+            newline_idx = tc_content.find('\n')
+            if newline_idx != -1:
+                func_name = tc_content[:newline_idx].strip()
+                args_str = tc_content[newline_idx + 1:].strip()
+
+                # Try JSON parse
+                try:
+                    arguments = json.loads(args_str)
+                except (json.JSONDecodeError, ValueError):
+                    # Not JSON - try plain text arg parsing
+                    arguments = _parse_plain_text_args(args_str)
+            else:
+                # No newline - try to parse whole content
+                parts = tc_content.split(None, 1)
+                if parts:
+                    func_name = parts[0].strip('"\'')
+
+                    # If there is remaining text, try to parse as arguments
+                    if len(parts) > 1:
+                        args_str = parts[1].strip()
+                        try:
+                            arguments = json.loads(args_str)
+                        except (json.JSONDecodeError, ValueError):
+                            arguments = _parse_plain_text_args(args_str)
+
+            if func_name:
+                arguments_str = json.dumps(arguments, ensure_ascii=False)
+                tool_call = {
+                    "index": tool_call_index,
+                    "id": f"call_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": arguments_str
+                    }
+                }
+                _sanitize_tool_call_arguments(tool_call)
+                tool_calls.append(tool_call)
+                tool_call_index += 1
+                logger.info(f"[DEEPSEEK] Parsed tool_call: {func_name}({arguments_str[:80]}...)")
+
+    if not tool_calls:
+        # Last resort: try ElementTree for well-formed XML
+        xml_text = f'<root>{section_content}</root>'
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            return content, [], False
+
+        for invoke_elem in root.findall('invoke'):
+            func_name = invoke_elem.get('name', '')
+            if not func_name:
+                continue
+            arguments = {}
+            for param_elem in invoke_elem.findall('parameter'):
+                param_name = param_elem.get('name', '')
+                if not param_name:
+                    continue
+                param_value = _parse_xml_parameter_value(param_elem)
+                arguments[param_name] = param_value
+
+            arguments_str = json.dumps(arguments, ensure_ascii=False)
+            tool_call = {
+                "index": tool_call_index,
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": arguments_str
+                }
+            }
+            _sanitize_tool_call_arguments(tool_call)
+            tool_calls.append(tool_call)
+            tool_call_index += 1
+            logger.info(f"[DEEPSEEK] Parsed XML tool call: {func_name}({arguments_str[:80]}...)")
 
     if not tool_calls:
         return content, [], False
@@ -555,65 +677,80 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     return clean_content, tool_calls, True
 
 
-def _parse_invoke_blocks_regex(section_content: str, start_index: int) -> List[Dict[str, Any]]:
-    """Fallback regex-based parser for <invoke> blocks when XML parsing fails.
+def _parse_plain_text_args(text: str) -> Dict[str, Any]:
+    """Parse plain text arguments from Ollama native tool call format.
 
-    Used when ElementTree can't parse malformed XML.
+    Handles formats like:
+    - ToolRun Command "find /path -type f"
+    - command="find /path" description="list files"
+    - Key-value pairs separated by spaces
+
+    Args:
+        text: Plain text content inside a tool call tag
+
+    Returns:
+        Dict of parsed arguments
     """
-    tool_calls = []
-    index = start_index
+    if not text or not text.strip():
+        return {}
 
-    # Match <invoke name="...">...</invoke> blocks
-    invoke_pattern = re.compile(
-        r'<invoke\s+name=["\']([^"\']+)["\']>(.*?)</invoke>',
-        re.DOTALL
-    )
+    text = text.strip()
+    arguments = {}
 
-    for match in invoke_pattern.finditer(section_content):
-        func_name = match.group(1)
-        invoke_body = match.group(2)
+    # Try key="value" pairs first (most structured)
+    kv_pattern = re.compile(r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))')
+    matches = list(kv_pattern.finditer(text))
+    if matches:
+        for match in matches:
+            key = match.group(1)
+            value = match.group(2) or match.group(3) or match.group(4) or ""
+            arguments[key] = value
+        if arguments:
+            return arguments
 
-        # Parse <parameter name="...">value</parameter>
-        arguments = {}
-        param_pattern = re.compile(
-            r'<parameter\s+name=["\']([^"\']+)["\']>(.*?)(?:</parameter>)',
-            re.DOTALL
-        )
+    # Try quoted string arguments after command name
+    # e.g. ToolRun Command "find /path -type f"
+    # Split by spaces but respect quotes
+    parts = []
+    current = ""
+    in_quotes = False
+    quote_char = None
+    for char in text:
+        if char in '"\'':
+            if in_quotes and char == quote_char:
+                in_quotes = False
+                quote_char = None
+            elif not in_quotes:
+                in_quotes = True
+                quote_char = char
+            else:
+                current += char
+        elif char == ' ' and not in_quotes:
+            if current:
+                parts.append(current)
+                current = ""
+        else:
+            current += char
+    if current:
+        parts.append(current)
 
-        for param_match in param_pattern.finditer(invoke_body):
-            param_name = param_match.group(1)
-            param_value = param_match.group(2).strip()
+    # First part is usually the command name, rest are arguments
+    if len(parts) >= 2:
+        # Common pattern: "Command" followed by the actual command string
+        # e.g. ["ToolRun", "Command", "find /path -type f"]
+        # or ["Bash", "find /path -type f"]
+        # Skip label-like words (Command, Run, Execute, etc.)
+        label_words = {'command', 'run', 'execute', 'tool', 'toolrun', 'bash', 'shell'}
+        arg_parts = []
+        for part in parts:
+            if part.lower() not in label_words or arg_parts:
+                arg_parts.append(part)
 
-            # Remove CDATA wrapper if present
-            if param_value.startswith('<![CDATA[') and param_value.endswith(']]>'):
-                param_value = param_value[9:-3]
+        if arg_parts:
+            # Join the remaining parts as the command
+            arguments['command'] = ' '.join(arg_parts)
 
-            # Try JSON parse
-            try:
-                param_value = json.loads(param_value)
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-            arguments[param_name] = param_value
-
-        arguments_str = json.dumps(arguments, ensure_ascii=False)
-
-        tool_call = {
-            "index": index,
-            "id": f"call_{uuid.uuid4().hex[:24]}",
-            "type": "function",
-            "function": {
-                "name": func_name,
-                "arguments": arguments_str
-            }
-        }
-        _sanitize_tool_call_arguments(tool_call)
-        tool_calls.append(tool_call)
-        index += 1
-
-        logger.info(f"[DEEPSEEK] Parsed tool call (regex): {func_name}({arguments_str[:80]}...)")
-
-    return tool_calls
+    return arguments
 
 
 class OllamaProxy:
