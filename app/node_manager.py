@@ -32,9 +32,17 @@ class NodeManager:
         self._http_client: Optional[httpx.AsyncClient] = None
     
     async def get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client"""
+        """Get or create HTTP client with conservative connection limits to avoid starving streaming."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=10.0)
+            limits = httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=60,
+            )
+            self._http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=3.0),
+                limits=limits,
+            )
         return self._http_client
     
     async def close(self):
@@ -197,32 +205,50 @@ class NodeManager:
             "total_models": len(synced_models)
         }
     
+    async def _sync_node_with_own_session(self, node_id: int) -> Dict[str, Any]:
+        """Sync a single node using its own DB session (safe for concurrent use)."""
+        from app.database import async_session_maker
+
+        async with async_session_maker() as session:
+            result = await self.sync_node_models(node_id, session)
+            await session.commit()
+            return result
+
     async def sync_all_nodes(self, session) -> Dict[str, Any]:
         """
-        Sync models from all active nodes.
-        
+        Sync models from all active nodes concurrently.
+        Each sync gets its own session to avoid SQLAlchemy concurrency issues.
+
         Returns:
             Dict with overall sync statistics
         """
+        import asyncio as _asyncio
+
         node_repo = NodeRepository(session)
         nodes = await node_repo.list_active()
-        
-        results = []
+
+        # Sync all nodes concurrently, each with its own session
+        results = await _asyncio.gather(
+            *[self._sync_node_with_own_session(node.id) for node in nodes],
+            return_exceptions=True
+        )
+
         total_synced = 0
         failed_nodes = []
-        
-        for node in nodes:
-            result = await self.sync_node_models(node.id, session)
-            results.append(result)
-            
+
+        for result in results:
+            if isinstance(result, Exception):
+                failed_nodes.append("unknown")
+                logger.error(f"Node sync error: {result}")
+                continue
             if result["success"]:
                 total_synced += result["total_models"]
             else:
-                failed_nodes.append(node.name)
-        
+                failed_nodes.append(result.get("node_name", "unknown"))
+
         # Invalidate cache
         self._cache_valid = False
-        
+
         return {
             "total_nodes": len(nodes),
             "successful_nodes": len(nodes) - len(failed_nodes),

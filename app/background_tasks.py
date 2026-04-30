@@ -239,49 +239,74 @@ async def background_processor():
 # =============================================================================
 
 # Configuration for node tasks
-NODE_HEALTH_CHECK_INTERVAL = 60.0  # seconds
-MODEL_SYNC_INTERVAL = 300.0  # seconds (5 minutes)
+NODE_HEALTH_CHECK_INTERVAL = 120.0  # seconds (2 minutes)
+MODEL_SYNC_INTERVAL = 600.0  # seconds (10 minutes)
 NODE_TASK_SHUTDOWN_EVENT = asyncio.Event()
+
+
+async def _wait_for_idle(max_wait: float = 30.0, poll_interval: float = 2.0):
+    """Wait until no streams are active, up to max_wait seconds."""
+    from app.proxy import is_streaming_active
+    waited = 0.0
+    while is_streaming_active() and waited < max_wait:
+        await asyncio.sleep(poll_interval)
+        waited += poll_interval
 
 
 async def node_health_check_task():
     """
     Periodically check health of all active nodes.
     Updates node health status in database.
+    Uses concurrent checks to avoid blocking the event loop.
+    Defers when streams are active to avoid interrupting users.
     """
     logger.info("Starting node health check task")
-    
+
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
+            # Wait for idle if streams are active
+            await _wait_for_idle(max_wait=30.0)
+
             from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.repositories.node_repository import NodeRepository
-            
+
             async with async_session_maker() as session:
                 node_repo = NodeRepository(session)
                 nodes = await node_repo.list_active()
-                
-                for node in nodes:
+
+                # Check all nodes concurrently instead of sequentially
+                async def _check_one(node):
                     is_healthy, error = await node_manager.health_check_node(
                         node.base_url,
                         node.api_key,
-                        timeout=5.0
+                        timeout=3.0
                     )
-                    
+                    return node, is_healthy, error
+
+                results = await asyncio.gather(
+                    *[_check_one(n) for n in nodes],
+                    return_exceptions=True
+                )
+
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.warning(f"Health check error: {result}")
+                        continue
+                    node, is_healthy, error = result
                     status = "healthy" if is_healthy else "unhealthy"
                     await node_repo.update_health_status(
                         node.id,
                         status,
                         error if not is_healthy else None
                     )
-                    
                     logger.debug(f"Node '{node.name}' health: {status}")
-                
+
                 await session.commit()
-                
+
         except Exception as e:
             logger.error(f"Error in health check task: {e}")
-        
+
         # Wait for next interval or shutdown
         try:
             await asyncio.wait_for(
@@ -299,25 +324,29 @@ async def model_discovery_task():
     """
     Periodically discover models from all healthy nodes.
     Updates node_models table.
+    Defers when streams are active to avoid interrupting users.
     """
     logger.info("Starting model discovery task")
-    
+
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
+            # Wait for idle if streams are active
+            await _wait_for_idle(max_wait=60.0)
+
             from app.database import async_session_maker
             from app.node_manager import node_manager
-            
+
             async with async_session_maker() as session:
                 result = await node_manager.sync_all_nodes(session)
-                
+
                 logger.info(
                     f"Model discovery: {result['successful_nodes']}/{result['total_nodes']} nodes, "
                     f"{result['total_models']} models"
                 )
-                
+
                 if result['failed_nodes']:
                     logger.warning(f"Failed nodes: {result['failed_nodes']}")
-                    
+
         except Exception as e:
             logger.error(f"Error in model discovery task: {e}")
         
@@ -332,6 +361,108 @@ async def model_discovery_task():
             pass  # Continue to next iteration
     
     logger.info("Model discovery task stopped")
+
+
+# =============================================================================
+# MODEL WARMUP TASK
+# =============================================================================
+
+WARMUP_INTERVAL = 1800.0  # seconds (30 minutes)
+WARMUP_PROMPT = "Hi"
+WARMUP_MAX_TOKENS = 1
+
+
+async def _warmup_model_on_node(
+    client,
+    node_base_url: str,
+    node_api_key: Optional[str],
+    model_name: str
+) -> bool:
+    """Send a minimal warmup request for a model on a specific node."""
+    url = f"{node_base_url.rstrip('/')}/api/chat"
+    headers = {"Content-Type": "application/json"}
+    if node_api_key:
+        headers["Authorization"] = f"Bearer {node_api_key}"
+
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": WARMUP_PROMPT}],
+        "stream": False,
+        "options": {"num_predict": WARMUP_MAX_TOKENS},
+    }
+
+    try:
+        resp = await client.post(url, json=payload, headers=headers, timeout=30.0)
+        if resp.status_code == 200:
+            logger.info(f"[WARMUP] Warmed up '{model_name}' on {node_base_url}")
+            return True
+        else:
+            logger.warning(f"[WARMUP] Unexpected status {resp.status_code} for '{model_name}' on {node_base_url}")
+            return False
+    except Exception as e:
+        logger.warning(f"[WARMUP] Failed to warm up '{model_name}' on {node_base_url}: {e}")
+        return False
+
+
+async def model_warmup_task():
+    """
+    Periodically warm up models on their respective nodes.
+
+    Sends a minimal /api/chat request to each model on the node that actually
+    hosts it, avoiding 404s from sending model names to the wrong node.
+    Defers when streams are active.
+    """
+    logger.info("Starting model warmup task")
+
+    while not NODE_TASK_SHUTDOWN_EVENT.is_set():
+        try:
+            await _wait_for_idle(max_wait=60.0)
+
+            import httpx
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository, NodeModelRepository
+
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                model_repo = NodeModelRepository(session)
+
+                nodes = await node_repo.list_active()
+                if not nodes:
+                    logger.debug("[WARMUP] No active nodes, skipping")
+
+                for node in nodes:
+                    if node.health_status not in ("healthy", "unknown"):
+                        continue
+
+                    # Get models available on THIS node only
+                    models = await model_repo.get_models_for_node(node.id)
+                    if not models:
+                        continue
+
+                    available = [m for m in models if m.is_available]
+                    logger.info(f"[WARMUP] Warming up {len(available)} models on node '{node.name}'")
+
+                    # Use a dedicated client with short timeout
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+                        for m in available:
+                            await _warmup_model_on_node(
+                                client, node.base_url, node.api_key, m.model_name
+                            )
+
+        except Exception as e:
+            logger.error(f"Error in model warmup task: {e}")
+
+        # Wait for next interval or shutdown
+        try:
+            await asyncio.wait_for(
+                NODE_TASK_SHUTDOWN_EVENT.wait(),
+                timeout=WARMUP_INTERVAL
+            )
+            break
+        except asyncio.TimeoutError:
+            pass
+
+    logger.info("Model warmup task stopped")
 
 
 async def node_load_cleanup_task():
@@ -494,19 +625,19 @@ async def start_background_tasks():
     """Start all background task processors"""
     # Start activity log processor
     asyncio.create_task(background_processor())
-    
+
     # Start node health check task
     asyncio.create_task(node_health_check_task())
-    
+
     # Start model discovery task
     asyncio.create_task(model_discovery_task())
-    
+
     # Start load cleanup task
     asyncio.create_task(node_load_cleanup_task())
 
-    # Start model keep-warm task (prevents cold-start timeouts)
-    asyncio.create_task(model_keep_warm_task())
-    
+    # Start model warmup task
+    asyncio.create_task(model_warmup_task())
+
     logger.info("All background tasks started")
 
 

@@ -20,6 +20,27 @@ logger = logging.getLogger(__name__)
 # Maximum retries for failover (will try all fallback members in group)
 MAX_FAILOVER_RETRIES = 5
 
+# Streaming activity tracker — background tasks check this to avoid interrupting streams
+import asyncio as _asyncio
+_active_stream_count = 0
+_active_stream_lock = _asyncio.Lock()
+
+
+async def mark_stream_start():
+    global _active_stream_count
+    async with _active_stream_lock:
+        _active_stream_count += 1
+
+
+async def mark_stream_end():
+    global _active_stream_count
+    async with _active_stream_lock:
+        _active_stream_count = max(0, _active_stream_count - 1)
+
+
+def is_streaming_active() -> bool:
+    return _active_stream_count > 0
+
 
 # ============================================================================
 # TOOL CALL VALIDATION (LiteLLM-inspired)
@@ -447,8 +468,9 @@ def _parse_xml_text_value(text: Optional[str]) -> Any:
 def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool]:
     """Parse DeepSeek XML tool call format from content and convert to OpenAI format.
 
-    Handles both canonical XML (<tool_calls><invoke><parameter>) and DSML-prefixed
-    (<|DSML|tool_calls><|DSML|invoke>) formats.
+    Handles canonical XML (<tool_calls><invoke><parameter>), DSML-prefixed
+    (<|DSML|tool_calls><|DSML|invoke>), and singular <tool_call name="...">
+    (DeepSeek-v4-pro) formats.
 
     Code blocks (```...``` or ~~~...~~~) are stripped before parsing to prevent
     false positives from XML examples inside markdown.
@@ -468,7 +490,8 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     # Quick check — if no tool_calls marker at all, skip
     if '<tool_calls>' not in content and '</tool_calls>' not in content \
             and '<|DSML|tool_calls>' not in content \
-            and '<CallMcpTool>' not in content and '</CallMcpTool>' not in content:
+            and '<CallMcpTool>' not in content and '</CallMcpTool>' not in content \
+            and '<tool_call' not in content:
         # Also check partial matches at end (streaming suspicion)
         has_prefix = any(content.rstrip().endswith(p) for p in _DEEPSEEK_TAG_PREFIXES)
         if not has_prefix:
@@ -480,16 +503,19 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     # Normalize DSML tags to canonical XML
     normalized = _normalize_dsml_tags(stripped)
 
-    # Determine wrapper format: <tool_calls> or <CallMcpTool>
+    # Determine wrapper format: <tool_calls>, <CallMcpTool>, or <tool_call name="..."> (singular)
     tc_open = '<tool_calls>'
     tc_close = '</tool_calls>'
     mcp_open = '<CallMcpTool>'
     mcp_close = '</CallMcpTool>'
+    stc_open = '<tool_call'
+    stc_close = '</tool_call>'
 
     has_tc = tc_open in normalized and tc_close in normalized
     has_mcp = mcp_open in normalized and mcp_close in normalized
+    has_stc = (stc_open in normalized and stc_close in normalized)
 
-    if not has_tc and not has_mcp:
+    if not has_tc and not has_mcp and not has_stc:
         return content, [], False
 
     # Prefer <tool_calls> wrapper if both exist
@@ -508,13 +534,27 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                 section_content = (section_content[:inner_start] +
                                   section_content[inner_start + len(tc_open):inner_end] +
                                   section_content[inner_end + len(tc_close):])
-    else:
+    elif has_mcp:
         # <CallMcpTool> format — extract each block individually
         start_idx = normalized.find(mcp_open)
         end_idx = normalized.rfind(mcp_close)
         content_before = normalized[:start_idx].strip()
         content_after = normalized[end_idx + len(mcp_close):].strip()
         section_content = normalized[start_idx:end_idx + len(mcp_close)]
+
+    elif has_stc:
+        # <tool_call name="..."> (singular) format — extract all such blocks
+        stc_pattern = re.compile(
+            r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</tool_call>',
+            re.DOTALL
+        )
+        stc_matches = list(stc_pattern.finditer(normalized))
+        first_start = stc_matches[0].start() if stc_matches else 0
+        last_end = stc_matches[-1].end() if stc_matches else 0
+        content_before = normalized[:first_start].strip()
+        content_after = normalized[last_end:].strip()
+        # Build section_content from all matched blocks so downstream parsers can handle it
+        section_content = ''.join(m.group(0) for m in stc_matches)
 
     # Parse tool call blocks - supports formats:
     # 1. <invoke name="..."><parameter name="...">val</parameter></invoke> (canonical XML)
@@ -677,6 +717,67 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             tool_calls.append(tool_call)
             tool_call_index += 1
             logger.info(f"[DEEPSEEK] Parsed XML tool call: {func_name}({arguments_str[:80]}...)")
+
+    # Try <tool_call name="..."> (singular with name attribute) format (DeepSeek-v4-pro)
+    if not tool_calls:
+        stc_pattern = re.compile(
+            r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</tool_call>',
+            re.DOTALL
+        )
+        for stc_match in stc_pattern.finditer(section_content):
+            func_name = stc_match.group(1).strip()
+            stc_body = stc_match.group(2).strip()
+
+            # Parse sub-elements: named elements + <parameter> children
+            arguments = {}
+            param_idx = 0
+            # Match all XML sub-elements: <tagname>value</tagname>
+            elem_pat = re.compile(
+                r'<(\w+)(?:\s+name=["\x27]([^"\x27]+)["\x27])?[^>]*>(.*?)</\1\s*>',
+                re.DOTALL
+            )
+            for elem_match in elem_pat.finditer(stc_body):
+                tag_name = elem_match.group(1)
+                name_attr = elem_match.group(2)
+                elem_value = elem_match.group(3).strip()
+
+                # Try JSON parse on the value
+                try:
+                    elem_value = json.loads(elem_value)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+                if tag_name == 'parameter' and name_attr:
+                    # <parameter name="key">value</parameter> — named parameter
+                    arguments[name_attr] = elem_value
+                elif tag_name == 'parameter':
+                    # <parameter>value</parameter> — unnamed positional parameter
+                    arguments[str(param_idx)] = elem_value
+                    param_idx += 1
+                else:
+                    # Named element like <path>val</path>, <line>42</line>
+                    arguments[tag_name] = elem_value
+
+            if not arguments:
+                # No elements found, try plain text arg parsing
+                arguments = _parse_plain_text_args(stc_body)
+
+            if func_name:
+                arguments_str = json.dumps(arguments, ensure_ascii=False)
+                tool_call = {
+                    "index": tool_call_index,
+                    "id": f"call_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": arguments_str
+                    }
+                }
+                _sanitize_tool_call_arguments(tool_call)
+                tool_calls.append(tool_call)
+                tool_call_index += 1
+                logger.info(f'[DEEPSEEK] Parsed singular tool_call: {func_name}({arguments_str[:80]}...)')
+
 
     # Try <CallMcpTool> format (DeepSeek-v4-pro MCP-style tool calls)
     if not tool_calls:
@@ -904,7 +1005,7 @@ class OllamaProxy:
                 return self.base_url
 
         except Exception as e:
-            logger.error(f"[LB] Error selecting node: {e}, falling back to default URL")
+            logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
             return self.base_url
     
     async def _ensure_mappings_loaded(self):
@@ -1161,7 +1262,7 @@ class OllamaProxy:
                             # Keep 'reasoning' field as-is for clients that support it
                             # But also check for tool calls in reasoning
                             reasoning = delta.get('reasoning', '')
-                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<CallMcpTool>' in reasoning):
+                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
                                 # Route to appropriate parser based on format
                                 if '<|tool_calls_section_begin|>' in reasoning:
                                     clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
@@ -1210,7 +1311,7 @@ class OllamaProxy:
                             # DEEPSEEK TOOL CALL FIX: Convert DeepSeek's XML tool call format
                             # to OpenAI's standard tool_calls format (in content)
                             content = delta.get('content', '')
-                            if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content)):
+                            if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content) or ('<tool_call' in content and '</tool_call>' in content)):
                                 clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
 
                                 if has_tool_calls:
@@ -1232,7 +1333,7 @@ class OllamaProxy:
                             # Keep 'reasoning' field as-is for clients that support it
                             # But also check for tool calls in reasoning
                             reasoning = message.get('reasoning', '')
-                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<CallMcpTool>' in reasoning):
+                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
                                 # Route to appropriate parser based on format
                                 if '<|tool_calls_section_begin|>' in reasoning:
                                     clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
@@ -1984,8 +2085,8 @@ class OllamaProxy:
                                                 if is_deepseek_model and deepseek_buffering_active:
                                                     deepseek_content_buffer += content + reasoning
 
-                                                    # Check if the tool call section is complete (either format)
-                                                    if '</tool_calls>' in deepseek_content_buffer or '</CallMcpTool>' in deepseek_content_buffer:
+                                                    # Check if the tool call section is complete (any format)
+                                                    if '</tool_calls>' in deepseek_content_buffer or '</CallMcpTool>' in deepseek_content_buffer or '</tool_call>' in deepseek_content_buffer:
                                                         logger.info(f"[DEEPSEEK] Tool call section complete, processing buffer ({len(deepseek_content_buffer)} chars)")
 
                                                         clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
@@ -1995,7 +2096,7 @@ class OllamaProxy:
 
                                                             if clean_content:
                                                                 if '<tool_calls>' in clean_content or '</tool_calls>' in clean_content or '<CallMcpTool>' in clean_content or '</CallMcpTool>' in clean_content:
-                                                                    clean_content = re.sub(r'</?(?:tool_calls|CallMcpTool)>', '', clean_content).strip()
+                                                                    clean_content = re.sub(r'</?(?:tool_calls|CallMcpTool|tool_call)[^>]*>', '', clean_content).strip()
                                                                 content_chunk = {
                                                                     "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
                                                                     "object": "chat.completion.chunk",
@@ -2049,8 +2150,8 @@ class OllamaProxy:
                                                         # Still buffering — wait for more chunks
                                                         continue
 
-                                                # DeepSeek: detect start of tool call section (<tool_calls> or <CallMcpTool>)
-                                                if is_deepseek_model and ('<tool_calls>' in (content + reasoning) or '<CallMcpTool>' in (content + reasoning)):
+                                                # DeepSeek: detect start of tool call section (<tool_calls>, <CallMcpTool>, or <tool_call singular>)
+                                                if is_deepseek_model and ('<tool_calls>' in (content + reasoning) or '<CallMcpTool>' in (content + reasoning) or '<tool_call' in (content + reasoning)):
                                                     deepseek_buffering_active = True
                                                     deepseek_content_buffer = content + reasoning
                                                     logger.info(f"[DEEPSEEK] Tool call section started, buffering")
@@ -2064,13 +2165,18 @@ class OllamaProxy:
                                                         ds_combined = deepseek_suspicion_buffer + ds_combined
                                                         deepseek_suspicion_buffer = ""
 
+                                                    # After combining suspicion buffer, check if we now have a complete tag
+                                                    if ds_combined and ('<tool_calls>' in ds_combined or '<CallMcpTool>' in ds_combined or '<tool_call' in ds_combined):
+                                                        deepseek_buffering_active = True
+                                                        deepseek_content_buffer = ds_combined
+                                                        logger.info(f"[DEEPSEEK] Tool call detected after suspicion merge, buffering")
+                                                        continue
+
                                                     if ds_combined:
                                                         for prefix in _DEEPSEEK_TAG_PREFIXES:
                                                             if len(ds_combined) >= len(prefix) and ds_combined.rstrip().endswith(prefix):
-                                                                # Check it's not a complete tag already
-                                                                if '<tool_calls>' not in ds_combined:
-                                                                    is_ds_suspicious = True
-                                                                    break
+                                                                is_ds_suspicious = True
+                                                                break
                                                             # Partial match at end of string
                                                             if len(ds_combined) < len(prefix) and prefix.startswith(ds_combined):
                                                                 is_ds_suspicious = True
@@ -2398,8 +2504,17 @@ class OllamaProxy:
                     yield b'data: [DONE]\n\n'
                     return
 
+        async def _tracked_stream():
+            """Wraps stream generator with streaming activity tracking."""
+            await mark_stream_start()
+            try:
+                async for chunk in stream_generator_with_failover():
+                    yield chunk
+            finally:
+                await mark_stream_end()
+
         return StreamingResponse(
-            stream_generator_with_failover(),
+            _tracked_stream(),
             media_type=f"{media_type}; charset=utf-8" if media_type == "text/event-stream" else media_type,
             headers={
                 "Cache-Control": "no-cache, no-transform",

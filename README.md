@@ -103,7 +103,10 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **Streaming** — SSE-based streaming on `/api/chat`, `/api/generate` and `/v1/chat/completions`.
 - **OpenAI Compatible** — Drop-in `/v1/chat/completions` and `/v1/models` endpoints.
 - **Full Ollama API** — `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/copy`, `/api/delete`, `/api/pull`, `/api/push`, `/api/create`.
-- **Background Tasks** — Redis-backed async queue for activity logging, node health checks, model discovery and load cleanup.
+- **DeepSeek Tool Call Parsing** — Auto-detects and converts DeepSeek's raw XML tool call output (`<tool_calls><invoke>`, `<CallMcpTool>`, `<tool_call name="...">`) to OpenAI `tool_calls` format in streaming and non-streaming responses. Kimi/Moonshot `<|tool_calls_section_begin|>` format also supported.
+- **Streaming-Aware Background Tasks** — Health checks, model discovery and warmup defer when streams are active, preventing interruptions.
+- **Node-Aware Model Warmup** — Warmup requests target only models that exist on each node, eliminating 404 errors from stale model names.
+- **Background Tasks** — Redis-backed async queue for activity logging, node health checks, model discovery, model warmup and load cleanup.
 - **Audit Logs** — Every admin action is timestamped and queryable.
 - **PostgreSQL + Alembic** — Schema migrations run automatically on container startup.
 - **Redis Cache** — Hot-path caching for mappings, config and user usage data.
@@ -511,7 +514,7 @@ docker compose -f docker-compose.dev.yml logs -f frontend
 model-maestro/
 ├── app/
 │   ├── main.py              # FastAPI app, routers, docs auth
-│   ├── proxy.py             # Proxy logic, model routing, failover
+│   ├── proxy.py             # Proxy logic, model routing, failover, tool call parsing
 │   ├── config.py            # Settings, ModelMappingManager, ModelGroupManager
 │   ├── auth.py              # JWT authentication
 │   ├── models.py            # Pydantic request/response models
@@ -521,7 +524,7 @@ model-maestro/
 │   ├── load_balancer.py     # Node selection algorithms
 │   ├── node_manager.py      # Health checks, discovery, node CRUD
 │   ├── user_manager.py      # User CRUD
-│   ├── background_tasks.py  # Activity log processor, health checks
+│   ├── background_tasks.py  # Activity log processor, health checks, model warmup
 │   ├── openclaw.py          # OpenClaw integration
 │   ├── admin*.py            # Admin API routers
 │   ├── repositories/        # Data access layer

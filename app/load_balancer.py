@@ -57,11 +57,19 @@ class LoadBalancer:
         
         if len(healthy_nodes) == 1:
             return healthy_nodes[0]
-        
+
+        # Validate strategy is a string (guard against accidental positional arg swap)
+        if not isinstance(strategy, str):
+            logger.warning(f"Invalid strategy type ({type(strategy).__name__}), using least_loaded")
+            strategy = "least_loaded"
+
         # Normalize node name key (can be "name" or "node_name")
         for n in healthy_nodes:
-            if "name" not in n and "node_name" in n:
-                n["name"] = n["node_name"]
+            if "name" not in n:
+                if "node_name" in n:
+                    n["name"] = n["node_name"]
+                else:
+                    n["name"] = "unknown"
         
         if strategy == "least_loaded":
             return await self._select_least_loaded(healthy_nodes, session)
@@ -338,6 +346,7 @@ load_balancer = LoadBalancer()
 # Helper function for quick access
 async def select_best_node(
     nodes: List[Dict[str, Any]],
+    *,
     strategy: str = "least_loaded",
     session = None
 ) -> Optional[Dict[str, Any]]:
