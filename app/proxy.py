@@ -1139,6 +1139,86 @@ class OllamaProxy:
         """
         return model_group_manager.get_fallback(group_name, failed_model, tried_models)
 
+    @staticmethod
+    def _strip_images_from_messages(data: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+        """
+        Remove image content from messages when the target model doesn't support vision.
+
+        When a user switches from a vision-capable model to a non-vision model mid-conversation,
+        the chat history may still contain image_url parts. This strips them out to prevent
+        400 errors from Ollama models that don't support image input.
+        """
+        messages = data.get("messages")
+        if not messages or not isinstance(messages, list):
+            return data
+
+        capabilities = model_mapper.get_capabilities(model_name)
+        # Only strip if capabilities are explicitly configured and don't include vision
+        # If capabilities are None (unconfigured), we can't know, so don't strip
+        if capabilities is None or "vision" in capabilities:
+            return data
+
+        modified = False
+        cleaned_messages = []
+
+        for msg in messages:
+            content = msg.get("content")
+            if not content:
+                cleaned_messages.append(msg)
+                continue
+
+            # String content: strip base64 data URLs
+            if isinstance(content, str):
+                if "data:image/" in content:
+                    cleaned_messages.append({**msg, "content": "[image removed]"})
+                    modified = True
+                else:
+                    cleaned_messages.append(msg)
+                continue
+
+            # List content (OpenAI format): remove image_url parts and base64 in text parts
+            if isinstance(content, list):
+                new_parts = []
+                has_image = False
+                for part in content:
+                    if not isinstance(part, dict):
+                        new_parts.append(part)
+                        continue
+
+                    if part.get("type") == "image_url":
+                        has_image = True
+                        continue
+
+                    if part.get("type") == "text":
+                        text = part.get("text", "")
+                        if isinstance(text, str) and "data:image/" in text:
+                            new_parts.append({"type": "text", "text": "[image removed]"})
+                            has_image = True
+                            continue
+
+                    if "image" in part:
+                        has_image = True
+                        continue
+
+                    new_parts.append(part)
+
+                if has_image:
+                    if not new_parts:
+                        new_parts = [{"type": "text", "text": "[image removed]"}]
+                    modified = True
+                    cleaned_messages.append({**msg, "content": new_parts})
+                else:
+                    cleaned_messages.append(msg)
+                continue
+
+            cleaned_messages.append(msg)
+
+        if modified:
+            logger.info(f"[STRIP] Removed image content from messages for non-vision model '{model_name}'")
+            return {**data, "messages": cleaned_messages}
+
+        return data
+
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Map model names in request data from client format to Ollama format
@@ -1673,6 +1753,12 @@ class OllamaProxy:
         if data:
             data = self._map_model_to_ollama(data)
 
+        # Step 3: Strip images from messages if model doesn't support vision
+        # Use the mapped (real) model name for capability lookup
+        mapped_model = data.get('model') or data.get('name') if data else None
+        if data and mapped_model:
+            data = self._strip_images_from_messages(data, mapped_model)
+
         # Validate data for POST requests
         if method.upper() == "POST" and not data:
             raise HTTPException(
@@ -1861,6 +1947,10 @@ class OllamaProxy:
                                     current_data['model'] = fallback_model
                                     current_data = await self._resolve_model_groups(current_data)
                                     current_data = self._map_model_to_ollama(current_data)
+                                    # Strip images if fallback model doesn't support vision
+                                    fallback_mapped = current_data.get('model') or current_data.get('name')
+                                    if fallback_mapped:
+                                        current_data = self._strip_images_from_messages(current_data, fallback_mapped)
 
                                     # Select new node URL for fallback (reset tried_nodes for new model)
                                     new_base_url = await self._select_node_url(fallback_model)
@@ -2470,6 +2560,10 @@ class OllamaProxy:
                             current_data['model'] = fallback_model
                             current_data = await self._resolve_model_groups(current_data)
                             current_data = self._map_model_to_ollama(current_data)
+                            # Strip images if fallback model doesn't support vision
+                            fb_mapped = current_data.get('model') or current_data.get('name')
+                            if fb_mapped:
+                                current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             new_base_url = await self._select_node_url(fallback_model)
                             current_url = f"{new_base_url}{endpoint}"
@@ -2629,6 +2723,10 @@ class OllamaProxy:
                             current_data['model'] = fallback_model
                             current_data = await self._resolve_model_groups(current_data)
                             current_data = self._map_model_to_ollama(current_data)
+                            # Strip images if fallback model doesn't support vision
+                            fb_mapped = current_data.get('model') or current_data.get('name')
+                            if fb_mapped:
+                                current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             # Select new node URL for fallback
                             new_base_url = await self._select_node_url(fallback_model)
@@ -2745,6 +2843,10 @@ class OllamaProxy:
                         current_data['model'] = fallback_model
                         current_data = await self._resolve_model_groups(current_data)
                         current_data = self._map_model_to_ollama(current_data)
+                        # Strip images if fallback model doesn't support vision
+                        fb_mapped = current_data.get('model') or current_data.get('name')
+                        if fb_mapped:
+                            current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                         new_base_url = await self._select_node_url(fallback_model)
                         current_url = f"{new_base_url}{endpoint}"
