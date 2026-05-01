@@ -445,6 +445,11 @@ async def model_warmup_task():
                     # Use a dedicated client with short timeout
                     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                         for m in available:
+                            # Re-check node is still active before each warmup
+                            fresh = await node_repo.get_by_id(node.id)
+                            if not fresh or not fresh.is_active:
+                                logger.info(f"[WARMUP] Node '{node.name}' no longer active, stopping warmup")
+                                break
                             await _warmup_model_on_node(
                                 client, node.base_url, node.api_key, m.model_name
                             )
