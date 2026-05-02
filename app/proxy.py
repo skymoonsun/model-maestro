@@ -2745,7 +2745,7 @@ class OllamaProxy:
                     logger.error(f"Ollama error ({response.status_code}): {error_text}")
                     logger.error(f"Request URL: {current_url}")
                     if current_data:
-                        logger.error(f"Request data: {_json_dumps(current_data, option=orjson.OPT_INDENT_2).decode()}")
+                        logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first

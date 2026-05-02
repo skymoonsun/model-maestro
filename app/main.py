@@ -20,6 +20,7 @@ from app.models import (
     OllamaGenerateRequest,
     OllamaChatRequest,
     OllamaEmbeddingsRequest,
+    OllamaEmbedRequest,
 )
 from app.admin import router as admin_router
 from app.admin_auth import router as admin_auth_router
@@ -407,6 +408,44 @@ async def embeddings(
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/api/embeddings",
+        data=request.model_dump(exclude_none=True),
+        username=username
+    )
+
+
+@app.post("/api/embed", tags=["Ollama Native API"])
+async def embed(
+    request: OllamaEmbedRequest,
+    username: str = Depends(get_current_user)
+):
+    """
+    Generate embeddings for text(s) using a model.
+
+    Native Ollama /api/embed endpoint. Accepts a single text or a list of texts.
+
+    Requires JWT authentication and model access
+    """
+    logger.info(f"User {username} requesting embed with model {request.model}")
+
+    # Check model access
+    has_access = await check_model_access(username, request.model)
+    if not has_access:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Bu modele erişim yetkiniz yok: {request.model}"
+        )
+
+    # Check user limits BEFORE making request to Ollama
+    within_limits = await ollama_proxy.check_user_limits(username, "embed")
+    if not within_limits:
+        raise HTTPException(
+            status_code=429,
+            detail="User has exceeded their request or token limit"
+        )
+
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/api/embed",
         data=request.model_dump(exclude_none=True),
         username=username
     )
