@@ -21,6 +21,10 @@ from app.models import (
     OllamaChatRequest,
     OllamaEmbeddingsRequest,
     OllamaEmbedRequest,
+    OpenAIEmbeddingRequest,
+    OpenAIEmbeddingResponse,
+    EmbeddingData,
+    EmbeddingUsage,
 )
 from app.admin import router as admin_router
 from app.admin_auth import router as admin_auth_router
@@ -448,6 +452,87 @@ async def embed(
         endpoint="/api/embed",
         data=request.model_dump(exclude_none=True),
         username=username
+    )
+
+
+@app.post("/v1/embeddings", tags=["OpenAI Compatible API"])
+async def openai_embeddings(
+    request: OpenAIEmbeddingRequest,
+    username: str = Depends(get_current_user)
+):
+    """
+    OpenAI-compatible embeddings endpoint.
+
+    Accepts single text or list of texts and returns embeddings
+    in the standard OpenAI /v1/embeddings format.
+
+    Routes to Ollama /api/embed under the hood.
+    """
+    logger.info(f"User {username} requesting OpenAI embeddings with model {request.model}")
+
+    # Check model access
+    has_access = await check_model_access(username, request.model)
+    if not has_access:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Bu modele erişim yetkiniz yok: {request.model}"
+        )
+
+    # Check user limits BEFORE making request to Ollama
+    within_limits = await ollama_proxy.check_user_limits(username, "embed")
+    if not within_limits:
+        raise HTTPException(
+            status_code=429,
+            detail="User has exceeded their request or token limit"
+        )
+
+    # Convert OpenAI request to Ollama /api/embed format
+    ollama_request = {
+        "model": request.model,
+        "input": request.input,
+        "truncate": True,
+    }
+
+    response = await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/api/embed",
+        data=ollama_request,
+        username=username
+    )
+
+    # Parse Ollama response
+    if isinstance(response, dict):
+        response_data = response
+    elif isinstance(response, str):
+        response_data = json.loads(response)
+    else:
+        response_data = {}
+
+    # Convert Ollama response to OpenAI format
+    embeddings = response_data.get("embeddings", [])
+    model_name = response_data.get("model", request.model)
+
+    data_list = []
+    total_tokens = 0
+    for idx, emb in enumerate(embeddings):
+        data_list.append(EmbeddingData(
+            embedding=emb,
+            index=idx
+        ))
+        # Rough token estimate: embedding models typically use ~0.25-1 tokens per char.
+        if isinstance(request.input, list):
+            text = request.input[idx] if idx < len(request.input) else ""
+        else:
+            text = request.input
+        total_tokens += max(1, len(text) // 4)
+
+    return OpenAIEmbeddingResponse(
+        data=data_list,
+        model=model_name,
+        usage=EmbeddingUsage(
+            prompt_tokens=total_tokens,
+            total_tokens=total_tokens
+        )
     )
 
 
