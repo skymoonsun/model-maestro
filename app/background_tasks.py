@@ -1,7 +1,17 @@
 """Background task manager for async processing"""
 
 import asyncio
-import json
+
+# orjson is optional — provides ~8x faster JSON serialization.
+try:
+    import orjson as _json_lib
+    _json_loads = _json_lib.loads
+    _json_dumps = lambda obj: _json_lib.dumps(obj).decode()
+except ImportError:
+    import json as _json_lib
+    _json_loads = _json_lib.loads
+    _json_dumps = lambda obj: _json_lib.dumps(obj, ensure_ascii=False)
+
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -62,7 +72,7 @@ async def queue_activity_log_async(
         
         # Add to queue (RPUSH for FIFO)
         # Redis client has decode_responses=True, so we pass strings directly
-        await redis_manager.redis_client.rpush(QUEUE_KEY, json.dumps(log_data))
+        await redis_manager.redis_client.rpush(QUEUE_KEY, _json_dumps(log_data))
         
         # Log successful queue
         logger.debug(f"Queued activity log for user {username}")
@@ -130,57 +140,63 @@ async def _update_daily_usage_cache(username: str, total_tokens: int):
 
 async def process_batch(batch: List[Dict[str, Any]]):
     """
-    Process a batch of activity logs
-    
+    Process a batch of activity logs using bulk insert.
+
     Args:
         batch: List of activity log dictionaries
     """
     if not batch:
         return
-    
+
     try:
         from app.repositories import UserRepository, UserActivityRepository
         from app.database import async_session_maker
-        
+
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             activity_repo = UserActivityRepository(session)
-            
+
+            # 1. Bulk lookup users by username (single query instead of N+1)
+            usernames = list({log['username'] for log in batch})
+            users = await user_repo.get_by_usernames(usernames)
+            username_to_id = {u.username: u.id for u in users}
+
+            # 2. Build bulk insert values and aggregate tokens per user
+            logs_to_insert = []
+            tokens_per_user: Dict[str, int] = {}
+
             for log in batch:
-                try:
-                    # Get user ID
-                    user = await user_repo.get_by_username(log['username'])
-                    if not user:
-                        logger.warning(f"User not found for activity log: {log['username']}")
-                        continue
-                    
-                    # Log activity
-                    await activity_repo.log_activity(
-                        user_id=user.id,
-                        model_name=log['model_name'],
-                        request_type=log['request_type'],
-                        prompt_tokens=log.get('prompt_tokens', 0),
-                        completion_tokens=log.get('completion_tokens', 0),
-                        total_tokens=log.get('total_tokens', 0),
-                        status_code=log.get('status_code'),
-                        duration_ms=log.get('duration_ms'),
-                        error_message=log.get('error_message')
-                    )
-                    
-                    # Update daily usage cache (atomic increment)
-                    await _update_daily_usage_cache(
-                        log['username'],
-                        log.get('total_tokens', 0)
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error processing activity log: {e}")
+                username = log['username']
+                user_id = username_to_id.get(username)
+                if not user_id:
+                    logger.warning(f"User not found for activity log: {username}")
                     continue
-            
-            # Commit all logs in batch
-            await session.commit()
-            logger.info(f"Processed {len(batch)} activity logs")
-    
+
+                logs_to_insert.append({
+                    "user_id": user_id,
+                    "model_name": log['model_name'],
+                    "request_type": log['request_type'],
+                    "prompt_tokens": log.get('prompt_tokens', 0) or 0,
+                    "completion_tokens": log.get('completion_tokens', 0) or 0,
+                    "total_tokens": log.get('total_tokens', 0) or 0,
+                    "status_code": log.get('status_code'),
+                    "duration_ms": log.get('duration_ms'),
+                    "error_message": log.get('error_message'),
+                })
+
+                # Aggregate tokens per user for a single cache update per user
+                tokens_per_user[username] = tokens_per_user.get(username, 0) + (log.get('total_tokens', 0) or 0)
+
+            # 3. Bulk insert all activity logs (single INSERT)
+            if logs_to_insert:
+                inserted = await activity_repo.bulk_insert_logs(logs_to_insert)
+                await session.commit()
+                logger.info(f"Processed {inserted} activity logs via bulk insert")
+
+            # 4. Update daily usage cache once per user (instead of per log)
+            for username, total_tokens in tokens_per_user.items():
+                await _update_daily_usage_cache(username, total_tokens)
+
     except Exception as e:
         logger.error(f"Error processing batch: {e}")
 
@@ -218,7 +234,7 @@ async def background_processor():
                     log_data = await redis_manager.redis_client.lpop(QUEUE_KEY)
                     if log_data:
                         # log_data is already a string (decode_responses=True)
-                        batch.append(json.loads(log_data))
+                        batch.append(_json_loads(log_data))
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"Error decoding log data: {e}")
                     continue
@@ -677,7 +693,7 @@ async def stop_background_tasks():
                     try:
                         log_data = await redis_manager.redis_client.lpop(QUEUE_KEY)
                         if log_data:
-                            batch.append(json.loads(log_data))
+                            batch.append(_json_loads(log_data))
                     except json.JSONDecodeError:
                         continue
                 

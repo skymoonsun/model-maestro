@@ -2,6 +2,28 @@
 
 from typing import Dict, Any, Optional, List, Tuple
 import httpx
+
+# orjson is optional — provides ~8x faster JSON serialization.
+# Falls back to standard json if not installed.
+try:
+    import orjson as _json_lib
+    _json_loads = _json_lib.loads
+    _json_decode_error = _json_lib.JSONDecodeError
+
+    def _json_dumps(obj: Any, indent: bool = False) -> bytes:
+        if indent:
+            return _json_lib.dumps(obj, option=_json_lib.OPT_INDENT_2)
+        return _json_lib.dumps(obj)
+except ImportError:
+    import json as _json_lib
+    _json_loads = _json_lib.loads
+    _json_decode_error = _json_lib.JSONDecodeError
+
+    def _json_dumps(obj: Any, indent: bool = False) -> bytes:
+        if indent:
+            return _json_lib.dumps(obj, ensure_ascii=False, indent=2).encode('utf-8')
+        return _json_lib.dumps(obj, ensure_ascii=False).encode('utf-8')
+
 import json
 import logging
 import re
@@ -73,9 +95,9 @@ def _is_tool_call_valid(tool_call: Dict[str, Any]) -> bool:
 
     # Check if arguments is valid JSON
     try:
-        json.loads(args)
+        _json_loads(args)
         return True
-    except (json.JSONDecodeError, TypeError):
+    except (_json_decode_error, TypeError):
         return False
 
 
@@ -106,8 +128,8 @@ def _sanitize_tool_call_arguments(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         return tool_call
 
     try:
-        args = json.loads(args_str)
-    except (json.JSONDecodeError, TypeError):
+        args = _json_loads(args_str)
+    except (_json_decode_error, TypeError):
         return tool_call
 
     if not isinstance(args, dict):
@@ -142,7 +164,7 @@ def _sanitize_tool_call_arguments(tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 changed = True
 
     if changed:
-        func['arguments'] = json.dumps(args, ensure_ascii=False)
+        func['arguments'] = _json_dumps(args).decode()
 
     return tool_call
 
@@ -264,9 +286,9 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
         
         # Parse JSON arguments
         try:
-            arguments = json.loads(args_str)
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
-        except json.JSONDecodeError as e:
+            arguments = _json_loads(args_str)
+            arguments_str = _json_dumps(arguments).decode()
+        except _json_decode_error as e:
             logger.warning(f"Failed to parse Kimi tool call arguments: {args_str[:100]}... Error: {e}")
             current_pos = call_end + len(tool_call_end)
             continue
@@ -489,9 +511,9 @@ def _parse_xml_text_value(text: Optional[str]) -> Any:
 
     # Try JSON parse (primitives, arrays, objects)
     try:
-        val = json.loads(text)
+        val = _json_loads(text)
         return val
-    except (json.JSONDecodeError, ValueError):
+    except (_json_decode_error, ValueError):
         pass
 
     return text
@@ -621,8 +643,8 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             if p_value.startswith('<![CDATA[') and p_value.endswith(']]>'):
                 p_value = p_value[9:-3]
             try:
-                p_value = json.loads(p_value)
-            except (json.JSONDecodeError, ValueError):
+                p_value = _json_loads(p_value)
+            except (_json_decode_error, ValueError):
                 if '<' in p_value and '>' in p_value:
                     try:
                         elem = ET.fromstring(f'<param>{p_value}</param>')
@@ -632,7 +654,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             arguments[p_name] = p_value
         if not arguments:
             arguments = _parse_plain_text_args(body.strip())
-        arguments_str = json.dumps(arguments, ensure_ascii=False)
+        arguments_str = _json_dumps(arguments).decode()
         tool_call = {
             "index": tc_index,
             "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -695,8 +717,8 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
                 # Try JSON parse
                 try:
-                    arguments = json.loads(args_str)
-                except (json.JSONDecodeError, ValueError):
+                    arguments = _json_loads(args_str)
+                except (_json_decode_error, ValueError):
                     # Not JSON - try plain text arg parsing
                     arguments = _parse_plain_text_args(args_str)
             else:
@@ -709,12 +731,12 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                     if len(parts) > 1:
                         args_str = parts[1].strip()
                         try:
-                            arguments = json.loads(args_str)
-                        except (json.JSONDecodeError, ValueError):
+                            arguments = _json_loads(args_str)
+                        except (_json_decode_error, ValueError):
                             arguments = _parse_plain_text_args(args_str)
 
             if func_name:
-                arguments_str = json.dumps(arguments, ensure_ascii=False)
+                arguments_str = _json_dumps(arguments).decode()
                 tool_call = {
                     "index": tool_call_index,
                     "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -749,7 +771,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                 param_value = _parse_xml_parameter_value(param_elem)
                 arguments[param_name] = param_value
 
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
+            arguments_str = _json_dumps(arguments).decode()
             tool_call = {
                 "index": tool_call_index,
                 "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -785,8 +807,8 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
                 # Try JSON parse on the value
                 try:
-                    elem_value = json.loads(elem_value)
-                except (json.JSONDecodeError, ValueError):
+                    elem_value = _json_loads(elem_value)
+                except (or_json_decode_error, ValueError):
                     pass
 
                 if tag_name == 'parameter' and name_attr:
@@ -805,7 +827,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                 arguments = _parse_plain_text_args(stc_body)
 
             if func_name:
-                arguments_str = json.dumps(arguments, ensure_ascii=False)
+                arguments_str = _json_dumps(arguments).decode()
                 tool_call = {
                     "index": tool_call_index,
                     "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -854,13 +876,13 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             arguments = {}
             if arguments_raw:
                 try:
-                    arguments = json.loads(arguments_raw)
+                    arguments = _json_loads(arguments_raw)
                     if not isinstance(arguments, dict):
                         arguments = {"input": arguments}
-                except (json.JSONDecodeError, ValueError):
+                except (_json_decode_error, ValueError):
                     arguments = _parse_plain_text_args(arguments_raw)
 
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
+            arguments_str = _json_dumps(arguments).decode()
             tool_call = {
                 "index": tool_call_index,
                 "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -1320,7 +1342,7 @@ class OllamaProxy:
             return data_copy
         return data
 
-    def _map_model_from_ollama(self, data: Any) -> Any:
+    async def _map_model_from_ollama(self, data: Any) -> Any:
         """
         Map model names in response data from Ollama format to client format.
         Also transforms response to be Cursor-compatible.
@@ -1381,10 +1403,10 @@ class OllamaProxy:
                             if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<|DSML|tool_calls>' in reasoning or '<｜DSML｜tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
                                 # Route to appropriate parser based on format
                                 if '<|tool_calls_section_begin|>' in reasoning:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, reasoning)
                                     parser_name = 'KIMI'
                                 else:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_deepseek_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, reasoning)
                                     parser_name = 'DEEPSEEK'
 
                                 if has_tool_calls:
@@ -1409,7 +1431,7 @@ class OllamaProxy:
                             # to OpenAI's standard tool_calls format (in content)
                             content = delta.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
-                                clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
@@ -1428,7 +1450,7 @@ class OllamaProxy:
                             # to OpenAI's standard tool_calls format (in content)
                             content = delta.get('content', '')
                             if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<|DSML|tool_calls>' in content) or ('<｜DSML｜tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content) or ('<tool_call' in content and '</tool_call>' in content)):
-                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[DEEPSEEK] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
@@ -1452,10 +1474,10 @@ class OllamaProxy:
                             if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<|DSML|tool_calls>' in reasoning or '<｜DSML｜tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
                                 # Route to appropriate parser based on format
                                 if '<|tool_calls_section_begin|>' in reasoning:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, reasoning)
                                     parser_name = 'KIMI'
                                 else:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_deepseek_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, reasoning)
                                     parser_name = 'DEEPSEEK'
 
                                 if has_tool_calls:
@@ -1478,7 +1500,7 @@ class OllamaProxy:
                             # to OpenAI's standard tool_calls format (non-streaming, in content)
                             content = message.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
-                                clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
@@ -1496,7 +1518,7 @@ class OllamaProxy:
                             # to OpenAI's standard tool_calls format (non-streaming, in content)
                             content = message.get('content', '')
                             if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<|DSML|tool_calls>' in content) or ('<｜DSML｜tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content) or ('<tool_call' in content)):
-                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[DEEPSEEK] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
@@ -1929,19 +1951,19 @@ class OllamaProxy:
 
                             # Parse error message
                             try:
-                                error_json = json.loads(error_msg)
+                                error_json = _json_loads(error_msg)
                                 if isinstance(error_json, dict) and 'error' in error_json:
                                     error_detail = error_json['error']
                                     if isinstance(error_detail, dict) and 'message' in error_detail:
                                         error_msg = error_detail['message']
                                     elif isinstance(error_detail, str):
                                         error_msg = error_detail
-                            except (json.JSONDecodeError, KeyError, TypeError):
+                            except (_json_decode_error, KeyError, TypeError):
                                 pass
 
                             logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
                             logger.error(f"Request URL: {current_url}")
-                            logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
+                            logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")
 
                             # === NODE-LEVEL RETRY ===
                             # Try the same model on a different node first
@@ -2029,7 +2051,7 @@ class OllamaProxy:
                                     "code": error_code
                                 }
                             }
-                            yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                            yield b'data: ' + _json_dumps(error_response) + b'\n\n'
                             yield b'data: [DONE]\n\n'
                             return
 
@@ -2090,7 +2112,7 @@ class OllamaProxy:
                                             json_str = line[6:].decode('utf-8').strip()
                                             if json_str and json_str != '[DONE]':
                                                 logger.info(f"[OLLAMA IN] {json_str}")
-                                                json_data = json.loads(json_str)
+                                                json_data = _json_loads(json_str)
 
                                                 # Kimi tool call handling
                                                 content = ""
@@ -2124,7 +2146,7 @@ class OllamaProxy:
                                                     if '<|tool_calls_section_end|>' in kimi_content_buffer:
                                                         logger.info(f"[KIMI] Tool call section complete, processing buffer")
 
-                                                        clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+                                                        clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, kimi_content_buffer)
 
                                                         if has_tool_calls:
                                                             logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
@@ -2143,7 +2165,7 @@ class OllamaProxy:
                                                                         "finish_reason": None
                                                                     }]
                                                                 }
-                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                yield b'data: ' + _json_dumps(content_chunk) + b'\n\n'
 
                                                             tool_calls_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2155,7 +2177,7 @@ class OllamaProxy:
                                                                     "finish_reason": None
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(tool_calls_chunk) + b'\n\n'
 
                                                             finish_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2167,15 +2189,15 @@ class OllamaProxy:
                                                                     "finish_reason": "tool_calls"
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(finish_chunk) + b'\n\n'
                                                             first_chunk_sent = True
                                                         else:
-                                                            mapped_data = self._map_model_from_ollama(json.loads(json_str))
+                                                            mapped_data = await self._map_model_from_ollama(_json_loads(json_str))
                                                             if isinstance(mapped_data, dict) and 'choices' in mapped_data:
                                                                 choices = mapped_data.get('choices', [])
                                                                 if choices and len(choices) > 0:
                                                                     choices[0]['delta']['content'] = kimi_content_buffer
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(mapped_data) + b'\n\n'
                                                             first_chunk_sent = True
 
                                                         kimi_content_buffer = ""
@@ -2221,7 +2243,7 @@ class OllamaProxy:
                                                     if '</tool_calls>' in deepseek_content_buffer or '</|DSML|tool_calls>' in deepseek_content_buffer or '</｜DSML｜tool_calls>' in deepseek_content_buffer or '</CallMcpTool>' in deepseek_content_buffer or '</tool_call>' in deepseek_content_buffer:
                                                         logger.info(f"[DEEPSEEK] Tool call section complete, processing buffer ({len(deepseek_content_buffer)} chars)")
 
-                                                        clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
+                                                        clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, deepseek_content_buffer)
 
                                                         if has_tool_calls:
                                                             logger.info(f"[DEEPSEEK] Converted {len(tool_calls)} tool call(s) to OpenAI format")
@@ -2241,7 +2263,7 @@ class OllamaProxy:
                                                                         "finish_reason": None
                                                                     }]
                                                                 }
-                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                yield b'data: ' + _json_dumps(content_chunk) + b'\n\n'
 
                                                             tool_calls_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2253,7 +2275,7 @@ class OllamaProxy:
                                                                     "finish_reason": None
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(tool_calls_chunk) + b'\n\n'
 
                                                             finish_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2265,16 +2287,16 @@ class OllamaProxy:
                                                                     "finish_reason": "tool_calls"
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(finish_chunk) + b'\n\n'
                                                             first_chunk_sent = True
                                                         else:
                                                             # Parsing failed — emit buffered content as plain text
-                                                            mapped_data = self._map_model_from_ollama(json.loads(json_str))
+                                                            mapped_data = await self._map_model_from_ollama(_json_loads(json_str))
                                                             if isinstance(mapped_data, dict) and 'choices' in mapped_data:
                                                                 choices = mapped_data.get('choices', [])
                                                                 if choices and len(choices) > 0:
                                                                     choices[0]['delta']['content'] = deepseek_content_buffer
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(mapped_data) + b'\n\n'
                                                             first_chunk_sent = True
 
                                                         deepseek_content_buffer = ""
@@ -2326,7 +2348,7 @@ class OllamaProxy:
                                                         deepseek_suspicion_buffer = ""
 
                                                 # Normal processing
-                                                mapped_data = self._map_model_from_ollama(json_data)
+                                                mapped_data = await self._map_model_from_ollama(json_data)
 
                                                 # Extract delta for usage tracking
                                                 delta_obj = {}
@@ -2358,7 +2380,7 @@ class OllamaProxy:
                                                     choices_list = mapped_data.get('choices', [])
                                                     if not choices_list or len(choices_list) == 0:
                                                         logger.info(f"[PROXY YIELD USAGE] prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
-                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        yield b'data: ' + _json_dumps(mapped_data) + b'\n\n'
                                                         usage_chunk_received = True
                                                         first_chunk_sent = True
                                                         continue
@@ -2468,7 +2490,7 @@ class OllamaProxy:
                                                     if 'usage' in mapped_data:
                                                         out_chunk['usage'] = mapped_data['usage']
 
-                                                    yield b'data: ' + json.dumps(out_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                    yield b'data: ' + _json_dumps(out_chunk) + b'\n\n'
                                                     first_chunk_sent = True
 
                                             elif line == b'data: [DONE]':
@@ -2481,14 +2503,14 @@ class OllamaProxy:
                                                 json_str = line.decode('utf-8', errors='replace').strip()
                                                 if json_str:
                                                     try:
-                                                        json_data = json.loads(json_str)
-                                                        mapped_data = self._map_model_from_ollama(json_data)
-                                                        yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                                        json_data = _json_loads(json_str)
+                                                        mapped_data = await self._map_model_from_ollama(json_data)
+                                                        yield _json_dumps(mapped_data) + b'\n'
+                                                    except (_json_decode_error, UnicodeDecodeError) as e:
                                                         logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
                                                         yield line + b'\n'
 
-                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                    except (_json_decode_error, UnicodeDecodeError) as e:
                                         logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {line[:100]!r}")
                                         yield line + b'\n'
 
@@ -2511,7 +2533,7 @@ class OllamaProxy:
                             # DeepSeek flush: if still buffering tool calls at stream end, try to parse
                             if deepseek_buffering_active and deepseek_content_buffer:
                                 logger.info(f"[DEEPSEEK] Stream ended while buffering, attempting flush ({len(deepseek_content_buffer)} chars)")
-                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, deepseek_content_buffer)
 
                                 if has_tool_calls:
                                     logger.info(f"[DEEPSEEK] Flushed {len(tool_calls)} tool call(s)")
@@ -2522,7 +2544,7 @@ class OllamaProxy:
                                             "model": model_mapper.get_display_model_name(current_model),
                                             "choices": [{"index": 0, "delta": {"content": clean_content}, "finish_reason": None}]
                                         }
-                                        yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                        yield b'data: ' + _json_dumps(content_chunk) + b'\n\n'
 
                                     tool_calls_chunk = {
                                         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -2530,7 +2552,7 @@ class OllamaProxy:
                                         "model": model_mapper.get_display_model_name(current_model),
                                         "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}]
                                     }
-                                    yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: ' + _json_dumps(tool_calls_chunk) + b'\n\n'
 
                                     finish_chunk = {
                                         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -2538,7 +2560,7 @@ class OllamaProxy:
                                         "model": model_mapper.get_display_model_name(current_model),
                                         "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                                     }
-                                    yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: ' + _json_dumps(finish_chunk) + b'\n\n'
                                 else:
                                     # Emit as plain text
                                     text_chunk = {
@@ -2547,7 +2569,7 @@ class OllamaProxy:
                                         "model": model_mapper.get_display_model_name(current_model),
                                         "choices": [{"index": 0, "delta": {"content": deepseek_content_buffer}, "finish_reason": None}]
                                     }
-                                    yield b'data: ' + json.dumps(text_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: ' + _json_dumps(text_chunk) + b'\n\n'
 
                                 deepseek_content_buffer = ""
                                 deepseek_buffering_active = False
@@ -2560,7 +2582,7 @@ class OllamaProxy:
                                     "model": model_mapper.get_display_model_name(current_model),
                                     "choices": [{"index": 0, "delta": {"content": deepseek_suspicion_buffer}, "finish_reason": None}]
                                 }
-                                yield b'data: ' + json.dumps(text_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                yield b'data: ' + _json_dumps(text_chunk) + b'\n\n'
                                 deepseek_suspicion_buffer = ""
 
                             logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
@@ -2625,7 +2647,7 @@ class OllamaProxy:
                             "code": 503
                         }
                     }
-                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                    yield b'data: ' + _json_dumps(error_response) + b'\n\n'
                     yield b'data: [DONE]\n\n'
                     return
 
@@ -2638,7 +2660,7 @@ class OllamaProxy:
                             "code": 500
                         }
                     }
-                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                    yield b'data: ' + _json_dumps(error_response) + b'\n\n'
                     yield b'data: [DONE]\n\n'
                     return
 
@@ -2723,7 +2745,7 @@ class OllamaProxy:
                     logger.error(f"Ollama error ({response.status_code}): {error_text}")
                     logger.error(f"Request URL: {current_url}")
                     if current_data:
-                        logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
+                        logger.error(f"Request data: {_json_dumps(current_data, option=orjson.OPT_INDENT_2).decode()}")
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first
@@ -2811,7 +2833,7 @@ class OllamaProxy:
                 elif endpoint == "/v1/models":
                     response_data = self._map_openai_models_list(response_data)
                 elif is_openai_endpoint:
-                    response_data = self._map_model_from_ollama(response_data)
+                    response_data = await self._map_model_from_ollama(response_data)
                 else:
                     response_data = self._map_native_ollama_response(response_data)
 

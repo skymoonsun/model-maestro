@@ -1,8 +1,8 @@
 """Repository for UserActivityLog operations"""
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, text
-from typing import List, Optional, Tuple
+from sqlalchemy import select, func, and_, text, insert
+from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timedelta
 
 from app.models_db import UserActivityLog, User
@@ -42,7 +42,31 @@ class UserActivityRepository:
         self.session.add(activity_log)
         await self.session.flush()
         return activity_log
-    
+
+    async def bulk_insert_logs(self, logs: List[Dict[str, Any]]) -> int:
+        """Bulk insert activity logs for better performance.
+
+        Args:
+            logs: List of dicts with keys matching UserActivityLog columns
+                  (user_id, model_name, request_type, prompt_tokens,
+                   completion_tokens, total_tokens, status_code,
+                   duration_ms, error_message)
+
+        Returns:
+            Number of rows inserted
+        """
+        if not logs:
+            return 0
+
+        # Compute total_tokens if not provided
+        for log in logs:
+            if log.get("total_tokens") is None:
+                log["total_tokens"] = (log.get("prompt_tokens", 0) or 0) + (log.get("completion_tokens", 0) or 0)
+
+        stmt = insert(UserActivityLog).values(logs)
+        result = await self.session.execute(stmt)
+        return result.rowcount
+
     async def get_user_activity(
         self,
         user_id: int,
