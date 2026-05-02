@@ -52,6 +52,15 @@ class OllamaEmbeddingsRequest(BaseModel):
     model: str
     prompt: str
 
+class OllamaEmbedRequest(BaseModel):
+    """Ollama /api/embed request — generate embeddings for text(s)."""
+    model: str
+    input: str | List[str]
+    truncate: Optional[bool] = True
+    options: Optional[Dict[str, Any]] = None
+    keep_alive: Optional[str] = None
+
+
 class OllamaShowRequest(BaseModel):
     """Ollama show model request"""
     model: str
