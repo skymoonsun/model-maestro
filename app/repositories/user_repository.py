@@ -26,6 +26,15 @@ class UserRepository:
             select(User).where(User.username == username, User.is_active == True)
         )
         return result.scalar_one_or_none()
+
+    async def get_by_usernames(self, usernames: List[str]) -> List[User]:
+        """Bulk get users by username list"""
+        if not usernames:
+            return []
+        result = await self.session.execute(
+            select(User).where(User.username.in_(usernames), User.is_active == True)
+        )
+        return result.scalars().all()
     
     async def get_by_token(self, token: str) -> Optional[User]:
         """Get user by token"""

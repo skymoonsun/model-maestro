@@ -124,16 +124,22 @@ CACHE_KEYS = {
     "USER_ACCESS": "user_access:{username}",
     "USER_LIMIT": "user_limit:{username}",
     "USER_DAILY_USAGE": "user_daily_usage:{username}:{date}",
-    "TOKEN_USERNAME": "token:{token}"
+    "TOKEN_USERNAME": "token:{token}",
+    "MODEL_NODES": "model_nodes:{model_name}",
+    "NODE_LOADS": "node_loads",
+    "ACTIVE_NODES": "active_nodes",
 }
 
 # Cache TTL (Time To Live) in seconds
 CACHE_TTL = {
-    "MODEL_MAPPINGS": None,  # No expiration (permanent)
-    "USER_MODELS": None,      # No expiration (permanent)
-    "USER_HAS_ALL_MODELS": None,  # No expiration (permanent)
-    "USER_ACCESS": None,      # No expiration (permanent)
-    "USER_LIMIT": None,       # No expiration (permanent)
-    "USER_DAILY_USAGE": None, # No expiration (permanent)
-    "TOKEN_USERNAME": None    # No expiration (permanent)
+    "MODEL_MAPPINGS": 3600,   # 1 hour — model mappings change rarely
+    "USER_MODELS": 300,       # 5 minutes — user model lists
+    "USER_HAS_ALL_MODELS": 300,  # 5 minutes
+    "USER_ACCESS": 300,       # 5 minutes — user access info
+    "USER_LIMIT": 60,         # 1 minute — limits can change frequently
+    "USER_DAILY_USAGE": 300,  # 5 minutes — daily usage (key includes date)
+    "TOKEN_USERNAME": 3600,   # 1 hour — token validation
+    "MODEL_NODES": 120,     # 2 minutes — node list per model
+    "NODE_LOADS": 30,       # 30 seconds — load metrics change fast
+    "ACTIVE_NODES": 120,    # 2 minutes — active node list
 }

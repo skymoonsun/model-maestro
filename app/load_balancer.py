@@ -86,57 +86,69 @@ class LoadBalancer:
     async def _select_least_loaded(
         self,
         nodes: List[Dict[str, Any]],
-        session
+        session=None
     ) -> Dict[str, Any]:
         """
         Select node with least active requests.
+        Uses Redis cache first, falls back to DB on miss.
         Falls back to priority if no load data available.
         """
-        if session is None:
-            # No session, use priority
-            return self._select_priority(nodes)
-        
+        all_loads: Dict[int, Dict[str, Any]] = {}
+
+        # Try Redis first
         try:
-            load_repo = NodeLoadMetricRepository(session)
-            all_loads = await load_repo.get_all_loads()
-            
-            # Calculate load score for each node
-            scored_nodes = []
-            for node in nodes:
-                node_id = node.get("node_id") or node.get("id")
-                load = all_loads.get(node_id, {})
-                
-                # Score = active_requests (lower is better)
-                active_requests = load.get("active_requests", 0)
-                priority = node.get("priority", 0)
-                weight = node.get("weight", 100)
-                
-                # Normalize: higher priority = better, higher weight = better
-                # Lower active_requests = better
-                # Score formula: (priority * weight) - active_requests
-                score = (priority * weight / 100) - active_requests
-                
-                scored_nodes.append({
-                    **node,
-                    "_score": score,
-                    "_active_requests": active_requests
-                })
-            
-            # Sort by score (higher is better)
-            scored_nodes.sort(key=lambda x: x["_score"], reverse=True)
-            
-            selected = scored_nodes[0]
-            logger.debug(
-                f"Selected node {selected['name']} via least_loaded "
-                f"(active_req={selected['_active_requests']}, score={selected['_score']:.2f})"
-            )
-            
-            return selected
-            
-        except Exception as e:
-            logger.error(f"Error getting load metrics: {e}")
-            # Fallback to priority
-            return self._select_priority(nodes)
+            from app.redis import redis_manager, CACHE_KEYS, CACHE_TTL
+            if redis_manager:
+                cached = await redis_manager.get(CACHE_KEYS["NODE_LOADS"])
+                if cached:
+                    import json
+                    all_loads = {int(k): v for k, v in json.loads(cached).items()}
+        except Exception:
+            pass
+
+        # Fallback to DB if Redis miss and session provided
+        if not all_loads and session is not None:
+            try:
+                load_repo = NodeLoadMetricRepository(session)
+                all_loads = await load_repo.get_all_loads()
+
+                # Store in Redis for next time
+                if redis_manager:
+                    import json
+                    await redis_manager.set(
+                        CACHE_KEYS["NODE_LOADS"],
+                        json.dumps(all_loads),
+                        expire=CACHE_TTL["NODE_LOADS"]
+                    )
+            except Exception as e:
+                logger.error(f"Error getting load metrics from DB: {e}")
+
+        # Calculate load score for each node
+        scored_nodes = []
+        for node in nodes:
+            node_id = node.get("node_id") or node.get("id")
+            load = all_loads.get(node_id, {}) if isinstance(node_id, int) else {}
+
+            active_requests = load.get("active_requests", 0)
+            priority = node.get("priority", 0)
+            weight = node.get("weight", 100)
+
+            score = (priority * weight / 100) - active_requests
+            scored_nodes.append({
+                **node,
+                "_score": score,
+                "_active_requests": active_requests
+            })
+
+        scored_nodes.sort(key=lambda x: x["_score"], reverse=True)
+
+        selected = scored_nodes[0]
+        logger.debug(
+            f"Selected node {selected['name']} via least_loaded "
+            f"(active_req={selected['_active_requests']}, score={selected['_score']:.2f})"
+        )
+
+        return selected
     
     def _select_round_robin(self, nodes: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

@@ -2,6 +2,28 @@
 
 from typing import Dict, Any, Optional, List, Tuple
 import httpx
+
+# orjson is optional — provides ~8x faster JSON serialization.
+# Falls back to standard json if not installed.
+try:
+    import orjson as _json_lib
+    _json_loads = _json_lib.loads
+    _json_decode_error = _json_lib.JSONDecodeError
+
+    def _json_dumps(obj: Any, indent: bool = False) -> bytes:
+        if indent:
+            return _json_lib.dumps(obj, option=_json_lib.OPT_INDENT_2)
+        return _json_lib.dumps(obj)
+except ImportError:
+    import json as _json_lib
+    _json_loads = _json_lib.loads
+    _json_decode_error = _json_lib.JSONDecodeError
+
+    def _json_dumps(obj: Any, indent: bool = False) -> bytes:
+        if indent:
+            return _json_lib.dumps(obj, ensure_ascii=False, indent=2).encode('utf-8')
+        return _json_lib.dumps(obj, ensure_ascii=False).encode('utf-8')
+
 import json
 import logging
 import re
@@ -73,9 +95,9 @@ def _is_tool_call_valid(tool_call: Dict[str, Any]) -> bool:
 
     # Check if arguments is valid JSON
     try:
-        json.loads(args)
+        _json_loads(args)
         return True
-    except (json.JSONDecodeError, TypeError):
+    except (_json_decode_error, TypeError):
         return False
 
 
@@ -106,8 +128,8 @@ def _sanitize_tool_call_arguments(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         return tool_call
 
     try:
-        args = json.loads(args_str)
-    except (json.JSONDecodeError, TypeError):
+        args = _json_loads(args_str)
+    except (_json_decode_error, TypeError):
         return tool_call
 
     if not isinstance(args, dict):
@@ -142,7 +164,7 @@ def _sanitize_tool_call_arguments(tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 changed = True
 
     if changed:
-        func['arguments'] = json.dumps(args, ensure_ascii=False)
+        func['arguments'] = _json_dumps(args).decode()
 
     return tool_call
 
@@ -264,9 +286,9 @@ def parse_kimi_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], bool
         
         # Parse JSON arguments
         try:
-            arguments = json.loads(args_str)
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
-        except json.JSONDecodeError as e:
+            arguments = _json_loads(args_str)
+            arguments_str = _json_dumps(arguments).decode()
+        except _json_decode_error as e:
             logger.warning(f"Failed to parse Kimi tool call arguments: {args_str[:100]}... Error: {e}")
             current_pos = call_end + len(tool_call_end)
             continue
@@ -379,15 +401,47 @@ def convert_kimi_content_to_openai_delta(content: str, model: str) -> List[Dict[
 _CODE_FENCE_RE = re.compile(r'(```[\s\S]*?```|~~~[\s\S]*?~~~)', re.MULTILINE)
 
 # DSML tag normalization regexes
-_DSML_OPEN_RE = re.compile(r'<\|DSML\|(\w+)([^>]*)>')
-_DSML_CLOSE_RE = re.compile(r'</\|DSML\|(\w+)>')
+# DeepSeek uses both ASCII pipe | and Unicode fullwidth pipe ｜ (U+FF5C) in DSML tags
+_DSML_PIPE = r'[\|｜]'  # matches | or ｜
+_DSML_OPEN_RE = re.compile(r'<' + _DSML_PIPE + r'DSML' + _DSML_PIPE + r'(\w+)([^>]*)>')
+_DSML_CLOSE_RE = re.compile(r'</' + _DSML_PIPE + r'DSML' + _DSML_PIPE + r'(\w+)>')
 _CANONICAL_OPEN_RE = re.compile(r'<(tool_calls|invoke|parameter)([^>]*)>')
 _CANONICAL_CLOSE_RE = re.compile(r'</(tool_calls|invoke|parameter)>')
 
+# Pre-compiled regex patterns for parse_deepseek_tool_calls to avoid
+# recompilation on every streaming chunk.
+_STC_PATTERN = re.compile(
+    r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</tool_call>',
+    re.DOTALL
+)
+_INVOKE_PATTERN = re.compile(
+    r'<invoke\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)</invoke>',
+    re.DOTALL
+)
+_PARAM_PATTERN = re.compile(
+    r'<parameter\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)(?:</parameter>)',
+    re.DOTALL
+)
+_TOOL_CALL_INVOKE_PATTERN = re.compile(
+    r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</invoke>',
+    re.DOTALL
+)
+_TOOL_CALL_PATTERN = re.compile(r'<tool_call\s*>(.*?)</tool_call\s *>', re.DOTALL)
+_TOOL_CALL_PATTERN2 = re.compile(r'<tool_call[^>]*>(.*?)</tool_call\s *>', re.DOTALL)
+_ELEM_PATTERN = re.compile(
+    r'<(\w+)(?:\s+name=["\x27]([^"\x27]+)["\x27])?[^>]*>(.*?)</\1\s*>',
+    re.DOTALL
+)
+_MCP_PATTERN = re.compile(r'<CallMcpTool>(.*?)</CallMcpTool>', re.DOTALL)
+_KV_PATTERN = re.compile(r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))')
+
 # Marker for suspicion buffering — partial tag prefixes
+# Include both ASCII pipe and Unicode fullwidth pipe variants
 _DEEPSEEK_TAG_PREFIXES = ['<tool_c', '<tool_ca', '<tool_cal', '<tool_call', '<tool_calls',
                            '<|DSML', '<|DSML|', '<|DSML|t', '<|DSML|to', '<|DSML|too',
                            '<|DSML|tool', '<|DSML|tool_',
+                           '<｜DSML', '<｜DSML｜', '<｜DSML｜t', '<｜DSML｜to',
+                           '<｜DSML｜tool', '<｜DSML｜tool_',
                            '<Call', '<CallM', '<CallMc', '<CallMcp', '<CallMcpT', '<CallMcpTo', '<CallMcpToo']
 
 
@@ -457,9 +511,9 @@ def _parse_xml_text_value(text: Optional[str]) -> Any:
 
     # Try JSON parse (primitives, arrays, objects)
     try:
-        val = json.loads(text)
+        val = _json_loads(text)
         return val
-    except (json.JSONDecodeError, ValueError):
+    except (_json_decode_error, ValueError):
         pass
 
     return text
@@ -489,7 +543,8 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
     # Quick check — if no tool_calls marker at all, skip
     if '<tool_calls>' not in content and '</tool_calls>' not in content \
-            and '<|DSML|tool_calls>' not in content \
+            and '<|DSML|tool_calls>' not in content and '</|DSML|tool_calls>' not in content \
+            and '<｜DSML｜tool_calls>' not in content and '</｜DSML｜tool_calls>' not in content \
             and '<CallMcpTool>' not in content and '</CallMcpTool>' not in content \
             and '<tool_call' not in content:
         # Also check partial matches at end (streaming suspicion)
@@ -511,11 +566,18 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     stc_open = '<tool_call'
     stc_close = '</tool_call>'
 
-    has_tc = tc_open in normalized and tc_close in normalized
+    has_tc_open = tc_open in normalized
+    has_tc_close = tc_close in normalized
     has_mcp = mcp_open in normalized and mcp_close in normalized
-    has_stc = (stc_open in normalized and stc_close in normalized)
+    has_stc_open = stc_open in normalized
+    has_stc_close = stc_close in normalized
 
-    if not has_tc and not has_mcp and not has_stc:
+    has_tc = has_tc_open and has_tc_close
+    has_stc = has_stc_open and has_stc_close
+    # Also match hybrid formats: e.g. <tool_call> opening with </tool_calls> closing
+    has_hybrid = (has_stc_open and has_tc_close) or (has_tc_open and has_stc_close)
+
+    if not has_tc and not has_mcp and not has_stc and not has_hybrid:
         return content, [], False
 
     # Prefer <tool_calls> wrapper if both exist
@@ -544,17 +606,24 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
     elif has_stc:
         # <tool_call name="..."> (singular) format — extract all such blocks
-        stc_pattern = re.compile(
-            r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</tool_call>',
-            re.DOTALL
-        )
-        stc_matches = list(stc_pattern.finditer(normalized))
+        stc_matches = list(_STC_PATTERN.finditer(normalized))
         first_start = stc_matches[0].start() if stc_matches else 0
         last_end = stc_matches[-1].end() if stc_matches else 0
         content_before = normalized[:first_start].strip()
         content_after = normalized[last_end:].strip()
         # Build section_content from all matched blocks so downstream parsers can handle it
         section_content = ''.join(m.group(0) for m in stc_matches)
+
+    elif has_hybrid:
+        # Hybrid format: e.g. <tool_call name="..."> opening with </tool_calls> closing
+        # or <tool_call name="..."> opening with </invoke> closing (mixed DSML)
+        # Extract from first tool_call tag to last closing tag
+        start_idx = normalized.find(stc_open if has_stc_open else tc_open)
+        end_close = tc_close if has_tc_close else stc_close
+        end_idx = normalized.rfind(end_close)
+        content_before = normalized[:start_idx].strip()
+        content_after = normalized[end_idx + len(end_close):].strip()
+        section_content = normalized[start_idx:end_idx]
 
     # Parse tool call blocks - supports formats:
     # 1. <invoke name="..."><parameter name="...">val</parameter></invoke> (canonical XML)
@@ -564,73 +633,72 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     tool_call_index = 0
 
     # Try <invoke> format first (canonical XML with name attributes)
-    invoke_pattern = re.compile(
-        r'<invoke\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)</invoke>',
-        re.DOTALL
-    )
-    invoke_matches = list(invoke_pattern.finditer(section_content))
+    invoke_matches = list(_INVOKE_PATTERN.finditer(section_content))
 
-    if invoke_matches:
-        for match in invoke_matches:
-            func_name = match.group(1)
-            invoke_body = match.group(2)
-
-            # Parse <parameter> children
-            arguments = {}
-            param_pattern = re.compile(
-                r'<parameter\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)(?:</parameter>)',
-                re.DOTALL
-            )
-            for param_match in param_pattern.finditer(invoke_body):
-                param_name = param_match.group(1)
-                param_value = param_match.group(2).strip()
-                # Remove CDATA wrapper if present
-                if param_value.startswith('<![CDATA[') and param_value.endswith(']]>'):
-                    param_value = param_value[9:-3]
-                # Try JSON parse
-                try:
-                    param_value = json.loads(param_value)
-                except (json.JSONDecodeError, ValueError):
-                    # Try ElementTree for nested XML structures
-                    if '<' in param_value and '>' in param_value:
-                        try:
-                            elem = ET.fromstring(f'<param>{param_value}</param>')
-                            param_value = _parse_xml_parameter_value(elem)
-                        except ET.ParseError:
-                            pass
-                arguments[param_name] = param_value
-
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
-            tool_call = {
-                "index": tool_call_index,
-                "id": f"call_{uuid.uuid4().hex[:24]}",
-                "type": "function",
-                "function": {
-                    "name": func_name,
-                    "arguments": arguments_str
-                }
+    def _parse_invoke_body(name: str, body: str, tc_index: int) -> Optional[Dict[str, Any]]:
+        arguments = {}
+        for pm in _PARAM_PATTERN.finditer(body):
+            p_name = pm.group(1)
+            p_value = pm.group(2).strip()
+            if p_value.startswith('<![CDATA[') and p_value.endswith(']]>'):
+                p_value = p_value[9:-3]
+            try:
+                p_value = _json_loads(p_value)
+            except (_json_decode_error, ValueError):
+                if '<' in p_value and '>' in p_value:
+                    try:
+                        elem = ET.fromstring(f'<param>{p_value}</param>')
+                        p_value = _parse_xml_parameter_value(elem)
+                    except ET.ParseError:
+                        pass
+            arguments[p_name] = p_value
+        if not arguments:
+            arguments = _parse_plain_text_args(body.strip())
+        arguments_str = _json_dumps(arguments).decode()
+        tool_call = {
+            "index": tc_index,
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": arguments_str
             }
-            _sanitize_tool_call_arguments(tool_call)
-            tool_calls.append(tool_call)
+        }
+        _sanitize_tool_call_arguments(tool_call)
+        return tool_call
+
+    # Also match <tool_call name="...">...</invoke> (hybrid DSML format where
+    # tool_call acts as invoke, closed by </invoke>)
+    tc_invoke_matches = list(_TOOL_CALL_INVOKE_PATTERN.finditer(section_content))
+
+    # Merge both match lists, sorted by start position, deduplicating overlaps
+    all_invoke_matches: list = []
+    for m in invoke_matches:
+        all_invoke_matches.append(('invoke', m.start(), m))
+    for m in tc_invoke_matches:
+        # Skip if overlapping with an already-captured invoke match
+        if any(abs(m.start() - inv.start()) < 3 for _, _, inv in all_invoke_matches):
+            continue
+        all_invoke_matches.append(('tc_invoke', m.start(), m))
+    all_invoke_matches.sort(key=lambda x: x[1])
+
+    for match_type, _, match in all_invoke_matches:
+        func_name = match.group(1)
+        body = match.group(2)
+        tc = _parse_invoke_body(func_name, body, tool_call_index)
+        if tc:
+            tool_calls.append(tc)
             tool_call_index += 1
-            logger.info(f"[DEEPSEEK] Parsed invoke tool call: {func_name}({arguments_str[:80]}...)")
+            label = "invoke" if match_type == 'invoke' else "tool_call-invoke"
+            logger.info(f"[DEEPSEEK] Parsed {label}: {func_name}({tc['function']['arguments'][:80]}...)")
 
     if not tool_calls:
         # Try Ollama native tool_call tags
         # Content can be: "FunctionName\n{json_args}" or plain text
-        tool_call_pattern = re.compile(
-            r'<tool_call\s*>(.*?)</tool_call\s *>',
-            re.DOTALL
-        )
-        tc_matches = list(tool_call_pattern.finditer(section_content))
+        tc_matches = list(_TOOL_CALL_PATTERN.finditer(section_content))
 
         if not tc_matches:
-            # Broader pattern: everything between tags with possible attrs
-            tool_call_pattern2 = re.compile(
-                r'<tool_call[^>]*>(.*?)</tool_call\s *>',
-                re.DOTALL
-            )
-            tc_matches = list(tool_call_pattern2.finditer(section_content))
+            tc_matches = list(_TOOL_CALL_PATTERN2.finditer(section_content))
 
         for tc_match in tc_matches:
             tc_content = tc_match.group(1).strip()
@@ -649,8 +717,8 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
                 # Try JSON parse
                 try:
-                    arguments = json.loads(args_str)
-                except (json.JSONDecodeError, ValueError):
+                    arguments = _json_loads(args_str)
+                except (_json_decode_error, ValueError):
                     # Not JSON - try plain text arg parsing
                     arguments = _parse_plain_text_args(args_str)
             else:
@@ -663,12 +731,12 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                     if len(parts) > 1:
                         args_str = parts[1].strip()
                         try:
-                            arguments = json.loads(args_str)
-                        except (json.JSONDecodeError, ValueError):
+                            arguments = _json_loads(args_str)
+                        except (_json_decode_error, ValueError):
                             arguments = _parse_plain_text_args(args_str)
 
             if func_name:
-                arguments_str = json.dumps(arguments, ensure_ascii=False)
+                arguments_str = _json_dumps(arguments).decode()
                 tool_call = {
                     "index": tool_call_index,
                     "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -703,7 +771,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                 param_value = _parse_xml_parameter_value(param_elem)
                 arguments[param_name] = param_value
 
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
+            arguments_str = _json_dumps(arguments).decode()
             tool_call = {
                 "index": tool_call_index,
                 "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -732,19 +800,15 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             arguments = {}
             param_idx = 0
             # Match all XML sub-elements: <tagname>value</tagname>
-            elem_pat = re.compile(
-                r'<(\w+)(?:\s+name=["\x27]([^"\x27]+)["\x27])?[^>]*>(.*?)</\1\s*>',
-                re.DOTALL
-            )
-            for elem_match in elem_pat.finditer(stc_body):
+            for elem_match in _ELEM_PATTERN.finditer(stc_body):
                 tag_name = elem_match.group(1)
                 name_attr = elem_match.group(2)
                 elem_value = elem_match.group(3).strip()
 
                 # Try JSON parse on the value
                 try:
-                    elem_value = json.loads(elem_value)
-                except (json.JSONDecodeError, ValueError):
+                    elem_value = _json_loads(elem_value)
+                except (or_json_decode_error, ValueError):
                     pass
 
                 if tag_name == 'parameter' and name_attr:
@@ -763,7 +827,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
                 arguments = _parse_plain_text_args(stc_body)
 
             if func_name:
-                arguments_str = json.dumps(arguments, ensure_ascii=False)
+                arguments_str = _json_dumps(arguments).decode()
                 tool_call = {
                     "index": tool_call_index,
                     "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -781,11 +845,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
     # Try <CallMcpTool> format (DeepSeek-v4-pro MCP-style tool calls)
     if not tool_calls:
-        mcp_pattern = re.compile(
-            r'<CallMcpTool>(.*?)</CallMcpTool>',
-            re.DOTALL
-        )
-        for mcp_match in mcp_pattern.finditer(section_content):
+        for mcp_match in _MCP_PATTERN.finditer(section_content):
             mcp_body = mcp_match.group(1).strip()
 
             server_name = ""
@@ -816,13 +876,13 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             arguments = {}
             if arguments_raw:
                 try:
-                    arguments = json.loads(arguments_raw)
+                    arguments = _json_loads(arguments_raw)
                     if not isinstance(arguments, dict):
                         arguments = {"input": arguments}
-                except (json.JSONDecodeError, ValueError):
+                except (_json_decode_error, ValueError):
                     arguments = _parse_plain_text_args(arguments_raw)
 
-            arguments_str = json.dumps(arguments, ensure_ascii=False)
+            arguments_str = _json_dumps(arguments).decode()
             tool_call = {
                 "index": tool_call_index,
                 "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -867,8 +927,7 @@ def _parse_plain_text_args(text: str) -> Dict[str, Any]:
     arguments = {}
 
     # Try key="value" pairs first (most structured)
-    kv_pattern = re.compile(r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))')
-    matches = list(kv_pattern.finditer(text))
+    matches = list(_KV_PATTERN.finditer(text))
     if matches:
         for match in matches:
             key = match.group(1)
@@ -939,6 +998,7 @@ class OllamaProxy:
     async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> str:
         """
         Select the best node URL for a model using load balancing.
+        Uses Redis cache first (zero DB hits per request).
 
         Args:
             model_name: The model name to route
@@ -947,62 +1007,60 @@ class OllamaProxy:
         Falls back to self.base_url if load balancing is not configured or no nodes available.
         """
         try:
-            from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.load_balancer import load_balancer
 
-            async with async_session_maker() as session:
-                # Get real model name
-                real_model_name = model_mapper.get_real_model_name(model_name)
+            # Get real model name
+            real_model_name = model_mapper.get_real_model_name(model_name)
 
-                # Get available nodes for this model
-                nodes = await node_manager.get_nodes_for_model(real_model_name, session)
+            # Get available nodes for this model from Redis (zero DB hits on hot path!)
+            nodes = await node_manager.get_nodes_for_model(real_model_name)
 
-                if not nodes:
-                    # Try display name as fallback
-                    nodes = await node_manager.get_nodes_for_model(model_name, session)
+            if not nodes:
+                # Try display name as fallback
+                nodes = await node_manager.get_nodes_for_model(model_name)
 
-                if not nodes:
-                    # No nodes have this model - use default (if not excluded)
-                    if exclude_nodes and self.base_url in exclude_nodes:
-                        logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
-                        return ""
-                    logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
-                    return self.base_url
-
-                # Filter out excluded nodes
-                if exclude_nodes:
-                    filtered_nodes = [
-                        n for n in nodes
-                        if n.get('base_url') not in exclude_nodes
-                    ]
-                    if filtered_nodes:
-                        nodes = filtered_nodes
-                        logger.info(
-                            f"[LB] Filtered to {len(nodes)} nodes for model {model_name} "
-                            f"(excluded {len(exclude_nodes)} tried nodes)"
-                        )
-                    else:
-                        # All known nodes excluded, try default if not excluded
-                        if self.base_url not in exclude_nodes:
-                            logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
-                            return self.base_url
-                        logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
-                        return ""
-
-                # Select best node using load balancer
-                selected_node = await load_balancer.select_node(
-                    nodes, strategy="least_loaded", session=session
-                )
-
-                if selected_node:
-                    node_name = selected_node.get('node_name') or selected_node.get('name', 'unknown')
-                    node_base_url = selected_node.get('base_url')
-                    logger.info(f"[LB] Selected node {node_name} for model {model_name}")
-                    if node_base_url:
-                        return node_base_url
-
+            if not nodes:
+                # No nodes have this model - use default (if not excluded)
+                if exclude_nodes and self.base_url in exclude_nodes:
+                    logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
+                    return ""
+                logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
                 return self.base_url
+
+            # Filter out excluded nodes
+            if exclude_nodes:
+                filtered_nodes = [
+                    n for n in nodes
+                    if n.get('base_url') not in exclude_nodes
+                ]
+                if filtered_nodes:
+                    nodes = filtered_nodes
+                    logger.info(
+                        f"[LB] Filtered to {len(nodes)} nodes for model {model_name} "
+                        f"(excluded {len(exclude_nodes)} tried nodes)"
+                    )
+                else:
+                    # All known nodes excluded, try default if not excluded
+                    if self.base_url not in exclude_nodes:
+                        logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
+                        return self.base_url
+                    logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
+                    return ""
+
+            # Select best node using load balancer (Redis-first, no session)
+            selected_node = await load_balancer.select_node(
+                nodes, strategy="least_loaded"
+            )
+
+            if selected_node:
+                node_name = selected_node.get('node_name') or selected_node.get('name', 'unknown')
+                node_base_url = selected_node.get('base_url')
+                logger.info(f"[LB] Selected node {node_name} for model {model_name}")
+                if node_base_url:
+                    return node_base_url
+
+            return self.base_url
 
         except Exception as e:
             logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
@@ -1035,9 +1093,9 @@ class OllamaProxy:
             # Async HTTP client
             # HTTP/2 disabled for better compatibility with Ollama
             self._http_client = httpx.AsyncClient(
-                timeout=1200.0,  # 20 minutes (for long reasoning/tools)
+                timeout=httpx.Timeout(1200.0, connect=30.0, read=1200.0, write=30.0),
                 limits=limits,
-                http2=True  # Disabled to prevent connection stability issues
+                http2=False  # HTTP/2 disabled for streaming stability
             )
         
         return self._http_client
@@ -1139,6 +1197,86 @@ class OllamaProxy:
         """
         return model_group_manager.get_fallback(group_name, failed_model, tried_models)
 
+    @staticmethod
+    def _strip_images_from_messages(data: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+        """
+        Remove image content from messages when the target model doesn't support vision.
+
+        When a user switches from a vision-capable model to a non-vision model mid-conversation,
+        the chat history may still contain image_url parts. This strips them out to prevent
+        400 errors from Ollama models that don't support image input.
+        """
+        messages = data.get("messages")
+        if not messages or not isinstance(messages, list):
+            return data
+
+        capabilities = model_mapper.get_capabilities(model_name)
+        # Only strip if capabilities are explicitly configured and don't include vision
+        # If capabilities are None (unconfigured), we can't know, so don't strip
+        if capabilities is None or "vision" in capabilities:
+            return data
+
+        modified = False
+        cleaned_messages = []
+
+        for msg in messages:
+            content = msg.get("content")
+            if not content:
+                cleaned_messages.append(msg)
+                continue
+
+            # String content: strip base64 data URLs
+            if isinstance(content, str):
+                if "data:image/" in content:
+                    cleaned_messages.append({**msg, "content": "[image removed]"})
+                    modified = True
+                else:
+                    cleaned_messages.append(msg)
+                continue
+
+            # List content (OpenAI format): remove image_url parts and base64 in text parts
+            if isinstance(content, list):
+                new_parts = []
+                has_image = False
+                for part in content:
+                    if not isinstance(part, dict):
+                        new_parts.append(part)
+                        continue
+
+                    if part.get("type") == "image_url":
+                        has_image = True
+                        continue
+
+                    if part.get("type") == "text":
+                        text = part.get("text", "")
+                        if isinstance(text, str) and "data:image/" in text:
+                            new_parts.append({"type": "text", "text": "[image removed]"})
+                            has_image = True
+                            continue
+
+                    if "image" in part:
+                        has_image = True
+                        continue
+
+                    new_parts.append(part)
+
+                if has_image:
+                    if not new_parts:
+                        new_parts = [{"type": "text", "text": "[image removed]"}]
+                    modified = True
+                    cleaned_messages.append({**msg, "content": new_parts})
+                else:
+                    cleaned_messages.append(msg)
+                continue
+
+            cleaned_messages.append(msg)
+
+        if modified:
+            logger.info(f"[STRIP] Removed image content from messages for non-vision model '{model_name}'")
+            return {**data, "messages": cleaned_messages}
+
+        return data
+
     def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Map model names in request data from client format to Ollama format
@@ -1204,7 +1342,7 @@ class OllamaProxy:
             return data_copy
         return data
 
-    def _map_model_from_ollama(self, data: Any) -> Any:
+    async def _map_model_from_ollama(self, data: Any) -> Any:
         """
         Map model names in response data from Ollama format to client format.
         Also transforms response to be Cursor-compatible.
@@ -1262,13 +1400,13 @@ class OllamaProxy:
                             # Keep 'reasoning' field as-is for clients that support it
                             # But also check for tool calls in reasoning
                             reasoning = delta.get('reasoning', '')
-                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
+                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<|DSML|tool_calls>' in reasoning or '<｜DSML｜tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
                                 # Route to appropriate parser based on format
                                 if '<|tool_calls_section_begin|>' in reasoning:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, reasoning)
                                     parser_name = 'KIMI'
                                 else:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_deepseek_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, reasoning)
                                     parser_name = 'DEEPSEEK'
 
                                 if has_tool_calls:
@@ -1293,7 +1431,7 @@ class OllamaProxy:
                             # to OpenAI's standard tool_calls format (in content)
                             content = delta.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
-                                clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
@@ -1311,8 +1449,8 @@ class OllamaProxy:
                             # DEEPSEEK TOOL CALL FIX: Convert DeepSeek's XML tool call format
                             # to OpenAI's standard tool_calls format (in content)
                             content = delta.get('content', '')
-                            if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content) or ('<tool_call' in content and '</tool_call>' in content)):
-                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
+                            if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<|DSML|tool_calls>' in content) or ('<｜DSML｜tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content) or ('<tool_call' in content and '</tool_call>' in content)):
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[DEEPSEEK] Detected {len(tool_calls)} tool call(s) in content, converting to OpenAI format")
@@ -1333,13 +1471,13 @@ class OllamaProxy:
                             # Keep 'reasoning' field as-is for clients that support it
                             # But also check for tool calls in reasoning
                             reasoning = message.get('reasoning', '')
-                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
+                            if reasoning and ('<|tool_calls_section_begin|>' in reasoning or '<tool_calls>' in reasoning or '<|DSML|tool_calls>' in reasoning or '<｜DSML｜tool_calls>' in reasoning or '<CallMcpTool>' in reasoning or '<tool_call' in reasoning):
                                 # Route to appropriate parser based on format
                                 if '<|tool_calls_section_begin|>' in reasoning:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_kimi_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, reasoning)
                                     parser_name = 'KIMI'
                                 else:
-                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = parse_deepseek_tool_calls(reasoning)
+                                    clean_reasoning, tool_calls_from_reasoning, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, reasoning)
                                     parser_name = 'DEEPSEEK'
 
                                 if has_tool_calls:
@@ -1362,7 +1500,7 @@ class OllamaProxy:
                             # to OpenAI's standard tool_calls format (non-streaming, in content)
                             content = message.get('content', '')
                             if content and '<|tool_calls_section_begin|>' in content:
-                                clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(content)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[KIMI] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
@@ -1379,8 +1517,8 @@ class OllamaProxy:
                             # DEEPSEEK TOOL CALL FIX: Convert DeepSeek's XML tool call format
                             # to OpenAI's standard tool_calls format (non-streaming, in content)
                             content = message.get('content', '')
-                            if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content)):
-                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(content)
+                            if content and (('<tool_calls>' in content and '</tool_calls>' in content) or ('<|DSML|tool_calls>' in content) or ('<｜DSML｜tool_calls>' in content) or ('<CallMcpTool>' in content and '</CallMcpTool>' in content) or ('<tool_call' in content)):
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, content)
 
                                 if has_tool_calls:
                                     logger.info(f"[DEEPSEEK] Detected {len(tool_calls)} tool call(s) in message content, converting to OpenAI format")
@@ -1673,6 +1811,12 @@ class OllamaProxy:
         if data:
             data = self._map_model_to_ollama(data)
 
+        # Step 3: Strip images from messages if model doesn't support vision
+        # Use the mapped (real) model name for capability lookup
+        mapped_model = data.get('model') or data.get('name') if data else None
+        if data and mapped_model:
+            data = self._strip_images_from_messages(data, mapped_model)
+
         # Validate data for POST requests
         if method.upper() == "POST" and not data:
             raise HTTPException(
@@ -1807,19 +1951,19 @@ class OllamaProxy:
 
                             # Parse error message
                             try:
-                                error_json = json.loads(error_msg)
+                                error_json = _json_loads(error_msg)
                                 if isinstance(error_json, dict) and 'error' in error_json:
                                     error_detail = error_json['error']
                                     if isinstance(error_detail, dict) and 'message' in error_detail:
                                         error_msg = error_detail['message']
                                     elif isinstance(error_detail, str):
                                         error_msg = error_detail
-                            except (json.JSONDecodeError, KeyError, TypeError):
+                            except (_json_decode_error, KeyError, TypeError):
                                 pass
 
                             logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
                             logger.error(f"Request URL: {current_url}")
-                            logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
+                            logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")
 
                             # === NODE-LEVEL RETRY ===
                             # Try the same model on a different node first
@@ -1861,6 +2005,10 @@ class OllamaProxy:
                                     current_data['model'] = fallback_model
                                     current_data = await self._resolve_model_groups(current_data)
                                     current_data = self._map_model_to_ollama(current_data)
+                                    # Strip images if fallback model doesn't support vision
+                                    fallback_mapped = current_data.get('model') or current_data.get('name')
+                                    if fallback_mapped:
+                                        current_data = self._strip_images_from_messages(current_data, fallback_mapped)
 
                                     # Select new node URL for fallback (reset tried_nodes for new model)
                                     new_base_url = await self._select_node_url(fallback_model)
@@ -1903,7 +2051,7 @@ class OllamaProxy:
                                     "code": error_code
                                 }
                             }
-                            yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                            yield b'data: ' + _json_dumps(error_response) + b'\n\n'
                             yield b'data: [DONE]\n\n'
                             return
 
@@ -1950,6 +2098,12 @@ class OllamaProxy:
 
                             buffer += chunk
 
+                            # Guard against unbounded buffer growth from malformed upstream
+                            if len(buffer) > 1024 * 1024:
+                                logger.warning(f"[STREAM] Buffer exceeded 1MB, discarding {len(buffer)} bytes")
+                                buffer = b""
+                                continue
+
                             while b'\n' in buffer:
                                 line, buffer = buffer.split(b'\n', 1)
                                 if line:
@@ -1958,7 +2112,7 @@ class OllamaProxy:
                                             json_str = line[6:].decode('utf-8').strip()
                                             if json_str and json_str != '[DONE]':
                                                 logger.info(f"[OLLAMA IN] {json_str}")
-                                                json_data = json.loads(json_str)
+                                                json_data = _json_loads(json_str)
 
                                                 # Kimi tool call handling
                                                 content = ""
@@ -1992,7 +2146,7 @@ class OllamaProxy:
                                                     if '<|tool_calls_section_end|>' in kimi_content_buffer:
                                                         logger.info(f"[KIMI] Tool call section complete, processing buffer")
 
-                                                        clean_content, tool_calls, has_tool_calls = parse_kimi_tool_calls(kimi_content_buffer)
+                                                        clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_kimi_tool_calls, kimi_content_buffer)
 
                                                         if has_tool_calls:
                                                             logger.info(f"[KIMI] Converted {len(tool_calls)} tool call(s) to OpenAI format")
@@ -2011,7 +2165,7 @@ class OllamaProxy:
                                                                         "finish_reason": None
                                                                     }]
                                                                 }
-                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                yield b'data: ' + _json_dumps(content_chunk) + b'\n\n'
 
                                                             tool_calls_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2023,7 +2177,7 @@ class OllamaProxy:
                                                                     "finish_reason": None
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(tool_calls_chunk) + b'\n\n'
 
                                                             finish_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2035,15 +2189,15 @@ class OllamaProxy:
                                                                     "finish_reason": "tool_calls"
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(finish_chunk) + b'\n\n'
                                                             first_chunk_sent = True
                                                         else:
-                                                            mapped_data = self._map_model_from_ollama(json.loads(json_str))
+                                                            mapped_data = await self._map_model_from_ollama(_json_loads(json_str))
                                                             if isinstance(mapped_data, dict) and 'choices' in mapped_data:
                                                                 choices = mapped_data.get('choices', [])
                                                                 if choices and len(choices) > 0:
                                                                     choices[0]['delta']['content'] = kimi_content_buffer
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(mapped_data) + b'\n\n'
                                                             first_chunk_sent = True
 
                                                         kimi_content_buffer = ""
@@ -2086,16 +2240,18 @@ class OllamaProxy:
                                                     deepseek_content_buffer += content + reasoning
 
                                                     # Check if the tool call section is complete (any format)
-                                                    if '</tool_calls>' in deepseek_content_buffer or '</CallMcpTool>' in deepseek_content_buffer or '</tool_call>' in deepseek_content_buffer:
+                                                    if '</tool_calls>' in deepseek_content_buffer or '</|DSML|tool_calls>' in deepseek_content_buffer or '</｜DSML｜tool_calls>' in deepseek_content_buffer or '</CallMcpTool>' in deepseek_content_buffer or '</tool_call>' in deepseek_content_buffer:
                                                         logger.info(f"[DEEPSEEK] Tool call section complete, processing buffer ({len(deepseek_content_buffer)} chars)")
 
-                                                        clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
+                                                        clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, deepseek_content_buffer)
 
                                                         if has_tool_calls:
                                                             logger.info(f"[DEEPSEEK] Converted {len(tool_calls)} tool call(s) to OpenAI format")
 
                                                             if clean_content:
-                                                                if '<tool_calls>' in clean_content or '</tool_calls>' in clean_content or '<CallMcpTool>' in clean_content or '</CallMcpTool>' in clean_content:
+                                                                if '<tool_calls>' in clean_content or '</tool_calls>' in clean_content or '<CallMcpTool>' in clean_content or '</CallMcpTool>' in clean_content or '｜DSML｜' in clean_content or '|DSML|' in clean_content:
+                                                                    # First normalize DSML tags to canonical form, then strip all tool call tags
+                                                                    clean_content = _normalize_dsml_tags(clean_content)
                                                                     clean_content = re.sub(r'</?(?:tool_calls|CallMcpTool|tool_call)[^>]*>', '', clean_content).strip()
                                                                 content_chunk = {
                                                                     "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2107,7 +2263,7 @@ class OllamaProxy:
                                                                         "finish_reason": None
                                                                     }]
                                                                 }
-                                                                yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                                yield b'data: ' + _json_dumps(content_chunk) + b'\n\n'
 
                                                             tool_calls_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2119,7 +2275,7 @@ class OllamaProxy:
                                                                     "finish_reason": None
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(tool_calls_chunk) + b'\n\n'
 
                                                             finish_chunk = {
                                                                 "id": json_data.get('id', f"chatcmpl-{uuid.uuid4().hex[:12]}"),
@@ -2131,16 +2287,16 @@ class OllamaProxy:
                                                                     "finish_reason": "tool_calls"
                                                                 }]
                                                             }
-                                                            yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(finish_chunk) + b'\n\n'
                                                             first_chunk_sent = True
                                                         else:
                                                             # Parsing failed — emit buffered content as plain text
-                                                            mapped_data = self._map_model_from_ollama(json.loads(json_str))
+                                                            mapped_data = await self._map_model_from_ollama(_json_loads(json_str))
                                                             if isinstance(mapped_data, dict) and 'choices' in mapped_data:
                                                                 choices = mapped_data.get('choices', [])
                                                                 if choices and len(choices) > 0:
                                                                     choices[0]['delta']['content'] = deepseek_content_buffer
-                                                            yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                            yield b'data: ' + _json_dumps(mapped_data) + b'\n\n'
                                                             first_chunk_sent = True
 
                                                         deepseek_content_buffer = ""
@@ -2150,8 +2306,8 @@ class OllamaProxy:
                                                         # Still buffering — wait for more chunks
                                                         continue
 
-                                                # DeepSeek: detect start of tool call section (<tool_calls>, <CallMcpTool>, or <tool_call singular>)
-                                                if is_deepseek_model and ('<tool_calls>' in (content + reasoning) or '<CallMcpTool>' in (content + reasoning) or '<tool_call' in (content + reasoning)):
+                                                # DeepSeek: detect start of tool call section (<tool_calls>, <CallMcpTool>, <tool_call singular>, or DSML variants)
+                                                if is_deepseek_model and ('<tool_calls>' in (content + reasoning) or '<|DSML|tool_calls>' in (content + reasoning) or '<｜DSML｜tool_calls>' in (content + reasoning) or '<CallMcpTool>' in (content + reasoning) or '<tool_call' in (content + reasoning)):
                                                     deepseek_buffering_active = True
                                                     deepseek_content_buffer = content + reasoning
                                                     logger.info(f"[DEEPSEEK] Tool call section started, buffering")
@@ -2166,7 +2322,7 @@ class OllamaProxy:
                                                         deepseek_suspicion_buffer = ""
 
                                                     # After combining suspicion buffer, check if we now have a complete tag
-                                                    if ds_combined and ('<tool_calls>' in ds_combined or '<CallMcpTool>' in ds_combined or '<tool_call' in ds_combined):
+                                                    if ds_combined and ('<tool_calls>' in ds_combined or '<|DSML|tool_calls>' in ds_combined or '<｜DSML｜tool_calls>' in ds_combined or '<CallMcpTool>' in ds_combined or '<tool_call' in ds_combined):
                                                         deepseek_buffering_active = True
                                                         deepseek_content_buffer = ds_combined
                                                         logger.info(f"[DEEPSEEK] Tool call detected after suspicion merge, buffering")
@@ -2192,7 +2348,7 @@ class OllamaProxy:
                                                         deepseek_suspicion_buffer = ""
 
                                                 # Normal processing
-                                                mapped_data = self._map_model_from_ollama(json_data)
+                                                mapped_data = await self._map_model_from_ollama(json_data)
 
                                                 # Extract delta for usage tracking
                                                 delta_obj = {}
@@ -2224,7 +2380,7 @@ class OllamaProxy:
                                                     choices_list = mapped_data.get('choices', [])
                                                     if not choices_list or len(choices_list) == 0:
                                                         logger.info(f"[PROXY YIELD USAGE] prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
-                                                        yield b'data: ' + json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                        yield b'data: ' + _json_dumps(mapped_data) + b'\n\n'
                                                         usage_chunk_received = True
                                                         first_chunk_sent = True
                                                         continue
@@ -2334,7 +2490,7 @@ class OllamaProxy:
                                                     if 'usage' in mapped_data:
                                                         out_chunk['usage'] = mapped_data['usage']
 
-                                                    yield b'data: ' + json.dumps(out_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                                    yield b'data: ' + _json_dumps(out_chunk) + b'\n\n'
                                                     first_chunk_sent = True
 
                                             elif line == b'data: [DONE]':
@@ -2347,14 +2503,14 @@ class OllamaProxy:
                                                 json_str = line.decode('utf-8', errors='replace').strip()
                                                 if json_str:
                                                     try:
-                                                        json_data = json.loads(json_str)
-                                                        mapped_data = self._map_model_from_ollama(json_data)
-                                                        yield json.dumps(mapped_data, ensure_ascii=False).encode('utf-8') + b'\n'
-                                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                                        json_data = _json_loads(json_str)
+                                                        mapped_data = await self._map_model_from_ollama(json_data)
+                                                        yield _json_dumps(mapped_data) + b'\n'
+                                                    except (_json_decode_error, UnicodeDecodeError) as e:
                                                         logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
                                                         yield line + b'\n'
 
-                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                    except (_json_decode_error, UnicodeDecodeError) as e:
                                         logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {line[:100]!r}")
                                         yield line + b'\n'
 
@@ -2377,7 +2533,7 @@ class OllamaProxy:
                             # DeepSeek flush: if still buffering tool calls at stream end, try to parse
                             if deepseek_buffering_active and deepseek_content_buffer:
                                 logger.info(f"[DEEPSEEK] Stream ended while buffering, attempting flush ({len(deepseek_content_buffer)} chars)")
-                                clean_content, tool_calls, has_tool_calls = parse_deepseek_tool_calls(deepseek_content_buffer)
+                                clean_content, tool_calls, has_tool_calls = await _asyncio.to_thread(parse_deepseek_tool_calls, deepseek_content_buffer)
 
                                 if has_tool_calls:
                                     logger.info(f"[DEEPSEEK] Flushed {len(tool_calls)} tool call(s)")
@@ -2388,7 +2544,7 @@ class OllamaProxy:
                                             "model": model_mapper.get_display_model_name(current_model),
                                             "choices": [{"index": 0, "delta": {"content": clean_content}, "finish_reason": None}]
                                         }
-                                        yield b'data: ' + json.dumps(content_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                        yield b'data: ' + _json_dumps(content_chunk) + b'\n\n'
 
                                     tool_calls_chunk = {
                                         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -2396,7 +2552,7 @@ class OllamaProxy:
                                         "model": model_mapper.get_display_model_name(current_model),
                                         "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}]
                                     }
-                                    yield b'data: ' + json.dumps(tool_calls_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: ' + _json_dumps(tool_calls_chunk) + b'\n\n'
 
                                     finish_chunk = {
                                         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -2404,7 +2560,7 @@ class OllamaProxy:
                                         "model": model_mapper.get_display_model_name(current_model),
                                         "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
                                     }
-                                    yield b'data: ' + json.dumps(finish_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: ' + _json_dumps(finish_chunk) + b'\n\n'
                                 else:
                                     # Emit as plain text
                                     text_chunk = {
@@ -2413,7 +2569,7 @@ class OllamaProxy:
                                         "model": model_mapper.get_display_model_name(current_model),
                                         "choices": [{"index": 0, "delta": {"content": deepseek_content_buffer}, "finish_reason": None}]
                                     }
-                                    yield b'data: ' + json.dumps(text_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                    yield b'data: ' + _json_dumps(text_chunk) + b'\n\n'
 
                                 deepseek_content_buffer = ""
                                 deepseek_buffering_active = False
@@ -2426,7 +2582,7 @@ class OllamaProxy:
                                     "model": model_mapper.get_display_model_name(current_model),
                                     "choices": [{"index": 0, "delta": {"content": deepseek_suspicion_buffer}, "finish_reason": None}]
                                 }
-                                yield b'data: ' + json.dumps(text_chunk, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                                yield b'data: ' + _json_dumps(text_chunk) + b'\n\n'
                                 deepseek_suspicion_buffer = ""
 
                             logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
@@ -2470,6 +2626,10 @@ class OllamaProxy:
                             current_data['model'] = fallback_model
                             current_data = await self._resolve_model_groups(current_data)
                             current_data = self._map_model_to_ollama(current_data)
+                            # Strip images if fallback model doesn't support vision
+                            fb_mapped = current_data.get('model') or current_data.get('name')
+                            if fb_mapped:
+                                current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             new_base_url = await self._select_node_url(fallback_model)
                             current_url = f"{new_base_url}{endpoint}"
@@ -2487,7 +2647,7 @@ class OllamaProxy:
                             "code": 503
                         }
                     }
-                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                    yield b'data: ' + _json_dumps(error_response) + b'\n\n'
                     yield b'data: [DONE]\n\n'
                     return
 
@@ -2500,7 +2660,7 @@ class OllamaProxy:
                             "code": 500
                         }
                     }
-                    yield b'data: ' + json.dumps(error_response, ensure_ascii=False).encode('utf-8') + b'\n\n'
+                    yield b'data: ' + _json_dumps(error_response) + b'\n\n'
                     yield b'data: [DONE]\n\n'
                     return
 
@@ -2585,7 +2745,7 @@ class OllamaProxy:
                     logger.error(f"Ollama error ({response.status_code}): {error_text}")
                     logger.error(f"Request URL: {current_url}")
                     if current_data:
-                        logger.error(f"Request data: {json.dumps(current_data, ensure_ascii=False, indent=2)}")
+                        logger.error(f"Request data: {_json_dumps(current_data, option=orjson.OPT_INDENT_2).decode()}")
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first
@@ -2629,6 +2789,10 @@ class OllamaProxy:
                             current_data['model'] = fallback_model
                             current_data = await self._resolve_model_groups(current_data)
                             current_data = self._map_model_to_ollama(current_data)
+                            # Strip images if fallback model doesn't support vision
+                            fb_mapped = current_data.get('model') or current_data.get('name')
+                            if fb_mapped:
+                                current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             # Select new node URL for fallback
                             new_base_url = await self._select_node_url(fallback_model)
@@ -2669,7 +2833,7 @@ class OllamaProxy:
                 elif endpoint == "/v1/models":
                     response_data = self._map_openai_models_list(response_data)
                 elif is_openai_endpoint:
-                    response_data = self._map_model_from_ollama(response_data)
+                    response_data = await self._map_model_from_ollama(response_data)
                 else:
                     response_data = self._map_native_ollama_response(response_data)
 
@@ -2745,6 +2909,10 @@ class OllamaProxy:
                         current_data['model'] = fallback_model
                         current_data = await self._resolve_model_groups(current_data)
                         current_data = self._map_model_to_ollama(current_data)
+                        # Strip images if fallback model doesn't support vision
+                        fb_mapped = current_data.get('model') or current_data.get('name')
+                        if fb_mapped:
+                            current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                         new_base_url = await self._select_node_url(fallback_model)
                         current_url = f"{new_base_url}{endpoint}"

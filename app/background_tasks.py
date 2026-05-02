@@ -1,7 +1,17 @@
 """Background task manager for async processing"""
 
 import asyncio
-import json
+
+# orjson is optional — provides ~8x faster JSON serialization.
+try:
+    import orjson as _json_lib
+    _json_loads = _json_lib.loads
+    _json_dumps = lambda obj: _json_lib.dumps(obj).decode()
+except ImportError:
+    import json as _json_lib
+    _json_loads = _json_lib.loads
+    _json_dumps = lambda obj: _json_lib.dumps(obj, ensure_ascii=False)
+
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -62,7 +72,7 @@ async def queue_activity_log_async(
         
         # Add to queue (RPUSH for FIFO)
         # Redis client has decode_responses=True, so we pass strings directly
-        await redis_manager.redis_client.rpush(QUEUE_KEY, json.dumps(log_data))
+        await redis_manager.redis_client.rpush(QUEUE_KEY, _json_dumps(log_data))
         
         # Log successful queue
         logger.debug(f"Queued activity log for user {username}")
@@ -130,57 +140,63 @@ async def _update_daily_usage_cache(username: str, total_tokens: int):
 
 async def process_batch(batch: List[Dict[str, Any]]):
     """
-    Process a batch of activity logs
-    
+    Process a batch of activity logs using bulk insert.
+
     Args:
         batch: List of activity log dictionaries
     """
     if not batch:
         return
-    
+
     try:
         from app.repositories import UserRepository, UserActivityRepository
         from app.database import async_session_maker
-        
+
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             activity_repo = UserActivityRepository(session)
-            
+
+            # 1. Bulk lookup users by username (single query instead of N+1)
+            usernames = list({log['username'] for log in batch})
+            users = await user_repo.get_by_usernames(usernames)
+            username_to_id = {u.username: u.id for u in users}
+
+            # 2. Build bulk insert values and aggregate tokens per user
+            logs_to_insert = []
+            tokens_per_user: Dict[str, int] = {}
+
             for log in batch:
-                try:
-                    # Get user ID
-                    user = await user_repo.get_by_username(log['username'])
-                    if not user:
-                        logger.warning(f"User not found for activity log: {log['username']}")
-                        continue
-                    
-                    # Log activity
-                    await activity_repo.log_activity(
-                        user_id=user.id,
-                        model_name=log['model_name'],
-                        request_type=log['request_type'],
-                        prompt_tokens=log.get('prompt_tokens', 0),
-                        completion_tokens=log.get('completion_tokens', 0),
-                        total_tokens=log.get('total_tokens', 0),
-                        status_code=log.get('status_code'),
-                        duration_ms=log.get('duration_ms'),
-                        error_message=log.get('error_message')
-                    )
-                    
-                    # Update daily usage cache (atomic increment)
-                    await _update_daily_usage_cache(
-                        log['username'],
-                        log.get('total_tokens', 0)
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error processing activity log: {e}")
+                username = log['username']
+                user_id = username_to_id.get(username)
+                if not user_id:
+                    logger.warning(f"User not found for activity log: {username}")
                     continue
-            
-            # Commit all logs in batch
-            await session.commit()
-            logger.info(f"Processed {len(batch)} activity logs")
-    
+
+                logs_to_insert.append({
+                    "user_id": user_id,
+                    "model_name": log['model_name'],
+                    "request_type": log['request_type'],
+                    "prompt_tokens": log.get('prompt_tokens', 0) or 0,
+                    "completion_tokens": log.get('completion_tokens', 0) or 0,
+                    "total_tokens": log.get('total_tokens', 0) or 0,
+                    "status_code": log.get('status_code'),
+                    "duration_ms": log.get('duration_ms'),
+                    "error_message": log.get('error_message'),
+                })
+
+                # Aggregate tokens per user for a single cache update per user
+                tokens_per_user[username] = tokens_per_user.get(username, 0) + (log.get('total_tokens', 0) or 0)
+
+            # 3. Bulk insert all activity logs (single INSERT)
+            if logs_to_insert:
+                inserted = await activity_repo.bulk_insert_logs(logs_to_insert)
+                await session.commit()
+                logger.info(f"Processed {inserted} activity logs via bulk insert")
+
+            # 4. Update daily usage cache once per user (instead of per log)
+            for username, total_tokens in tokens_per_user.items():
+                await _update_daily_usage_cache(username, total_tokens)
+
     except Exception as e:
         logger.error(f"Error processing batch: {e}")
 
@@ -218,7 +234,7 @@ async def background_processor():
                     log_data = await redis_manager.redis_client.lpop(QUEUE_KEY)
                     if log_data:
                         # log_data is already a string (decode_responses=True)
-                        batch.append(json.loads(log_data))
+                        batch.append(_json_loads(log_data))
                 except (json.JSONDecodeError, TypeError) as e:
                     logger.error(f"Error decoding log data: {e}")
                     continue
@@ -264,9 +280,8 @@ async def node_health_check_task():
 
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
-            # Wait for idle if streams are active
-            await _wait_for_idle(max_wait=30.0)
-
+            # Health checks are lightweight (/api/tags), run them immediately
+            # without waiting for streams to finish
             from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.repositories.node_repository import NodeRepository
@@ -330,9 +345,8 @@ async def model_discovery_task():
 
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
-            # Wait for idle if streams are active
-            await _wait_for_idle(max_wait=60.0)
-
+            # Model discovery is lightweight (/api/tags), run immediately
+            # without waiting for streams to finish
             from app.database import async_session_maker
             from app.node_manager import node_manager
 
@@ -442,17 +456,29 @@ async def model_warmup_task():
                     available = [m for m in models if m.is_available]
                     logger.info(f"[WARMUP] Warming up {len(available)} models on node '{node.name}'")
 
-                    # Use a dedicated client with short timeout
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-                        for m in available:
-                            # Re-check node is still active before each warmup
-                            fresh = await node_repo.get_by_id(node.id)
-                            if not fresh or not fresh.is_active:
-                                logger.info(f"[WARMUP] Node '{node.name}' no longer active, stopping warmup")
-                                break
-                            await _warmup_model_on_node(
-                                client, node.base_url, node.api_key, m.model_name
-                            )
+                    # Re-check node is still active before starting batch
+                    fresh = await node_repo.get_by_id(node.id)
+                    if not fresh or not fresh.is_active:
+                        logger.info(f"[WARMUP] Node '{node.name}' no longer active, skipping")
+                        continue
+
+                    # Warm up models concurrently with a shared client
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(30.0, connect=5.0),
+                        limits=httpx.Limits(max_keepalive_connections=20, max_connections=40)
+                    ) as client:
+                        semaphore = asyncio.Semaphore(5)
+
+                        async def _warmup_with_limit(model_name: str) -> None:
+                            async with semaphore:
+                                await _warmup_model_on_node(
+                                    client, node.base_url, node.api_key, model_name
+                                )
+
+                        await asyncio.gather(
+                            *[_warmup_with_limit(m.model_name) for m in available],
+                            return_exceptions=True
+                        )
 
         except Exception as e:
             logger.error(f"Error in model warmup task: {e}")
@@ -667,7 +693,7 @@ async def stop_background_tasks():
                     try:
                         log_data = await redis_manager.redis_client.lpop(QUEUE_KEY)
                         if log_data:
-                            batch.append(json.loads(log_data))
+                            batch.append(_json_loads(log_data))
                     except json.JSONDecodeError:
                         continue
                 

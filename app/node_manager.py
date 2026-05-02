@@ -35,12 +35,12 @@ class NodeManager:
         """Get or create HTTP client with conservative connection limits to avoid starving streaming."""
         if self._http_client is None or self._http_client.is_closed:
             limits = httpx.Limits(
-                max_keepalive_connections=5,
-                max_connections=10,
-                keepalive_expiry=60,
+                max_keepalive_connections=20,
+                max_connections=40,
+                keepalive_expiry=120,
             )
             self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(5.0, connect=3.0),
+                timeout=httpx.Timeout(10.0, connect=5.0),
                 limits=limits,
             )
         return self._http_client
@@ -193,9 +193,9 @@ class NodeManager:
             )
             synced_models.append(model_data["name"])
         
-        # Invalidate cache
-        self._cache_valid = False
-        
+        # Invalidate cache (Redis + memory)
+        await self.invalidate_cache()
+
         return {
             "success": True,
             "node_id": node_id,
@@ -246,8 +246,8 @@ class NodeManager:
             else:
                 failed_nodes.append(result.get("node_name", "unknown"))
 
-        # Invalidate cache
-        self._cache_valid = False
+        # Invalidate cache (Redis + memory)
+        await self.invalidate_cache()
 
         return {
             "total_nodes": len(nodes),
@@ -260,54 +260,76 @@ class NodeManager:
     async def get_nodes_for_model(
         self,
         model_name: str,
-        session
+        session=None
     ) -> List[Dict[str, Any]]:
         """
         Get all nodes that have a specific model.
-        
+        Uses Redis as primary cache, falls back to DB on miss.
+
+        Args:
+            model_name: The model name to look up
+            session: Optional DB session (only used on cache miss)
+
         Returns:
             List of node dicts with load info
         """
-        # Use cache if valid
-        if self._cache_valid and model_name in self._model_cache:
-            return self._model_cache[model_name]
-        
+        from app.redis import redis_manager, CACHE_KEYS, CACHE_TTL
+        cache_key = CACHE_KEYS["MODEL_NODES"].format(model_name=model_name)
+
+        # Try Redis first
+        if redis_manager:
+            try:
+                cached = await redis_manager.get(cache_key)
+                if cached:
+                    import json
+                    return json.loads(cached)
+            except Exception:
+                pass
+
+        # Fallback to DB — open our own session if caller didn't provide one
+        if session is None:
+            from app.database import async_session_maker
+            async with async_session_maker() as db_session:
+                return await self.get_nodes_for_model(model_name, db_session)
+
         model_repo = NodeModelRepository(session)
         nodes = await model_repo.get_nodes_for_model(model_name)
-        
-        # Update cache
-        self._model_cache[model_name] = nodes
-        
+
+        # Store in Redis for next time
+        if redis_manager:
+            try:
+                import json
+                await redis_manager.set(cache_key, json.dumps(nodes), expire=CACHE_TTL["MODEL_NODES"])
+            except Exception:
+                pass
+
         return nodes
     
     async def get_model_location(
         self,
         display_name: str,
-        real_name: str,
-        session
+        real_name: str
     ) -> Optional[Dict[str, Any]]:
         """
         Find the best node for a model.
-        
+
         Args:
             display_name: User-facing model name
             real_name: Actual model name in Ollama
-            
+
         Returns:
             Node dict or None if not found
         """
-        from app.config import model_mapper
-        
         # Try real_name first
-        nodes = await self.get_nodes_for_model(real_name, session)
-        
+        nodes = await self.get_nodes_for_model(real_name)
+
         if not nodes:
             # Try display_name as fallback
-            nodes = await self.get_nodes_for_model(display_name, session)
-        
+            nodes = await self.get_nodes_for_model(display_name)
+
         if not nodes:
             return None
-        
+
         # Return first available node (will be load-balanced later)
         return nodes[0]
     
@@ -319,10 +341,22 @@ class NodeManager:
         model_repo = NodeModelRepository(session)
         return await model_repo.get_model_distribution()
     
-    def invalidate_cache(self):
-        """Invalidate model cache"""
-        self._cache_valid = False
+    async def invalidate_cache(self):
+        """Invalidate model cache in both memory and Redis"""
         self._model_cache.clear()
+
+        from app.redis import redis_manager, CACHE_KEYS
+        if redis_manager:
+            try:
+                # Delete model nodes cache (pattern scan)
+                keys = await redis_manager.keys(CACHE_KEYS["MODEL_NODES"].replace("{model_name}", "*"))
+                if keys:
+                    await redis_manager.delete(*keys)
+                # Also delete node loads and active nodes
+                await redis_manager.delete(CACHE_KEYS["NODE_LOADS"])
+                await redis_manager.delete(CACHE_KEYS["ACTIVE_NODES"])
+            except Exception:
+                pass
     
     async def pull_model_to_node(
         self,
@@ -363,7 +397,13 @@ class NodeManager:
             buffer = b""
             async for chunk in response.aiter_bytes():
                 buffer += chunk
-                
+
+                # Guard against unbounded buffer growth
+                if len(buffer) > 10 * 1024 * 1024:
+                    logger.warning(f"[PULL] Buffer exceeded 10MB, discarding")
+                    buffer = b""
+                    continue
+
                 # Yield complete lines
                 while b'\n' in buffer:
                     line, buffer = buffer.split(b'\n', 1)
