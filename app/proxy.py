@@ -386,6 +386,33 @@ _DSML_CLOSE_RE = re.compile(r'</' + _DSML_PIPE + r'DSML' + _DSML_PIPE + r'(\w+)>
 _CANONICAL_OPEN_RE = re.compile(r'<(tool_calls|invoke|parameter)([^>]*)>')
 _CANONICAL_CLOSE_RE = re.compile(r'</(tool_calls|invoke|parameter)>')
 
+# Pre-compiled regex patterns for parse_deepseek_tool_calls to avoid
+# recompilation on every streaming chunk.
+_STC_PATTERN = re.compile(
+    r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</tool_call>',
+    re.DOTALL
+)
+_INVOKE_PATTERN = re.compile(
+    r'<invoke\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)</invoke>',
+    re.DOTALL
+)
+_PARAM_PATTERN = re.compile(
+    r'<parameter\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)(?:</parameter>)',
+    re.DOTALL
+)
+_TOOL_CALL_INVOKE_PATTERN = re.compile(
+    r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</invoke>',
+    re.DOTALL
+)
+_TOOL_CALL_PATTERN = re.compile(r'<tool_call\s*>(.*?)</tool_call\s *>', re.DOTALL)
+_TOOL_CALL_PATTERN2 = re.compile(r'<tool_call[^>]*>(.*?)</tool_call\s *>', re.DOTALL)
+_ELEM_PATTERN = re.compile(
+    r'<(\w+)(?:\s+name=["\x27]([^"\x27]+)["\x27])?[^>]*>(.*?)</\1\s*>',
+    re.DOTALL
+)
+_MCP_PATTERN = re.compile(r'<CallMcpTool>(.*?)</CallMcpTool>', re.DOTALL)
+_KV_PATTERN = re.compile(r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))')
+
 # Marker for suspicion buffering — partial tag prefixes
 # Include both ASCII pipe and Unicode fullwidth pipe variants
 _DEEPSEEK_TAG_PREFIXES = ['<tool_c', '<tool_ca', '<tool_cal', '<tool_call', '<tool_calls',
@@ -557,11 +584,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
     elif has_stc:
         # <tool_call name="..."> (singular) format — extract all such blocks
-        stc_pattern = re.compile(
-            r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</tool_call>',
-            re.DOTALL
-        )
-        stc_matches = list(stc_pattern.finditer(normalized))
+        stc_matches = list(_STC_PATTERN.finditer(normalized))
         first_start = stc_matches[0].start() if stc_matches else 0
         last_end = stc_matches[-1].end() if stc_matches else 0
         content_before = normalized[:first_start].strip()
@@ -588,20 +611,11 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     tool_call_index = 0
 
     # Try <invoke> format first (canonical XML with name attributes)
-    invoke_pattern = re.compile(
-        r'<invoke\s+name=["\x27]([^"\x27]+)["\x27]>(.*?)</invoke>',
-        re.DOTALL
-    )
-    invoke_matches = list(invoke_pattern.finditer(section_content))
-
-    param_pattern = re.compile(
-        r'<parameter\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)(?:</parameter>)',
-        re.DOTALL
-    )
+    invoke_matches = list(_INVOKE_PATTERN.finditer(section_content))
 
     def _parse_invoke_body(name: str, body: str, tc_index: int) -> Optional[Dict[str, Any]]:
         arguments = {}
-        for pm in param_pattern.finditer(body):
+        for pm in _PARAM_PATTERN.finditer(body):
             p_name = pm.group(1)
             p_value = pm.group(2).strip()
             if p_value.startswith('<![CDATA[') and p_value.endswith(']]>'):
@@ -633,11 +647,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
     # Also match <tool_call name="...">...</invoke> (hybrid DSML format where
     # tool_call acts as invoke, closed by </invoke>)
-    tool_call_invoke_pattern = re.compile(
-        r'<tool_call\s+name=["\x27]([^"\x27]+)["\x27][^>]*>(.*?)</invoke>',
-        re.DOTALL
-    )
-    tc_invoke_matches = list(tool_call_invoke_pattern.finditer(section_content))
+    tc_invoke_matches = list(_TOOL_CALL_INVOKE_PATTERN.finditer(section_content))
 
     # Merge both match lists, sorted by start position, deduplicating overlaps
     all_invoke_matches: list = []
@@ -663,19 +673,10 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
     if not tool_calls:
         # Try Ollama native tool_call tags
         # Content can be: "FunctionName\n{json_args}" or plain text
-        tool_call_pattern = re.compile(
-            r'<tool_call\s*>(.*?)</tool_call\s *>',
-            re.DOTALL
-        )
-        tc_matches = list(tool_call_pattern.finditer(section_content))
+        tc_matches = list(_TOOL_CALL_PATTERN.finditer(section_content))
 
         if not tc_matches:
-            # Broader pattern: everything between tags with possible attrs
-            tool_call_pattern2 = re.compile(
-                r'<tool_call[^>]*>(.*?)</tool_call\s *>',
-                re.DOTALL
-            )
-            tc_matches = list(tool_call_pattern2.finditer(section_content))
+            tc_matches = list(_TOOL_CALL_PATTERN2.finditer(section_content))
 
         for tc_match in tc_matches:
             tc_content = tc_match.group(1).strip()
@@ -777,11 +778,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
             arguments = {}
             param_idx = 0
             # Match all XML sub-elements: <tagname>value</tagname>
-            elem_pat = re.compile(
-                r'<(\w+)(?:\s+name=["\x27]([^"\x27]+)["\x27])?[^>]*>(.*?)</\1\s*>',
-                re.DOTALL
-            )
-            for elem_match in elem_pat.finditer(stc_body):
+            for elem_match in _ELEM_PATTERN.finditer(stc_body):
                 tag_name = elem_match.group(1)
                 name_attr = elem_match.group(2)
                 elem_value = elem_match.group(3).strip()
@@ -826,11 +823,7 @@ def parse_deepseek_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]], 
 
     # Try <CallMcpTool> format (DeepSeek-v4-pro MCP-style tool calls)
     if not tool_calls:
-        mcp_pattern = re.compile(
-            r'<CallMcpTool>(.*?)</CallMcpTool>',
-            re.DOTALL
-        )
-        for mcp_match in mcp_pattern.finditer(section_content):
+        for mcp_match in _MCP_PATTERN.finditer(section_content):
             mcp_body = mcp_match.group(1).strip()
 
             server_name = ""
@@ -912,8 +905,7 @@ def _parse_plain_text_args(text: str) -> Dict[str, Any]:
     arguments = {}
 
     # Try key="value" pairs first (most structured)
-    kv_pattern = re.compile(r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))')
-    matches = list(kv_pattern.finditer(text))
+    matches = list(_KV_PATTERN.finditer(text))
     if matches:
         for match in matches:
             key = match.group(1)
@@ -984,6 +976,7 @@ class OllamaProxy:
     async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> str:
         """
         Select the best node URL for a model using load balancing.
+        Uses Redis cache first (zero DB hits per request).
 
         Args:
             model_name: The model name to route
@@ -992,62 +985,60 @@ class OllamaProxy:
         Falls back to self.base_url if load balancing is not configured or no nodes available.
         """
         try:
-            from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.load_balancer import load_balancer
 
-            async with async_session_maker() as session:
-                # Get real model name
-                real_model_name = model_mapper.get_real_model_name(model_name)
+            # Get real model name
+            real_model_name = model_mapper.get_real_model_name(model_name)
 
-                # Get available nodes for this model
-                nodes = await node_manager.get_nodes_for_model(real_model_name, session)
+            # Get available nodes for this model from Redis (zero DB hits on hot path!)
+            nodes = await node_manager.get_nodes_for_model(real_model_name)
 
-                if not nodes:
-                    # Try display name as fallback
-                    nodes = await node_manager.get_nodes_for_model(model_name, session)
+            if not nodes:
+                # Try display name as fallback
+                nodes = await node_manager.get_nodes_for_model(model_name)
 
-                if not nodes:
-                    # No nodes have this model - use default (if not excluded)
-                    if exclude_nodes and self.base_url in exclude_nodes:
-                        logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
-                        return ""
-                    logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
-                    return self.base_url
-
-                # Filter out excluded nodes
-                if exclude_nodes:
-                    filtered_nodes = [
-                        n for n in nodes
-                        if n.get('base_url') not in exclude_nodes
-                    ]
-                    if filtered_nodes:
-                        nodes = filtered_nodes
-                        logger.info(
-                            f"[LB] Filtered to {len(nodes)} nodes for model {model_name} "
-                            f"(excluded {len(exclude_nodes)} tried nodes)"
-                        )
-                    else:
-                        # All known nodes excluded, try default if not excluded
-                        if self.base_url not in exclude_nodes:
-                            logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
-                            return self.base_url
-                        logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
-                        return ""
-
-                # Select best node using load balancer
-                selected_node = await load_balancer.select_node(
-                    nodes, strategy="least_loaded", session=session
-                )
-
-                if selected_node:
-                    node_name = selected_node.get('node_name') or selected_node.get('name', 'unknown')
-                    node_base_url = selected_node.get('base_url')
-                    logger.info(f"[LB] Selected node {node_name} for model {model_name}")
-                    if node_base_url:
-                        return node_base_url
-
+            if not nodes:
+                # No nodes have this model - use default (if not excluded)
+                if exclude_nodes and self.base_url in exclude_nodes:
+                    logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
+                    return ""
+                logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
                 return self.base_url
+
+            # Filter out excluded nodes
+            if exclude_nodes:
+                filtered_nodes = [
+                    n for n in nodes
+                    if n.get('base_url') not in exclude_nodes
+                ]
+                if filtered_nodes:
+                    nodes = filtered_nodes
+                    logger.info(
+                        f"[LB] Filtered to {len(nodes)} nodes for model {model_name} "
+                        f"(excluded {len(exclude_nodes)} tried nodes)"
+                    )
+                else:
+                    # All known nodes excluded, try default if not excluded
+                    if self.base_url not in exclude_nodes:
+                        logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
+                        return self.base_url
+                    logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
+                    return ""
+
+            # Select best node using load balancer (Redis-first, no session)
+            selected_node = await load_balancer.select_node(
+                nodes, strategy="least_loaded"
+            )
+
+            if selected_node:
+                node_name = selected_node.get('node_name') or selected_node.get('name', 'unknown')
+                node_base_url = selected_node.get('base_url')
+                logger.info(f"[LB] Selected node {node_name} for model {model_name}")
+                if node_base_url:
+                    return node_base_url
+
+            return self.base_url
 
         except Exception as e:
             logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
@@ -1080,9 +1071,9 @@ class OllamaProxy:
             # Async HTTP client
             # HTTP/2 disabled for better compatibility with Ollama
             self._http_client = httpx.AsyncClient(
-                timeout=1200.0,  # 20 minutes (for long reasoning/tools)
+                timeout=httpx.Timeout(1200.0, connect=30.0, read=1200.0, write=30.0),
                 limits=limits,
-                http2=True  # Disabled to prevent connection stability issues
+                http2=False  # HTTP/2 disabled for streaming stability
             )
         
         return self._http_client
@@ -2084,6 +2075,12 @@ class OllamaProxy:
                                 logger.info(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
 
                             buffer += chunk
+
+                            # Guard against unbounded buffer growth from malformed upstream
+                            if len(buffer) > 1024 * 1024:
+                                logger.warning(f"[STREAM] Buffer exceeded 1MB, discarding {len(buffer)} bytes")
+                                buffer = b""
+                                continue
 
                             while b'\n' in buffer:
                                 line, buffer = buffer.split(b'\n', 1)

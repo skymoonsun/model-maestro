@@ -264,9 +264,8 @@ async def node_health_check_task():
 
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
-            # Wait for idle if streams are active
-            await _wait_for_idle(max_wait=30.0)
-
+            # Health checks are lightweight (/api/tags), run them immediately
+            # without waiting for streams to finish
             from app.database import async_session_maker
             from app.node_manager import node_manager
             from app.repositories.node_repository import NodeRepository
@@ -330,9 +329,8 @@ async def model_discovery_task():
 
     while not NODE_TASK_SHUTDOWN_EVENT.is_set():
         try:
-            # Wait for idle if streams are active
-            await _wait_for_idle(max_wait=60.0)
-
+            # Model discovery is lightweight (/api/tags), run immediately
+            # without waiting for streams to finish
             from app.database import async_session_maker
             from app.node_manager import node_manager
 
@@ -442,17 +440,29 @@ async def model_warmup_task():
                     available = [m for m in models if m.is_available]
                     logger.info(f"[WARMUP] Warming up {len(available)} models on node '{node.name}'")
 
-                    # Use a dedicated client with short timeout
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-                        for m in available:
-                            # Re-check node is still active before each warmup
-                            fresh = await node_repo.get_by_id(node.id)
-                            if not fresh or not fresh.is_active:
-                                logger.info(f"[WARMUP] Node '{node.name}' no longer active, stopping warmup")
-                                break
-                            await _warmup_model_on_node(
-                                client, node.base_url, node.api_key, m.model_name
-                            )
+                    # Re-check node is still active before starting batch
+                    fresh = await node_repo.get_by_id(node.id)
+                    if not fresh or not fresh.is_active:
+                        logger.info(f"[WARMUP] Node '{node.name}' no longer active, skipping")
+                        continue
+
+                    # Warm up models concurrently with a shared client
+                    async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(30.0, connect=5.0),
+                        limits=httpx.Limits(max_keepalive_connections=20, max_connections=40)
+                    ) as client:
+                        semaphore = asyncio.Semaphore(5)
+
+                        async def _warmup_with_limit(model_name: str) -> None:
+                            async with semaphore:
+                                await _warmup_model_on_node(
+                                    client, node.base_url, node.api_key, model_name
+                                )
+
+                        await asyncio.gather(
+                            *[_warmup_with_limit(m.model_name) for m in available],
+                            return_exceptions=True
+                        )
 
         except Exception as e:
             logger.error(f"Error in model warmup task: {e}")
