@@ -1,8 +1,7 @@
 """Pydantic models for the application"""
 
 from typing import Optional, Any, Dict, List
-from pydantic import BaseModel, Field
-from datetime import datetime
+from pydantic import BaseModel
 
 
 class User(BaseModel):
@@ -59,6 +58,36 @@ class OllamaEmbedRequest(BaseModel):
     truncate: Optional[bool] = True
     options: Optional[Dict[str, Any]] = None
     keep_alive: Optional[str] = None
+
+
+class OpenAIEmbeddingRequest(BaseModel):
+    """OpenAI-compatible /v1/embeddings request"""
+    input: str | List[str]
+    model: str
+    encoding_format: Optional[str] = "float"
+    dimensions: Optional[int] = None
+    user: Optional[str] = None
+
+
+class EmbeddingData(BaseModel):
+    """Single embedding result"""
+    object: str = "embedding"
+    embedding: List[float]
+    index: int
+
+
+class EmbeddingUsage(BaseModel):
+    """Token usage for embedding request"""
+    prompt_tokens: int
+    total_tokens: int
+
+
+class OpenAIEmbeddingResponse(BaseModel):
+    """OpenAI-compatible /v1/embeddings response"""
+    object: str = "list"
+    data: List[EmbeddingData]
+    model: str
+    usage: EmbeddingUsage
 
 
 class OllamaShowRequest(BaseModel):
