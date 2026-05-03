@@ -484,10 +484,10 @@ async def openclaw_embed(
 # OpenAI Compatible V1 Endpoints
 # ============================================================================
 
-@router.get("/v1/models")
+@router.get("/models")
 async def openclaw_v1_models(username: str = Depends(get_openclaw_user)):
     """
-    OpenAI /v1/models compatible endpoint.
+    OpenAI /models compatible endpoint.
     """
     logger.info(f"[OpenClaw] User {username} requesting v1/models")
 
@@ -523,13 +523,13 @@ async def openclaw_v1_models(username: str = Depends(get_openclaw_user)):
     return {"object": "list", "data": filtered}
 
 
-@router.post("/v1/chat/completions")
+@router.post("/chat/completions")
 async def openclaw_v1_chat_completions(
     request: Request,
     username: str = Depends(get_openclaw_user),
 ):
     """
-    OpenAI /v1/chat/completions compatible endpoint.
+    OpenAI /chat/completions compatible endpoint.
     """
     body = await request.json()
     model_name = body.get("model", "")
@@ -560,20 +560,20 @@ async def openclaw_v1_chat_completions(
 
     return await ollama_proxy.proxy_request(
         method="POST",
-        endpoint="/v1/chat/completions",
+        endpoint="/chat/completions",
         data=body,
         stream=stream,
         username=username,
     )
 
 
-@router.post("/v1/embeddings")
+@router.post("/embeddings")
 async def openclaw_v1_embeddings(
     request: Request,
     username: str = Depends(get_openclaw_user),
 ):
     """
-    OpenAI /v1/embeddings compatible endpoint.
+    OpenAI /embeddings compatible endpoint.
     """
     body = await request.json()
     model_name = body.get("model", "")
