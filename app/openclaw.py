@@ -548,6 +548,13 @@ async def openclaw_v1_chat_completions(
     real_model_name = model_mapper.get_real_model_name(model_name)
     body["model"] = real_model_name
 
+    # Normalize reasoning values: Ollama rejects 'minimal', map to 'low'
+    for key in ("reasoning",):
+        for container in (body, body.get("options", {})):
+            if isinstance(container, dict) and container.get(key) == "minimal":
+                container[key] = "low"
+                logger.info(f"[OpenClaw] Normalized reasoning 'minimal' -> 'low' for model {model_name}")
+
     if "options" not in body:
         body["options"] = {}
     if isinstance(body["options"], dict) and "num_ctx" not in body["options"]:
