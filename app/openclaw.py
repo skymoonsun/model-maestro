@@ -440,107 +440,6 @@ async def openclaw_chat(
 
 
 # =============================================================================
-# POST /openclaw/api/generate — Text generation (fallback)
-# =============================================================================
-
-@router.post("/api/generate")
-async def openclaw_generate(
-    request: Request,
-    username: str = Depends(get_openclaw_user),
-):
-    """
-    Text generation (native Ollama /api/generate format).
-    OpenClaw primarily uses /api/chat but some tools might use /api/generate.
-    """
-    body = await request.json()
-    model_name = body.get("model", "")
-    stream = body.get("stream", True)
-
-    # Check model access
-    has_access = await check_model_access(username, model_name)
-    if not has_access:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Model '{model_name}' is not available for your account",
-        )
-
-    # Check user limits
-    within_limits = await ollama_proxy.check_user_limits(username, "generate")
-    if not within_limits:
-        raise HTTPException(status_code=429, detail="Daily request limit exceeded")
-
-    # Map model name
-    real_model_name = model_mapper.get_real_model_name(model_name)
-    body["model"] = real_model_name
-
-    # Inject num_ctx
-    if "options" not in body:
-        body["options"] = {}
-    if isinstance(body["options"], dict) and "num_ctx" not in body["options"]:
-        ctx_length = get_context_length_for_model(model_name)
-        body["options"]["num_ctx"] = ctx_length
-
-    # Keep model loaded indefinitely after first use
-    if "keep_alive" not in body:
-        body["keep_alive"] = -1
-
-    return await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/api/generate",
-        data=body,
-        stream=stream,
-        username=username,
-    )
-
-
-# =============================================================================
-# GET /openclaw/api/version — Version endpoint
-# =============================================================================
-
-@router.get("/api/version")
-async def openclaw_version():
-    """
-    Return Ollama version. Forward to upstream Ollama.
-    """
-    try:
-        response = await ollama_proxy.proxy_request(
-            method="GET",
-            endpoint="/api/version",
-        )
-        return response
-    except Exception:
-        # Fallback if Ollama is not reachable
-        return {"version": "0.6.2"}
-
-
-# =============================================================================
-# GET /openclaw/api/ps — Running models
-# =============================================================================
-
-@router.get("/api/ps")
-async def openclaw_ps(username: str = Depends(get_openclaw_user)):
-    """
-    List running models. Forward to upstream Ollama.
-    """
-    response = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/api/ps",
-        username=username,
-    )
-
-    # Map model names in response
-    if isinstance(response, dict) and "models" in response:
-        for model in response["models"]:
-            if isinstance(model, dict):
-                if "name" in model:
-                    model["name"] = model_mapper.get_display_model_name(model["name"])
-                if "model" in model:
-                    model["model"] = model_mapper.get_display_model_name(model["model"])
-
-    return response
-
-
-# =============================================================================
 # POST /openclaw/api/embed — Embeddings (new format)
 # =============================================================================
 
@@ -581,40 +480,158 @@ async def openclaw_embed(
     )
 
 
-# =============================================================================
-# POST /openclaw/api/embeddings — Embeddings (legacy format)
-# =============================================================================
+# ============================================================================
+# OpenAI Compatible V1 Endpoints
+# ============================================================================
 
-@router.post("/api/embeddings")
-async def openclaw_embeddings(
+@router.get("/v1/models")
+async def openclaw_v1_models(username: str = Depends(get_openclaw_user)):
+    """
+    OpenAI /v1/models compatible endpoint.
+    """
+    logger.info(f"[OpenClaw] User {username} requesting v1/models")
+
+    ollama_resp = await ollama_proxy.proxy_request(
+        method="GET",
+        endpoint="/api/tags",
+        username=username,
+    )
+
+    user_models_data = await user_manager.get_user_models(username)
+    if not user_models_data:
+        return {"object": "list", "data": []}
+
+    openai_models = []
+    if isinstance(ollama_resp, dict) and "models" in ollama_resp:
+        for model in ollama_resp["models"]:
+            model_id = model.get("name") or model.get("model")
+            if model_id:
+                display_names = model_mapper.get_all_display_names_for_real_name(model_id)
+                for display_name in display_names:
+                    openai_models.append({
+                        "id": display_name,
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "ollama",
+                    })
+
+    if user_models_data["has_all_models"]:
+        return {"object": "list", "data": openai_models}
+
+    allowed = set(user_models_data["models"])
+    filtered = [m for m in openai_models if m["id"] in allowed]
+    return {"object": "list", "data": filtered}
+
+
+@router.post("/v1/chat/completions")
+async def openclaw_v1_chat_completions(
     request: Request,
     username: str = Depends(get_openclaw_user),
 ):
     """
-    Generate embeddings (legacy Ollama /api/embeddings format with 'prompt' field).
+    OpenAI /v1/chat/completions compatible endpoint.
     """
     body = await request.json()
     model_name = body.get("model", "")
+    stream = body.get("stream", False)
+
+    logger.info(f"[OpenClaw] User {username} v1/chat/completions: model={model_name}, stream={stream}")
 
     has_access = await check_model_access(username, model_name)
     if not has_access:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Model '{model_name}' is not available for your account",
-        )
+        raise HTTPException(status_code=403, detail=f"Model '{model_name}' is not available for your account")
 
-    # Check user limits
-    within_limits = await ollama_proxy.check_user_limits(username, "embeddings")
+    within_limits = await ollama_proxy.check_user_limits(username, "chat")
     if not within_limits:
         raise HTTPException(status_code=429, detail="Daily request limit exceeded")
 
     real_model_name = model_mapper.get_real_model_name(model_name)
     body["model"] = real_model_name
 
+    if "options" not in body:
+        body["options"] = {}
+    if isinstance(body["options"], dict) and "num_ctx" not in body["options"]:
+        ctx_length = get_context_length_for_model(model_name)
+        body["options"]["num_ctx"] = ctx_length
+        logger.info(f"[OpenClaw] Injected num_ctx={ctx_length} for v1/chat {model_name}")
+
+    if "keep_alive" not in body:
+        body["keep_alive"] = -1
+
     return await ollama_proxy.proxy_request(
         method="POST",
-        endpoint="/api/embeddings",
+        endpoint="/v1/chat/completions",
         data=body,
+        stream=stream,
+        username=username,
+    )
+
+
+@router.post("/v1/embeddings")
+async def openclaw_v1_embeddings(
+    request: Request,
+    username: str = Depends(get_openclaw_user),
+):
+    """
+    OpenAI /v1/embeddings compatible endpoint.
+    """
+    body = await request.json()
+    model_name = body.get("model", "")
+    input_text = body.get("input", "")
+
+    logger.info(f"[OpenClaw] User {username} v1/embeddings: model={model_name}")
+
+    has_access = await check_model_access(username, model_name)
+    if not has_access:
+        raise HTTPException(status_code=403, detail=f"Model '{model_name}' is not available for your account")
+
+    within_limits = await ollama_proxy.check_user_limits(username, "embeddings")
+    if not within_limits:
+        raise HTTPException(status_code=429, detail="Daily request limit exceeded")
+
+    real_model_name = model_mapper.get_real_model_name(model_name)
+
+    ollama_body = {
+        "model": real_model_name,
+        "input": input_text,
+        "truncate": True,
+    }
+
+    response = await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/api/embed",
+        data=ollama_body,
         stream=False,
         username=username,
     )
+
+    if isinstance(response, dict):
+        response_data = response
+    elif isinstance(response, str):
+        response_data = json.loads(response)
+    else:
+        response_data = {}
+
+    embeddings = response_data.get("embeddings", [])
+    data_list = []
+    total_tokens = 0
+    for idx, emb in enumerate(embeddings):
+        data_list.append({"embedding": emb, "index": idx})
+        if isinstance(input_text, list):
+            text = input_text[idx] if idx < len(input_text) else ""
+        else:
+            text = input_text
+        total_tokens += max(1, len(text) // 4)
+
+    return {
+        "object": "list",
+        "data": data_list,
+        "model": model_name,
+        "usage": {
+            "prompt_tokens": total_tokens,
+            "total_tokens": total_tokens,
+        }
+    }
+
+
+
