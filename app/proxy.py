@@ -1782,14 +1782,14 @@ class OllamaProxy:
 
         # Normalize reasoning values: Ollama rejects 'minimal' in both body and body.options
         if data and isinstance(data, dict):
-            for key in ("reasoning",):
+            for key in ("reasoning", "reasoning_effort"):
                 if data.get(key) == "minimal":
                     data[key] = "low"
-                    logger.info(f"[Normalize] reasoning 'minimal' -> 'low' in request body")
+                    logger.info(f"[Normalize] {key} 'minimal' -> 'low' in request body")
                 options = data.get("options")
                 if isinstance(options, dict) and options.get(key) == "minimal":
                     options[key] = "low"
-                    logger.info(f"[Normalize] reasoning 'minimal' -> 'low' in options")
+                    logger.info(f"[Normalize] {key} 'minimal' -> 'low' in options")
 
         # Track original model name and group for failover
         original_model = None
