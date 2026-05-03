@@ -82,6 +82,7 @@ async def create_model_group(
                     priority=member_req.priority,
                     is_fallback=member_req.is_fallback,
                     is_active=member_req.is_active,
+                    preferred_node_id=member_req.preferred_node_id,
                 )
                 if member:
                     members.append(_member_to_response(member))
@@ -373,6 +374,7 @@ async def add_group_member(
             priority=request.priority,
             is_fallback=request.is_fallback,
             is_active=request.is_active,
+            preferred_node_id=request.preferred_node_id,
         )
 
         if not member:
@@ -439,4 +441,5 @@ def _member_to_response(member) -> ModelGroupMemberResponse:
         priority=member.priority,
         is_fallback=member.is_fallback,
         is_active=member.is_active,
+        preferred_node_id=member.preferred_node_id,
     )

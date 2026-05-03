@@ -701,6 +701,7 @@ class ModelGroupMemberRequest(BaseModel):
     priority: int = 0
     is_fallback: bool = False
     is_active: bool = True
+    preferred_node_id: Optional[int] = None
 
 
 class ModelGroupCreateRequest(BaseModel):
@@ -728,6 +729,7 @@ class ModelGroupMemberResponse(BaseModel):
     priority: int = 0
     is_fallback: bool = False
     is_active: bool = True
+    preferred_node_id: Optional[int] = None
 
 
 class ModelGroupResponse(BaseModel):

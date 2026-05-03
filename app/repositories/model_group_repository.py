@@ -121,6 +121,7 @@ class ModelGroupRepository:
         priority: int = 0,
         is_fallback: bool = False,
         is_active: bool = True,
+        preferred_node_id: Optional[int] = None,
     ) -> Optional[ModelGroupMember]:
         """Add a member to a group"""
         group = await self.get_group_by_name(group_name)
@@ -135,6 +136,7 @@ class ModelGroupRepository:
             priority=priority,
             is_fallback=is_fallback,
             is_active=is_active,
+            preferred_node_id=preferred_node_id,
         )
         self.session.add(member)
         await self.session.flush()

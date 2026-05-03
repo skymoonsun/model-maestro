@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -751,31 +751,32 @@ class ModelGroupManager:
             self._round_robin_indices[group_name] = current_index + 1
             return selected
 
-    async def resolve_model(
+    async def resolve_model_with_metadata(
         self, model_name: str, request_data: Optional[Dict[str, Any]] = None
-    ) -> str:
+    ) -> Tuple[str, Optional[int]]:
         """
-        Resolve a model name to an actual model name.
+        Resolve a model name to an actual model name, returning the selected member's
+        preferred_node_id as well.
 
         If model_name is a group, selects the appropriate member based on:
         1. Request capabilities (vision detection)
         2. Group strategy (round_robin/weighted/priority)
         3. Member capabilities and priorities
 
-        If model_name is not a group, returns it unchanged (backward compatible).
+        If model_name is not a group, returns it unchanged with no preferred node.
 
         Args:
             model_name: Model name from client request
             request_data: Optional request body (for capability detection)
 
         Returns:
-            Actual model name to use (display_name from member)
+            Tuple of (actual_model_name, preferred_node_id)
         """
         await self.ensure_loaded()
 
         # Not a group - return as-is (backward compatible)
         if model_name not in self._groups:
-            return model_name
+            return model_name, None
 
         group_data = self._groups[model_name]
         group = group_data["group"]
@@ -783,7 +784,7 @@ class ModelGroupManager:
 
         if not members:
             logger.warning(f"[ModelGroupManager] Group '{model_name}' has no active members")
-            return model_name
+            return model_name, None
 
         # Detect if vision capability is needed
         needs_vision = False
@@ -801,12 +802,31 @@ class ModelGroupManager:
         if selected:
             logger.info(
                 f"[ModelGroupManager] Group '{model_name}' -> '{selected.model_display_name}' "
-                f"(strategy={group.strategy}, vision={needs_vision})"
+                f"(strategy={group.strategy}, vision={needs_vision}, "
+                f"preferred_node={selected.preferred_node_id})"
             )
-            return selected.model_display_name
+            return selected.model_display_name, getattr(selected, 'preferred_node_id', None)
 
         # Fallback: return group name (will be handled by model_mapper)
-        return model_name
+        return model_name, None
+
+    async def resolve_model(
+        self, model_name: str, request_data: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Resolve a model name to an actual model name.
+
+        Backward-compatible wrapper around resolve_model_with_metadata().
+
+        Args:
+            model_name: Model name from client request
+            request_data: Optional request body (for capability detection)
+
+        Returns:
+            Actual model name to use (display_name from member)
+        """
+        resolved, _ = await self.resolve_model_with_metadata(model_name, request_data)
+        return resolved
 
     def get_fallback(
         self, group_name: str, failed_model: str, tried_models: Optional[set] = None

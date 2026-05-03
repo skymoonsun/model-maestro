@@ -680,6 +680,7 @@ export interface ModelGroupMember {
   weight: number;
   priority: number;
   is_active: boolean;
+  preferred_node_id: number | null;
 }
 
 export interface ModelGroupSummary {
@@ -715,4 +716,5 @@ export type ModelGroupMemberCreate = {
   weight?: number;
   priority?: number;
   is_active?: boolean;
+  preferred_node_id?: number | null;
 };
