@@ -2543,7 +2543,7 @@ class OllamaProxy:
                             await self._log_user_activity(
                                 username=username,
                                 model_name=current_model,
-                                request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                                request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
                                 prompt_tokens=prompt_tokens,
                                 completion_tokens=completion_tokens,
                                 total_tokens=prompt_tokens + completion_tokens,
@@ -2843,7 +2843,7 @@ class OllamaProxy:
                         await self._log_user_activity(
                             username=username,
                             model_name=model_name,
-                            request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                            request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
                             prompt_tokens=0,
                             completion_tokens=0,
                             total_tokens=0
@@ -2885,7 +2885,7 @@ class OllamaProxy:
                     await self._log_user_activity(
                         username=username,
                         model_name=model_name,
-                        request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                        request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens or (prompt_tokens + completion_tokens),
@@ -2970,7 +2970,7 @@ class OllamaProxy:
             await self._log_user_activity(
                 username=username,
                 model_name=model_name,
-                request_type=endpoint.replace('/api/', '').replace('/v1/', ''),
+                request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
                 status_code=error_status,
                 duration_ms=duration_ms,
                 error_message=error_msg[:500]
