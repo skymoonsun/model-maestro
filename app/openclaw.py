@@ -560,7 +560,7 @@ async def openclaw_v1_chat_completions(
 
     return await ollama_proxy.proxy_request(
         method="POST",
-        endpoint="/chat/completions",
+        endpoint="/v1/chat/completions",
         data=body,
         stream=stream,
         username=username,
