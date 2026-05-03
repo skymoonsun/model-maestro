@@ -343,9 +343,16 @@ class ModelGroupMember(Base):
     priority = Column(Integer, default=0, nullable=False)  # For priority strategy (lower = higher priority)
     is_fallback = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    preferred_node_id = Column(
+        Integer,
+        ForeignKey("ollama_nodes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
 
     # Relationships
     group = relationship("ModelGroup", back_populates="members")
+    preferred_node = relationship("OllamaNode", foreign_keys=[preferred_node_id])
 
     # Unique constraint: one model per group
     __table_args__ = (

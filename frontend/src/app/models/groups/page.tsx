@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { modelGroupsApi, modelMappingsApi, type ModelGroupDetail, type ModelGroupSummary, type ModelGroupMember, type ModelGroupCreate, type ModelGroupMemberCreate } from '@/lib/api';
+import { modelGroupsApi, modelMappingsApi, nodesApi, type ModelGroupDetail, type ModelGroupSummary, type ModelGroupMember, type ModelGroupCreate, type ModelGroupMemberCreate, type Node } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -39,10 +39,12 @@ function SortableMemberCard({
     member,
     onRemove,
     onToggleActive,
+    nodes,
 }: {
     member: ModelGroupMember;
     onRemove: (id: number) => void;
     onToggleActive: (id: number, is_active: boolean) => void;
+    nodes?: Node[];
 }) {
     const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
         id: member.id,
@@ -67,6 +69,11 @@ function SortableMemberCard({
                 <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                     <span>Priority: {member.priority}</span>
                     <span>Weight: {member.weight}</span>
+                    {member.preferred_node_id && nodes && (
+                        <span>
+                            Node: {nodes.find((n) => n.id === member.preferred_node_id)?.name ?? `#${member.preferred_node_id}`}
+                        </span>
+                    )}
                     {member.capability_tags && member.capability_tags.length > 0 && (
                         <div className="flex gap-1">
                             {member.capability_tags.map((tag) => (
@@ -118,10 +125,16 @@ function GroupDetail({
     const [hasReordered, setHasReordered] = useState(false);
     const [addOpen, setAddOpen] = useState(false);
     const [newMemberName, setNewMemberName] = useState('');
+    const [newMemberNodeId, setNewMemberNodeId] = useState<number | null>(null);
 
     const { data: mappingsData } = useQuery({
         queryKey: ['model-mappings'],
         queryFn: () => modelMappingsApi.list(),
+    });
+
+    const { data: nodesData } = useQuery({
+        queryKey: ['nodes'],
+        queryFn: () => nodesApi.list(true),
     });
 
     const existingNames = new Set(members.map((m) => m.model_display_name));
@@ -168,6 +181,7 @@ function GroupDetail({
             toast.success('Member added');
             setMembers((m) => [...m, newMember]);
             setNewMemberName('');
+            setNewMemberNodeId(null);
             setAddOpen(false);
         },
         onError: (e) => toast.error(e.message),
@@ -330,13 +344,33 @@ function GroupDetail({
                                             </CommandGroup>
                                         </CommandList>
                                     </Command>
-                                    <DialogFooter>
-                                        <Button variant="ghost" onClick={() => setAddOpen(false)}>Cancel</Button>
+                                    {nodesData && nodesData.length > 0 && (
+                                        <div className="mt-3">
+                                            <Label className="text-sm mb-1.5 block">Preferred Node (optional)</Label>
+                                            <Select
+                                                value={newMemberNodeId?.toString() ?? 'none'}
+                                                onValueChange={(v) => setNewMemberNodeId(v === 'none' ? null : parseInt(v, 10))}
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder="Load balanced (default)" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="none">Load balanced (default)</SelectItem>
+                                                    {nodesData.map((n) => (
+                                                        <SelectItem key={n.id} value={n.id.toString()}>{n.name} — {n.base_url}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    )}
+                                    <DialogFooter className="mt-4">
+                                        <Button variant="ghost" onClick={() => { setAddOpen(false); setNewMemberNodeId(null); }}>Cancel</Button>
                                         <Button
                                             onClick={() => addMut.mutate({
                                                 model_display_name: newMemberName,
                                                 priority: members.length,
                                                 weight: 1,
+                                                preferred_node_id: newMemberNodeId,
                                             })}
                                             disabled={addMut.isPending || !newMemberName}
                                         >
@@ -363,6 +397,7 @@ function GroupDetail({
                                             member={member}
                                             onRemove={(id) => removeMutRef.mutate(id)}
                                             onToggleActive={(id, is_active) => toggleActiveMut.mutate({ id, is_active })}
+                                            nodes={nodesData}
                                         />
                                     ))}
                                 </div>

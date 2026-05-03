@@ -1131,10 +1131,12 @@ class OllamaProxy:
         # Handle 'model' field - resolve groups first
         if 'model' in data_copy:
             original_model = data_copy['model']
-            resolved_model = await model_group_manager.resolve_model(original_model, data_copy)
+            resolved_model, preferred_node_id = await model_group_manager.resolve_model_with_metadata(original_model, data_copy)
             if resolved_model != original_model:
-                logger.info(f"[ModelGroup] Resolved group '{original_model}' -> '{resolved_model}'")
+                logger.info(f"[ModelGroup] Resolved group '{original_model}' -> '{resolved_model}' (preferred_node={preferred_node_id})")
             data_copy['model'] = resolved_model
+            if preferred_node_id:
+                data_copy['_preferred_node_id'] = preferred_node_id
 
         # Handle 'name' field (used in show, delete, pull, push) - resolve groups
         if 'name' in data_copy:
@@ -1801,8 +1803,29 @@ class OllamaProxy:
             if model_name:
                 tried_models.add(model_name)
 
-        # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
-        base_url = await self._select_node_url(model_name or '')
+        # Check for preferred node from model group member resolution
+        preferred_node_id = data.pop('_preferred_node_id', None) if isinstance(data, dict) else None
+        base_url = None
+        if preferred_node_id:
+            try:
+                from app.database import async_session_maker
+                from app.repositories.node_repository import NodeRepository
+                async with async_session_maker() as session:
+                    node_repo = NodeRepository(session)
+                    node = await node_repo.get_by_id(preferred_node_id)
+                    if node and node.is_active and node.health_status in ('healthy', 'unknown'):
+                        base_url = node.base_url
+                        logger.info(f"[LB] Preferred node '{node.name}' ({node.base_url}) selected for group member '{model_name}'")
+                    else:
+                        reason = 'inactive' if node and not node.is_active else 'unhealthy' if node else 'not found'
+                        logger.warning(f"[LB] Preferred node {preferred_node_id} is {reason}, falling back to load balancing")
+            except Exception as e:
+                logger.warning(f"[LB] Error looking up preferred node {preferred_node_id}: {e}, falling back")
+
+        if not base_url:
+            # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
+            base_url = await self._select_node_url(model_name or '')
+
         url = f"{base_url}{endpoint}"
         if base_url:
             tried_nodes.add(base_url)
