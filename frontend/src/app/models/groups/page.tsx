@@ -138,8 +138,23 @@ function GroupDetail({
     });
 
     const existingNames = new Set(members.map((m) => m.model_display_name));
-    const availableModels = (mappingsData ?? [])
-        .filter((m) => !existingNames.has(m.display_name))
+
+    // Build available models from mappings + node models
+    const modelMap = new Map<string, string>(); // display_name -> real_name
+    mappingsData?.forEach((m) => {
+        modelMap.set(m.display_name, m.real_name);
+    });
+    nodesData?.forEach((node) => {
+        node.models?.forEach((model: { model_name: string }) => {
+            if (!modelMap.has(model.model_name)) {
+                modelMap.set(model.model_name, model.model_name);
+            }
+        });
+    });
+
+    const availableModels = Array.from(modelMap.entries())
+        .filter(([display_name]) => !existingNames.has(display_name))
+        .map(([display_name, real_name]) => ({ display_name, real_name }))
         .sort((a, b) => a.display_name.localeCompare(b.display_name));
     const [editing, setEditing] = useState(false);
     const [editForm, setEditForm] = useState({
