@@ -170,6 +170,24 @@ async def grafana_accept_terms(request: Request):
     )
 
 
+@router.get("/assistant/api/v1/discovery/infra/status", include_in_schema=True)
+async def grafana_infra_discovery_status(request: Request):
+    """Grafana Assistant — Infrastructure discovery status"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyInfraDiscoveryStatusResponse.json",
+            "status": "success",
+            "data": {
+                "status": {
+                    "available": False,
+                },
+            },
+        },
+    )
+
+
 @router.get("/assistant/api/v1/settings", include_in_schema=True)
 async def grafana_settings(request: Request):
     """Grafana Assistant — General Settings"""
@@ -269,16 +287,36 @@ async def grafana_usage_limits_investigation(request: Request):
 @router.get("/assistant/api/v1/chats", include_in_schema=True)
 async def grafana_chats(
     request: Request,
-    limit: int = Query(50, ge=1),
-    offset: int = Query(0, ge=0),
-    includeArchived: bool = Query(False),
+    limit: Optional[int] = Query(None, ge=1),
+    offset: Optional[int] = Query(None, ge=0),
+    includeArchived: Optional[bool] = Query(None),
     sources: Optional[list] = Query(None),
 ):
-    """Grafana Assistant — List chats"""
+    """Grafana Assistant — List chats (or auto-create a new chat if empty)."""
     await _log_grafana_request(request)
-    chats = await grafana_chat_store.list_chats(include_archived=includeArchived, sources=sources)
+    chats = await grafana_chat_store.list_chats(
+        include_archived=includeArchived if includeArchived is not None else False,
+        sources=sources,
+    )
+
+    # If store is empty and no explicit pagination, auto-create a chat and
+    # return single-chat format (Grafana expects this when opening the panel).
+    if not chats and limit is None and offset is None:
+        chat = await grafana_chat_store.create_chat()
+        return JSONResponse(
+            status_code=200,
+            content={
+                "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyChatResponse.json",
+                "status": "success",
+                "data": chat,
+            },
+        )
+
+    # Normal list mode
     count = len(chats)
-    items = chats[offset : offset + limit]
+    effective_limit = limit if limit is not None else 50
+    effective_offset = offset if offset is not None else 0
+    items = chats[effective_offset : effective_offset + effective_limit]
     return JSONResponse(
         status_code=200,
         content={
@@ -286,7 +324,7 @@ async def grafana_chats(
             "status": "success",
             "data": {
                 "items": items,
-                "pagination": {"total": count, "limit": limit, "offset": offset},
+                "pagination": {"total": count, "limit": effective_limit, "offset": effective_offset},
             },
         },
     )
