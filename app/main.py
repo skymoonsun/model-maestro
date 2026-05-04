@@ -1064,12 +1064,13 @@ async def cursor_chat_completions(
     )
 
 
-@app.api_route("/grafana/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], tags=["Debug"])
-async def grafana_logger(request: Request, path: str = ""):
+@app.api_route("/grafana/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], tags=["Grafana Assistant"])
+async def grafana_assistant_proxy(request: Request, path: str = ""):
     """
-    Grafana Assistant debug endpoint.
-    Yakaladığı tüm isteklerin method, URL, header ve body detaylarını loglar.
-    Bu endpoint'e auth uygulanmaz, Grafana'nın nasıl istek attığını görmek için kullanılır.
+    Grafana Assistant proxy & debug endpoint.
+    Grafana Assistant'in API cagrilarini loglar.
+    Bilinen path'ler icin sabit response verir, bilinmeyen path'leri loglar.
+    Bu endpoint'e auth uygulanmaz.
     """
     method = request.method
     url = str(request.url)
@@ -1103,6 +1104,21 @@ BODY   :
 =====================================
 """
     logger.info(log_block)
+
+    # Grafana Assistant - Terms and Conditions
+    if path == "assistant/api/v1/settings/terms":
+        return JSONResponse(
+            status_code=200,
+            content={
+                "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyTermsAndConditionsResponse.json",
+                "status": "success",
+                "data": {
+                    "termsType": "msa",
+                    "version": "0.0.1-msa",
+                    "content": "\nFor legal information, please visit [Grafana Labs Terms and Conditions](https://grama.net/legal/terms/)."
+                }
+            }
+        )
 
     return JSONResponse(
         status_code=200,
