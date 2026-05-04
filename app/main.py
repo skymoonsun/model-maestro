@@ -34,6 +34,7 @@ from app.admin_models import router as admin_models_router
 from app.admin_nodes import router as admin_nodes_router
 from app.admin_groups import router as admin_groups_router
 from app.openclaw import router as openclaw_router
+from app.claude import router as claude_router
 from app.user_manager import user_manager
 
 # Setup logging
@@ -83,6 +84,7 @@ app.include_router(admin_models_router)
 app.include_router(admin_nodes_router)
 app.include_router(admin_groups_router)
 app.include_router(openclaw_router)
+app.include_router(claude_router)
 
 # Basic Auth for documentation
 def verify_docs_credentials(credentials: HTTPBasicCredentials = Depends(security)):
@@ -1059,6 +1061,57 @@ async def cursor_chat_completions(
         data=data,
         stream=stream,
         username=username
+    )
+
+
+@app.api_route("/grafana/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], tags=["Debug"])
+async def grafana_logger(request: Request, path: str = ""):
+    """
+    Grafana Assistant debug endpoint.
+    Yakaladığı tüm isteklerin method, URL, header ve body detaylarını loglar.
+    Bu endpoint'e auth uygulanmaz, Grafana'nın nasıl istek attığını görmek için kullanılır.
+    """
+    method = request.method
+    url = str(request.url)
+    headers = dict(request.headers)
+    client_host = request.client.host if request.client else "unknown"
+
+    body_str = ""
+    body_data = None
+    if method in ("POST", "PUT", "PATCH"):
+        try:
+            body = await request.body()
+            if body:
+                body_str = body.decode("utf-8")
+                try:
+                    body_data = json.loads(body_str)
+                except json.JSONDecodeError:
+                    body_data = body_str
+        except Exception as e:
+            body_data = f"Error reading body: {e}"
+
+    log_block = f"""
+========== GRAFANA REQUEST ==========
+METHOD : {method}
+URL    : {url}
+PATH   : {path}
+CLIENT : {client_host}
+HEADERS:
+{json.dumps(headers, indent=2, ensure_ascii=False)}
+BODY   :
+{json.dumps(body_data, indent=2, ensure_ascii=False) if body_data is not None else '(empty)'}
+=====================================
+"""
+    logger.info(log_block)
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "received",
+            "method": method,
+            "path": path,
+            "logged": True
+        }
     )
 
 
