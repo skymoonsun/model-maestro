@@ -1,7 +1,8 @@
 """Model Maestro - Unified LLM Gateway with JWT Authentication"""
 
-from typing import Any, Dict
-from fastapi import FastAPI, Depends, Request, HTTPException, status
+from typing import Any, Dict, Optional
+from pydantic import BaseModel, Field
+from fastapi import FastAPI, Depends, Request, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
@@ -1064,14 +1065,12 @@ async def cursor_chat_completions(
     )
 
 
-@app.api_route("/grafana/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], tags=["Grafana Assistant"])
-async def grafana_assistant_proxy(request: Request, path: str = ""):
-    """
-    Grafana Assistant proxy & debug endpoint.
-    Grafana Assistant'in API cagrilarini loglar.
-    Bilinen path'ler icin sabit response verir, bilinmeyen path'leri loglar.
-    Bu endpoint'e auth uygulanmaz.
-    """
+# ============================================================================
+# Grafana Assistant Endpoints
+# ============================================================================
+
+async def _log_grafana_request(request: Request) -> Dict[str, Any]:
+    """Grafana Assistant isteklerini loglara yazar. Her endpoint tarafindan cagrilmalidir."""
     method = request.method
     url = str(request.url)
     headers = dict(request.headers)
@@ -1092,39 +1091,270 @@ async def grafana_assistant_proxy(request: Request, path: str = ""):
             body_data = f"Error reading body: {e}"
 
     log_block = f"""
-========== GRAFANA REQUEST ==========
-METHOD : {method}
+========== GRAFANA REQUEST ({request.method}) ==========
 URL    : {url}
-PATH   : {path}
 CLIENT : {client_host}
 HEADERS:
 {json.dumps(headers, indent=2, ensure_ascii=False)}
 BODY   :
 {json.dumps(body_data, indent=2, ensure_ascii=False) if body_data is not None else '(empty)'}
-=====================================
+=============================================
 """
     logger.info(log_block)
+    return {
+        "method": method,
+        "url": url,
+        "client": client_host,
+        "headers": headers,
+        "body": body_data,
+    }
 
-    # Grafana Assistant - Terms and Conditions
-    if path == "assistant/api/v1/settings/terms":
-        return JSONResponse(
-            status_code=200,
-            content={
-                "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyTermsAndConditionsResponse.json",
-                "status": "success",
-                "data": {
-                    "termsType": "msa",
-                    "version": "0.0.1-msa",
-                    "content": "\nFor legal information, please visit [Grafana Labs Terms and Conditions](https://grama.net/legal/terms/)."
+
+@app.get("/grafana/assistant/api/v1/settings/terms", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_terms(request: Request):
+    """Grafana Assistant — Terms and Conditions"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyTermsAndConditionsResponse.json",
+            "status": "success",
+            "data": {
+                "termsType": "msa",
+                "version": "0.0.1-msa",
+                "content": "\nFor legal information, please visit [Grafana Labs Terms and Conditions](https://grafana.com/legal/terms/).",
+                "acceptedTermsAndConditions": True,
+                "acceptedVersion": "0.0.1-msa"
+            }
+        }
+    )
+
+
+@app.put("/grafana/assistant/api/v1/settings/accept-terms", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_accept_terms(request: Request):
+    """Grafana Assistant — Accept Terms and Conditions"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyTenantSettingResponse.json",
+            "status": "success",
+            "data": {
+                "created": "2026-01-29T12:17:37.661Z",
+                "modified": "2026-01-29T12:17:37.661Z",
+                "acceptedTermsAndConditions": True,
+                "version": "0.0.1-msa",
+                "termsType": "msa",
+                "infraMemoryEnabled": True
+            }
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/settings", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_settings(request: Request):
+    """Grafana Assistant — General Settings"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodySettingsResponse.json",
+            "status": "success",
+            "data": {
+                "assistantEnabled": True,
+                "assistantApiUrl": str(request.url).rstrip("/").rsplit("/settings", 1)[0],
+                "assistantApiVersion": "v1",
+                "features": {
+                    "proactiveInsights": True,
+                    "chat": True,
+                    "investigate": True,
+                    "mcp": True
+                },
+                "limits": {
+                    "maxPromptsPerDay": 1000,
+                    "maxTokensPerPrompt": 8192,
+                    "maxInvestigationsPerDay": 50
                 }
             }
-        )
+        }
+    )
 
+
+@app.post("/grafana/assistant/api/v1/ofrep/v1/evaluate/flags", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_flags(request: Request):
+    """Grafana Assistant — OpenFeature evaluation"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://ofrep/schemas/flagEvaluation.json",
+            "flags": [
+                {
+                    "key": "grafana.assistant.chat.enabled",
+                    "enabled": True,
+                    "reason": "STATIC",
+                    "value": True
+                },
+                {
+                    "key": "grafana.assistant.proactiveInsights.enabled",
+                    "enabled": True,
+                    "reason": "STATIC",
+                    "value": True
+                },
+                {
+                    "key": "grafana.assistant.mcp.enabled",
+                    "enabled": True,
+                    "reason": "STATIC",
+                    "value": True
+                },
+                {
+                    "key": "grafana.assistant.investigate.enabled",
+                    "enabled": True,
+                    "reason": "STATIC",
+                    "value": True
+                }
+            ]
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/usage/limits/prompt", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_usage_limits_prompt(request: Request):
+    """Grafana Assistant — Prompt usage limits"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyUserPromptCountResponse.json",
+            "status": "success",
+            "data": {
+                "total": 2,
+                "limit": 2000,
+                "month": "2026-05"
+            }
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/usage/limits/investigation", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_usage_limits_investigation(request: Request):
+    """Grafana Assistant — Investigation usage limits"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyInvestigationLimitResponse.json",
+            "status": "success",
+            "data": {
+                "total": 0,
+                "limit": 50,
+                "month": "2026-05"
+            }
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/chats", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_chats(
+    request: Request,
+    limit: int = Query(5, ge=1),
+    offset: int = Query(0, ge=0),
+    sources: Optional[list] = Query(None),
+):
+    """Grafana Assistant — List chats"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyListResponseChat.json",
+            "status": "success",
+            "data": {
+                "items": [],
+                "pagination": {
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset
+                }
+            }
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/rules", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_rules(request: Request):
+    """Grafana Assistant — List rules"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyRuleListResponse.json",
+            "status": "success",
+            "data": {
+                "rules": [],
+                "pagination": {
+                    "total": 0,
+                    "limit": 20,
+                    "offset": 0
+                }
+            }
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/mcp-tools", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_mcp_tools(request: Request):
+    """Grafana Assistant — List MCP tools"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodyMCPToolsResponse.json",
+            "status": "success",
+            "data": {
+                "tools": []
+            }
+        }
+    )
+
+
+@app.get("/grafana/assistant/api/v1/skills", tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_skills(
+    request: Request,
+    limit: int = Query(100, ge=1),
+    offset: int = Query(0, ge=0),
+    scope: Optional[str] = Query("all"),
+):
+    """Grafana Assistant — List skills"""
+    await _log_grafana_request(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "$schema": "https://assistant-prod-eu-central-0.grafana.net/schemas/ResponseBodySkillListResponse.json",
+            "status": "success",
+            "data": {
+                "skills": [],
+                "pagination": {
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset
+                }
+            }
+        }
+    )
+
+
+@app.api_route("/grafana/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], tags=["Grafana Assistant"], include_in_schema=True)
+async def grafana_catch_all(request: Request, path: str = ""):
+    """
+    Grafana Assistant — Unknown path catch-all.
+    Bilinmeyen path'lere loglama amacli kullanilir, gelistirme sirasinda yeni endpoint'leri kesfetmek icin.
+    """
+    await _log_grafana_request(request)
     return JSONResponse(
         status_code=200,
         content={
             "status": "received",
-            "method": method,
+            "method": request.method,
             "path": path,
             "logged": True
         }
