@@ -1064,6 +1064,57 @@ async def cursor_chat_completions(
     )
 
 
+@app.api_route("/grafana/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], tags=["Debug"])
+async def grafana_logger(request: Request, path: str = ""):
+    """
+    Grafana Assistant debug endpoint.
+    Yakaladığı tüm isteklerin method, URL, header ve body detaylarını loglar.
+    Bu endpoint'e auth uygulanmaz, Grafana'nın nasıl istek attığını görmek için kullanılır.
+    """
+    method = request.method
+    url = str(request.url)
+    headers = dict(request.headers)
+    client_host = request.client.host if request.client else "unknown"
+
+    body_str = ""
+    body_data = None
+    if method in ("POST", "PUT", "PATCH"):
+        try:
+            body = await request.body()
+            if body:
+                body_str = body.decode("utf-8")
+                try:
+                    body_data = json.loads(body_str)
+                except json.JSONDecodeError:
+                    body_data = body_str
+        except Exception as e:
+            body_data = f"Error reading body: {e}"
+
+    log_block = f"""
+========== GRAFANA REQUEST ==========
+METHOD : {method}
+URL    : {url}
+PATH   : {path}
+CLIENT : {client_host}
+HEADERS:
+{json.dumps(headers, indent=2, ensure_ascii=False)}
+BODY   :
+{json.dumps(body_data, indent=2, ensure_ascii=False) if body_data is not None else '(empty)'}
+=====================================
+"""
+    logger.info(log_block)
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "received",
+            "method": method,
+            "path": path,
+            "logged": True
+        }
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
