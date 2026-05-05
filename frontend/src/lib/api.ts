@@ -513,6 +513,8 @@ export interface UserStatsResponse {
 export interface ModelMapping {
   display_name: string;
   real_name: string;
+  node_id: number | null;
+  node_name: string | null;
   context_length: number;
   context_length_display: string;
   capabilities: string[];
@@ -522,6 +524,7 @@ export interface ModelMapping {
 export interface CreateModelMapping {
   display_name: string;
   real_name: string;
+  node_id?: number | null;
   context_length: string;
   capabilities?: string[];
 }

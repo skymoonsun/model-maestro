@@ -165,6 +165,7 @@ class CreateMappingRequest(BaseModel):
     """Create or update model mapping request"""
     display_name: str
     real_name: str
+    node_id: Optional[int] = None  # NULL = global mapping (all nodes)
     context_length: Optional[str] = None  # Human-friendly format: "198K", "128K", "1M", "32768"
     capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
 
@@ -200,6 +201,8 @@ class ModelMappingResponse(BaseModel):
     """Model mapping response"""
     display_name: str
     real_name: str
+    node_id: Optional[int] = None
+    node_name: Optional[str] = None
     context_length: Optional[int] = None  # Token cinsinden (e.g., 202752)
     context_length_display: Optional[str] = None  # İnsan-dostu format (e.g., "198K")
     capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]

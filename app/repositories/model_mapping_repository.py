@@ -12,11 +12,12 @@ class ModelMappingRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
     
-    async def create(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> ModelMapping:
+    async def create(self, display_name: str, real_name: str, node_id: Optional[int] = None, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> ModelMapping:
         """Create a new model mapping"""
         mapping = ModelMapping(
             display_name=display_name,
             real_name=real_name,
+            node_id=node_id,
             context_length=context_length,
             capabilities=capabilities
         )
@@ -24,29 +25,33 @@ class ModelMappingRepository:
         await self.session.commit()
         await self.session.refresh(mapping)
         return mapping
-    
-    async def update(self, display_name: str, real_name: Optional[str] = None, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Optional[ModelMapping]:
+
+    async def update(self, display_name: str, real_name: Optional[str] = None, node_id: Optional[int] = None, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Optional[ModelMapping]:
         """Update an existing model mapping"""
         mapping = await self.get_by_display_name(display_name)
         if not mapping:
             return None
-        
+
         if real_name is not None:
             mapping.real_name = real_name
+        if node_id is not None:
+            mapping.node_id = node_id
         if context_length is not None:
             mapping.context_length = context_length
         if capabilities is not None:
             mapping.capabilities = capabilities
-        
+
         await self.session.commit()
         await self.session.refresh(mapping)
         return mapping
-    
-    async def upsert(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Tuple[ModelMapping, bool]:
+
+    async def upsert(self, display_name: str, real_name: str, node_id: Optional[int] = None, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Tuple[ModelMapping, bool]:
         """Create or update a model mapping. Returns (mapping, is_new)"""
         existing = await self.get_by_display_name(display_name)
         if existing:
             existing.real_name = real_name
+            if node_id is not None:
+                existing.node_id = node_id
             if context_length is not None:
                 existing.context_length = context_length
             if capabilities is not None:
@@ -55,7 +60,7 @@ class ModelMappingRepository:
             await self.session.refresh(existing)
             return existing, False
         else:
-            mapping = await self.create(display_name, real_name, context_length, capabilities)
+            mapping = await self.create(display_name, real_name, node_id, context_length, capabilities)
             return mapping, True
     
     async def get_by_display_name(self, display_name: str) -> Optional[ModelMapping]:

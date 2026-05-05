@@ -28,18 +28,23 @@ class User(Base):
 class ModelMapping(Base):
     """Model name mapping"""
     __tablename__ = "model_mappings"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     display_name = Column(String(255), unique=True, nullable=False, index=True)
     real_name = Column(String(255), nullable=False)
+    node_id = Column(Integer, ForeignKey("ollama_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
     context_length = Column(Integer, nullable=True)  # Context window size in tokens (e.g., 131072 for 128K)
     capabilities = Column(ARRAY(String), nullable=True)  # ["completion", "tools", "thinking", "vision"]
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
+    # Relationships
+    node = relationship("OllamaNode")
+
     def __repr__(self):
         ctx = f", ctx={self.context_length}" if self.context_length else ""
         caps = f", caps={self.capabilities}" if self.capabilities else ""
-        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{ctx}{caps})>"
+        node = f", node={self.node_id}" if self.node_id else ""
+        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{node}{ctx}{caps})>"
 
 
 class UserModel(Base):

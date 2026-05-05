@@ -147,8 +147,8 @@ function NodeCard({
                     <div className="flex items-center gap-2">
                         <Server className="h-5 w-5 text-muted-foreground" />
                         <CardTitle className="text-base">{node.name}</CardTitle>
-                        <Badge variant="outline" className="text-xs capitalize">
-                            {node.node_type}
+                        <Badge variant="outline" className="text-xs">
+                            {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type}
                         </Badge>
                         {!node.is_active && (
                             <Badge variant="outline" className="text-muted-foreground">
