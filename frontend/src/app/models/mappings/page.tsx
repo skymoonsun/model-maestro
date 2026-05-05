@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { useState, useMemo } from 'react';
-import { Plus, Trash2, RefreshCw, Search, Server, Filter, X } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Search, Server, Filter, X, Pencil } from 'lucide-react';
 
 function capabilityBadge(cap: string) {
     switch (cap) {
@@ -37,6 +37,76 @@ function capabilityBadge(cap: string) {
         default:
             return <Badge key={cap} variant="outline" className="text-xs">{cap}</Badge>;
     }
+}
+
+function MappingForm({
+    form,
+    setForm,
+    nodes,
+}: {
+    form: CreateModelMapping;
+    setForm: React.Dispatch<React.SetStateAction<CreateModelMapping>>;
+    nodes: { id: number; name: string }[];
+}) {
+    const toggleCap = (cap: string) => {
+        setForm((prev) => ({
+            ...prev,
+            capabilities: prev.capabilities?.includes(cap)
+                ? prev.capabilities.filter((c) => c !== cap)
+                : [...(prev.capabilities || []), cap],
+        }));
+    };
+
+    return (
+        <div className="space-y-4 py-4">
+            <div>
+                <label className="text-sm text-muted-foreground">Display Name</label>
+                <Input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} placeholder="qwen3.5:latest" />
+            </div>
+            <div>
+                <label className="text-sm text-muted-foreground">Real Name (Ollama / vLLM)</label>
+                <Input value={form.real_name} onChange={(e) => setForm({ ...form, real_name: e.target.value })} placeholder="qwen3.5:cloud" />
+            </div>
+            <div>
+                <label className="text-sm text-muted-foreground">Node (Optional)</label>
+                <Select
+                    value={form.node_id ? String(form.node_id) : 'none'}
+                    onValueChange={(v) => setForm({ ...form, node_id: v === 'none' ? null : Number(v) })}
+                >
+                    <SelectTrigger>
+                        <SelectValue placeholder="All nodes (global)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="none">All nodes (global)</SelectItem>
+                        {nodes.map((n) => (
+                            <SelectItem key={n.id} value={String(n.id)}>
+                                <div className="flex items-center gap-2">
+                                    <Server className="h-3 w-3" />
+                                    {n.name}
+                                </div>
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </div>
+            <div>
+                <label className="text-sm text-muted-foreground">Context Length</label>
+                <Input value={form.context_length} onChange={(e) => setForm({ ...form, context_length: e.target.value })} placeholder="256K" />
+            </div>
+            <div>
+                <label className="text-sm text-muted-foreground mb-2 block">Capabilities</label>
+                <div className="flex gap-2">
+                    {['tools', 'thinking', 'vision'].map((cap) => (
+                        <Button key={cap} size="sm" variant={form.capabilities?.includes(cap) ? 'default' : 'outline'}
+                            onClick={() => toggleCap(cap)}
+                        >
+                            {cap === 'tools' ? 'Tools' : cap === 'thinking' ? 'Thinking' : 'Vision'}
+                        </Button>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
 }
 
 function CreateMappingDialog({ nodes }: { nodes: { id: number; name: string }[] }) {
@@ -57,15 +127,6 @@ function CreateMappingDialog({ nodes }: { nodes: { id: number; name: string }[] 
         onError: (err: Error) => toast.error(err.message),
     });
 
-    const toggleCap = (cap: string) => {
-        setForm((prev) => ({
-            ...prev,
-            capabilities: prev.capabilities?.includes(cap)
-                ? prev.capabilities.filter((c) => c !== cap)
-                : [...(prev.capabilities || []), cap],
-        }));
-    };
-
     return (
         <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
@@ -73,58 +134,53 @@ function CreateMappingDialog({ nodes }: { nodes: { id: number; name: string }[] 
             </DialogTrigger>
             <DialogContent>
                 <DialogHeader><DialogTitle>New Model Mapping</DialogTitle></DialogHeader>
-                <div className="space-y-4 py-4">
-                    <div>
-                        <label className="text-sm text-muted-foreground">Display Name</label>
-                        <Input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} placeholder="qwen3.5:latest" />
-                    </div>
-                    <div>
-                        <label className="text-sm text-muted-foreground">Real Name (Ollama / vLLM)</label>
-                        <Input value={form.real_name} onChange={(e) => setForm({ ...form, real_name: e.target.value })} placeholder="qwen3.5:cloud" />
-                    </div>
-                    <div>
-                        <label className="text-sm text-muted-foreground">Node (Optional)</label>
-                        <Select
-                            value={form.node_id ? String(form.node_id) : 'none'}
-                            onValueChange={(v) => setForm({ ...form, node_id: v === 'none' ? null : Number(v) })}
-                        >
-                            <SelectTrigger>
-                                <SelectValue placeholder="All nodes (global)" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="none">All nodes (global)</SelectItem>
-                                {nodes.map((n) => (
-                                    <SelectItem key={n.id} value={String(n.id)}>
-                                        <div className="flex items-center gap-2">
-                                            <Server className="h-3 w-3" />
-                                            {n.name}
-                                        </div>
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-                    <div>
-                        <label className="text-sm text-muted-foreground">Context Length</label>
-                        <Input value={form.context_length} onChange={(e) => setForm({ ...form, context_length: e.target.value })} placeholder="256K" />
-                    </div>
-                    <div>
-                        <label className="text-sm text-muted-foreground mb-2 block">Capabilities</label>
-                        <div className="flex gap-2">
-                            {['tools', 'thinking', 'vision'].map((cap) => (
-                                <Button key={cap} size="sm" variant={form.capabilities?.includes(cap) ? 'default' : 'outline'}
-                                    onClick={() => toggleCap(cap)}
-                                >
-                                    {cap === 'tools' ? 'Tools' : cap === 'thinking' ? 'Thinking' : 'Vision'}
-                                </Button>
-                            ))}
-                        </div>
-                    </div>
-                </div>
+                <MappingForm form={form} setForm={setForm} nodes={nodes} />
                 <DialogFooter>
                     <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
                     <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending || !form.display_name || !form.real_name}>
                         {mutation.isPending ? 'Creating...' : 'Create'}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+function EditMappingDialog({ mapping, nodes }: { mapping: ModelMapping; nodes: { id: number; name: string }[] }) {
+    const [form, setForm] = useState<CreateModelMapping>({
+        display_name: mapping.display_name,
+        real_name: mapping.real_name,
+        node_id: mapping.node_id,
+        context_length: mapping.context_length_display || String(mapping.context_length || ''),
+        capabilities: mapping.capabilities || [],
+    });
+    const [open, setOpen] = useState(false);
+    const queryClient = useQueryClient();
+
+    const mutation = useMutation({
+        mutationFn: (data: CreateModelMapping) => modelMappingsApi.update(mapping.display_name, data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['model-mappings'] });
+            toast.success('Mapping updated');
+            setOpen(false);
+        },
+        onError: (err: Error) => toast.error(err.message),
+    });
+
+    return (
+        <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8">
+                    <Pencil className="h-4 w-4" />
+                </Button>
+            </DialogTrigger>
+            <DialogContent>
+                <DialogHeader><DialogTitle>Edit Model Mapping</DialogTitle></DialogHeader>
+                <MappingForm form={form} setForm={setForm} nodes={nodes} />
+                <DialogFooter>
+                    <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
+                    <Button onClick={() => mutation.mutate(form)} disabled={mutation.isPending || !form.display_name || !form.real_name}>
+                        {mutation.isPending ? 'Saving...' : 'Save'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -193,6 +249,8 @@ export default function ModelMappingsPage() {
 
     if (isLoading) return <Card><CardContent className="p-6"><Skeleton className="h-64 w-full" /></CardContent></Card>;
 
+    const nodeOptions = nodes?.map((n) => ({ id: n.id, name: n.name })) || [];
+
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between gap-4">
@@ -212,7 +270,7 @@ export default function ModelMappingsPage() {
                         <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
                         Sync Caps
                     </Button>
-                    <CreateMappingDialog nodes={nodes?.map((n) => ({ id: n.id, name: n.name })) || []} />
+                    <CreateMappingDialog nodes={nodeOptions} />
                 </div>
             </div>
 
@@ -303,25 +361,28 @@ export default function ModelMappingsPage() {
                                         </div>
                                     </TableCell>
                                     <TableCell className="text-right">
-                                        <Dialog>
-                                            <DialogTrigger asChild>
-                                                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive">
-                                                    <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                            </DialogTrigger>
-                                            <DialogContent>
-                                                <DialogHeader><DialogTitle>Delete Mapping</DialogTitle></DialogHeader>
-                                                <p className="text-sm text-muted-foreground py-4">
-                                                    Are you sure you want to delete mapping <strong>{m.display_name}</strong>?
-                                                </p>
-                                                <DialogFooter>
-                                                    <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
-                                                    <DialogClose asChild>
-                                                        <Button variant="destructive" onClick={() => deleteMutation.mutate(m.display_name)}>Delete</Button>
-                                                    </DialogClose>
-                                                </DialogFooter>
-                                            </DialogContent>
-                                        </Dialog>
+                                        <div className="flex items-center justify-end gap-1">
+                                            <EditMappingDialog mapping={m} nodes={nodeOptions} />
+                                            <Dialog>
+                                                <DialogTrigger asChild>
+                                                    <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive">
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </DialogTrigger>
+                                                <DialogContent>
+                                                    <DialogHeader><DialogTitle>Delete Mapping</DialogTitle></DialogHeader>
+                                                    <p className="text-sm text-muted-foreground py-4">
+                                                        Are you sure you want to delete mapping <strong>{m.display_name}</strong>?
+                                                    </p>
+                                                    <DialogFooter>
+                                                        <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
+                                                        <DialogClose asChild>
+                                                            <Button variant="destructive" onClick={() => deleteMutation.mutate(m.display_name)}>Delete</Button>
+                                                        </DialogClose>
+                                                    </DialogFooter>
+                                                </DialogContent>
+                                            </Dialog>
+                                        </div>
                                     </TableCell>
                                 </TableRow>
                             ))}

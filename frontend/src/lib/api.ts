@@ -197,6 +197,10 @@ export const modelMappingsApi = {
     adminFetch<ModelMapping>('/admin/model-mappings', {
       method: 'POST', body: JSON.stringify(data),
     }),
+  update: (displayName: string, data: CreateModelMapping) =>
+    adminFetch<ModelMapping>(`/admin/model-mappings/${encodeURIComponent(displayName)}`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
   delete: (displayName: string) =>
     adminFetch<void>(`/admin/model-mappings/${encodeURIComponent(displayName)}`, { method: 'DELETE' }),
   invalidateCache: () =>
