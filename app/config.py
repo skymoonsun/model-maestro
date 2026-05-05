@@ -454,19 +454,19 @@ class ModelMappingManager:
         """Invalidate cache (force reload from DB)"""
         self._cache_loaded = False
     
-    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None) -> Dict[str, any]:
+    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None, node_id: Optional[int] = None) -> Dict[str, any]:
         """
         Create or update a model mapping in database (upsert).
         Var olan mapping'i günceller, yoksa yeni oluşturur.
         """
         from app.repositories.model_mapping_repository import ModelMappingRepository
         from app.database import async_session_maker
-        
+
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
-            
-            mapping, is_new = await repo.upsert(display_name, real_name, context_length, capabilities)
-            
+
+            mapping, is_new = await repo.upsert(display_name, real_name, node_id, context_length, capabilities)
+
             # Update local cache - önce eski reverse mapping'i temizle
             old_real_name = self._mappings.get(display_name)
             if old_real_name and old_real_name != real_name:
@@ -476,33 +476,35 @@ class ModelMappingManager:
                         self._reverse_mappings[old_real_name].remove(display_name)
                     if not self._reverse_mappings[old_real_name]:
                         del self._reverse_mappings[old_real_name]
-            
+
             # Set new mapping
             self._mappings[display_name] = real_name
-            
+
             # Update reverse mapping
             if real_name not in self._reverse_mappings:
                 self._reverse_mappings[real_name] = []
             if display_name not in self._reverse_mappings[real_name]:
                 self._reverse_mappings[real_name].append(display_name)
-            
+
             # Update context length cache
             if context_length:
                 self._context_lengths[display_name] = context_length
             elif display_name in self._context_lengths and context_length is None:
                 # context_length gönderilmediyse mevcut değeri koru (update'de)
                 pass
-            
+
             # Save to cache file
             self._save_to_cache_file()
-            
+
             action = "Created" if is_new else "Updated"
             ctx_info = f" (ctx={context_length})" if context_length else ""
-            print(f"{action} mapping: {display_name} -> {real_name}{ctx_info}")
-            
+            node_info = f" (node={node_id})" if node_id else ""
+            print(f"{action} mapping: {display_name} -> {real_name}{node_info}{ctx_info}")
+
             return {
                 "display_name": mapping.display_name,
                 "real_name": mapping.real_name,
+                "node_id": mapping.node_id,
                 "context_length": mapping.context_length,
                 "capabilities": mapping.capabilities,
                 "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
@@ -546,19 +548,95 @@ class ModelMappingManager:
             
             print(f"Deleted mapping: {display_name}")
     
+    async def update_mapping(self, old_display_name: str, new_display_name: Optional[str] = None, real_name: Optional[str] = None, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None, node_id: Optional[int] = None) -> Dict[str, any]:
+        """
+        Mevcut bir mapping'i güncelle. display_name de dahil tüm alanlar değiştirilebilir.
+        Cache'i de senkronize eder.
+        """
+        from app.repositories.model_mapping_repository import ModelMappingRepository
+        from app.database import async_session_maker
+
+        async with async_session_maker() as session:
+            repo = ModelMappingRepository(session)
+            mapping = await repo.get_by_display_name(old_display_name)
+            if not mapping:
+                raise ValueError(f"Model mapping not found: {old_display_name}")
+
+            # Eğer yeni display_name farklıysa ve zaten varsa hata at
+            if new_display_name and new_display_name != old_display_name:
+                existing = await repo.get_by_display_name(new_display_name)
+                if existing:
+                    raise ValueError(f"Display name already exists: {new_display_name}")
+                mapping.display_name = new_display_name
+
+            if real_name is not None:
+                mapping.real_name = real_name
+            if node_id is not None:
+                mapping.node_id = node_id
+            if context_length is not None:
+                mapping.context_length = context_length
+            if capabilities is not None:
+                mapping.capabilities = capabilities
+
+            await session.commit()
+            await session.refresh(mapping)
+
+            # Cache güncelle — önce eski entry'leri temizle
+            old_real_name = self._mappings.get(old_display_name)
+            if old_real_name:
+                del self._mappings[old_display_name]
+                if old_real_name in self._reverse_mappings:
+                    if old_display_name in self._reverse_mappings[old_real_name]:
+                        self._reverse_mappings[old_real_name].remove(old_display_name)
+                    if not self._reverse_mappings[old_real_name]:
+                        del self._reverse_mappings[old_real_name]
+
+            if old_display_name in self._context_lengths:
+                del self._context_lengths[old_display_name]
+            if old_display_name in self._capabilities:
+                del self._capabilities[old_display_name]
+
+            # Yeni değerleri cache'e ekle
+            final_display_name = new_display_name or old_display_name
+            self._mappings[final_display_name] = mapping.real_name
+
+            if mapping.real_name not in self._reverse_mappings:
+                self._reverse_mappings[mapping.real_name] = []
+            if final_display_name not in self._reverse_mappings[mapping.real_name]:
+                self._reverse_mappings[mapping.real_name].append(final_display_name)
+
+            if mapping.context_length:
+                self._context_lengths[final_display_name] = mapping.context_length
+            if mapping.capabilities:
+                self._capabilities[final_display_name] = mapping.capabilities
+
+            self._save_to_cache_file()
+
+            print(f"Updated mapping: {old_display_name} -> {final_display_name}")
+
+            return {
+                "display_name": mapping.display_name,
+                "real_name": mapping.real_name,
+                "node_id": mapping.node_id,
+                "context_length": mapping.context_length,
+                "capabilities": mapping.capabilities,
+                "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
+            }
+
     async def list_mappings(self):
         """List all model mappings from database"""
         from app.repositories.model_mapping_repository import ModelMappingRepository
         from app.database import async_session_maker
-        
+
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
             mappings = await repo.list_all()
-            
+
             return [
                 {
                     "display_name": m.display_name,
                     "real_name": m.real_name,
+                    "node_id": m.node_id,
                     "context_length": m.context_length,
                     "capabilities": m.capabilities,
                     "created_at": m.created_at.isoformat() if m.created_at else None

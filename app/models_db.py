@@ -28,18 +28,23 @@ class User(Base):
 class ModelMapping(Base):
     """Model name mapping"""
     __tablename__ = "model_mappings"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     display_name = Column(String(255), unique=True, nullable=False, index=True)
     real_name = Column(String(255), nullable=False)
+    node_id = Column(Integer, ForeignKey("ollama_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
     context_length = Column(Integer, nullable=True)  # Context window size in tokens (e.g., 131072 for 128K)
     capabilities = Column(ARRAY(String), nullable=True)  # ["completion", "tools", "thinking", "vision"]
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
+    # Relationships
+    node = relationship("OllamaNode")
+
     def __repr__(self):
         ctx = f", ctx={self.context_length}" if self.context_length else ""
         caps = f", caps={self.capabilities}" if self.capabilities else ""
-        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{ctx}{caps})>"
+        node = f", node={self.node_id}" if self.node_id else ""
+        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{node}{ctx}{caps})>"
 
 
 class UserModel(Base):
@@ -74,6 +79,8 @@ class UserActivityLog(Base):
     completion_tokens = Column(Integer, default=0, nullable=False)
     total_tokens = Column(Integer, default=0, nullable=False)
     request_type = Column(String(50), nullable=False)  # generate, chat, embeddings, etc.
+    source = Column(String(100), nullable=True)  # Cursor, Claude, OpenClaw, Ollama Native, OpenAI-Compatible, Grafana
+    url_path = Column(String(500), nullable=True)  # Full request URL path
     status_code = Column(Integer, nullable=True)  # HTTP status: 200, 400, 429, 500
     duration_ms = Column(Integer, nullable=True)  # Request duration in milliseconds
     error_message = Column(Text, nullable=True)  # Error message for failed requests
@@ -222,10 +229,13 @@ class OllamaNode(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False, index=True)  # "main-server", "backup-1"
     base_url = Column(String(500), nullable=False)  # "http://194.87.188.8:11434"
-    api_key = Column(String(500), nullable=True)  # Optional auth header
+    api_key = Column(String(2000), nullable=True)  # Optional auth header (JWT tokens can be very long)
     priority = Column(Integer, default=0)  # Higher = preferred (fallback order)
     weight = Column(Integer, default=100)  # Load balancing weight
     is_active = Column(Boolean, default=True, nullable=False)
+    node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama' or 'vllm'
+    warmup_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Enable model warmup for this node
+    code = Column(String(30), unique=True, nullable=True, index=True)  # Short routing code e.g. "trmix", "us-east-1"
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'

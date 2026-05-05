@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import logging
+import re
 
 from app.database import async_session_maker
 from app.models import (
@@ -15,7 +16,9 @@ from app.models import (
     ModelDistributionRow,
     NodeSyncResponse,
     PullModelRequest,
-    PullModelResponse
+    PullModelResponse,
+    NodePriorityBatchRequest,
+    NodePriorityBatchResponse
 )
 from app.models_db import OllamaNode, AuditLog
 from app.repositories.node_repository import (
@@ -51,12 +54,20 @@ async def create_node(
     """
     async with async_session_maker() as session:
         repo = NodeRepository(session)
-        
+
         # Check if name already exists
         existing = await repo.get_by_name(request.name)
         if existing:
             raise HTTPException(status_code=400, detail=f"Node '{request.name}' already exists")
-        
+
+        # Validate code format
+        if request.code is not None:
+            if not re.match(r'^[a-z0-9_-]{1,30}$', request.code):
+                raise HTTPException(status_code=400, detail="Node code must be 1-30 chars, lowercase alphanumeric with hyphens/underscores only")
+            existing_code = await repo.get_by_code(request.code)
+            if existing_code:
+                raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
+
         # Create node
         node = await repo.create(
             name=request.name,
@@ -65,19 +76,22 @@ async def create_node(
             priority=request.priority or 0,
             weight=request.weight or 100,
             is_active=request.is_active if request.is_active is not None else True,
-            health_check_url=request.health_check_url
+            node_type=request.node_type or 'ollama',
+            warmup_enabled=request.warmup_enabled if request.warmup_enabled is not None else True,
+            health_check_url=request.health_check_url,
+            code=request.code
         )
-        
+
         # Audit log
         audit_repo = AuditLogRepository(session)
         await audit_repo.create(
             action="create_node",
             entity_type="node",
             entity_id=str(node.id),
-            details={"name": node.name, "base_url": node.base_url},
+            details={"name": node.name, "base_url": node.base_url, "code": node.code},
             admin_ip=None
         )
-        
+
         return OllamaNodeResponse(
             id=node.id,
             name=node.name,
@@ -86,6 +100,9 @@ async def create_node(
             priority=node.priority,
             weight=node.weight,
             is_active=node.is_active,
+            node_type=node.node_type,
+            warmup_enabled=node.warmup_enabled,
+            code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -137,6 +154,9 @@ async def get_node(
             priority=node.priority,
             weight=node.weight,
             is_active=node.is_active,
+            node_type=node.node_type,
+            warmup_enabled=node.warmup_enabled,
+            code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -191,10 +211,27 @@ async def update_node(
         
         if request.is_active is not None:
             update_data["is_active"] = request.is_active
-        
+
+        if request.node_type is not None:
+            update_data["node_type"] = request.node_type
+
+        if request.warmup_enabled is not None:
+            update_data["warmup_enabled"] = request.warmup_enabled
+
         if request.health_check_url is not None:
             update_data["health_check_url"] = request.health_check_url
-        
+
+        if request.code is not None:
+            if request.code == '':
+                update_data["code"] = None
+            elif not re.match(r'^[a-z0-9_-]{1,30}$', request.code):
+                raise HTTPException(status_code=400, detail="Node code must be 1-30 chars, lowercase alphanumeric with hyphens/underscores only")
+            else:
+                existing_code = await repo.get_by_code(request.code)
+                if existing_code and existing_code.id != node_id:
+                    raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
+                update_data["code"] = request.code
+
         node = await repo.update(node_id, **update_data)
         
         if not node:
@@ -218,6 +255,9 @@ async def update_node(
             priority=node.priority,
             weight=node.weight,
             is_active=node.is_active,
+            node_type=node.node_type,
+            warmup_enabled=node.warmup_enabled,
+            code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -281,7 +321,8 @@ async def check_node_health(
         # Perform health check
         is_healthy, error = await node_manager.health_check_node(
             node.base_url,
-            node.api_key
+            node.api_key,
+            node_type=getattr(node, 'node_type', 'ollama')
         )
         
         # Update node status
@@ -473,3 +514,53 @@ async def get_node_metrics(
             }
         
         return metrics
+
+
+@router.patch("/batch/priority", response_model=NodePriorityBatchResponse)
+async def update_node_priorities(
+    request: NodePriorityBatchRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Batch update node priorities via drag-and-drop reordering.
+
+    Expects a list of {node_id, priority} objects.
+    Higher priority = preferred in fallback order.
+    """
+    async with async_session_maker() as session:
+        repo = NodeRepository(session)
+        updated_nodes = []
+
+        for item in request.priorities:
+            node = await repo.update(item.node_id, priority=item.priority)
+            if node:
+                updated_nodes.append(OllamaNodeResponse(
+                    id=node.id,
+                    name=node.name,
+                    base_url=node.base_url,
+                    api_key_set=bool(node.api_key),
+                    priority=node.priority,
+                    weight=node.weight,
+                    is_active=node.is_active,
+                    node_type=node.node_type,
+                    warmup_enabled=node.warmup_enabled,
+                    health_status=node.health_status,
+                    last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
+                    created_at=node.created_at.isoformat() if node.created_at else None,
+                    updated_at=node.updated_at.isoformat() if node.updated_at else None
+                ))
+
+        # Audit log
+        audit_repo = AuditLogRepository(session)
+        await audit_repo.create(
+            action="batch_update_priorities",
+            entity_type="node",
+            entity_id="batch",
+            details={"updated_count": len(updated_nodes)},
+            admin_ip=None
+        )
+
+        return NodePriorityBatchResponse(
+            updated=len(updated_nodes),
+            nodes=updated_nodes
+        )

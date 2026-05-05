@@ -321,16 +321,18 @@ class UserManager:
         request_type: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
-        total_tokens: int = 0
+        total_tokens: int = 0,
+        source: str = None,
+        url_path: str = None
     ) -> bool:
         """Log user activity for token usage and model access"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             user = await user_repo.get_by_username(username)
-            
+
             if not user:
                 return False
-            
+
             activity_repo = UserActivityRepository(session)
             await activity_repo.log_activity(
                 user_id=user.id,
@@ -338,9 +340,11 @@ class UserManager:
                 request_type=request_type,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                total_tokens=total_tokens or (prompt_tokens + completion_tokens)
+                total_tokens=total_tokens or (prompt_tokens + completion_tokens),
+                source=source,
+                url_path=url_path
             )
-            
+
             await session.commit()
             return True
     

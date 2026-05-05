@@ -24,7 +24,9 @@ class UserActivityRepository:
         total_tokens: int = 0,
         status_code: Optional[int] = None,
         duration_ms: Optional[int] = None,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None
     ) -> UserActivityLog:
         """Log user activity"""
         activity_log = UserActivityLog(
@@ -36,7 +38,9 @@ class UserActivityRepository:
             total_tokens=total_tokens or (prompt_tokens + completion_tokens),
             status_code=status_code,
             duration_ms=duration_ms,
-            error_message=error_message
+            error_message=error_message,
+            source=source,
+            url_path=url_path
         )
         
         self.session.add(activity_log)
@@ -160,6 +164,8 @@ class UserActivityRepository:
         status_code: Optional[int] = None,
         status_category: Optional[str] = None,
         request_type: Optional[str] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
     ) -> Tuple[List[UserActivityLog], int]:
@@ -182,6 +188,10 @@ class UserActivityRepository:
                 )
         if request_type is not None:
             conditions.append(UserActivityLog.request_type == request_type)
+        if source is not None:
+            conditions.append(UserActivityLog.source == source)
+        if url_path is not None:
+            conditions.append(UserActivityLog.url_path.ilike(f"%{url_path}%"))
         if start_date is not None:
             conditions.append(UserActivityLog.created_at >= start_date)
         if end_date is not None:

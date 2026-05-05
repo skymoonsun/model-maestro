@@ -60,6 +60,25 @@ class OllamaEmbedRequest(BaseModel):
     keep_alive: Optional[str] = None
 
 
+class CompletionRequest(BaseModel):
+    """OpenAI-compatible /v1/completions request"""
+    model: str
+    prompt: str | List[str]
+    suffix: Optional[str] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    n: Optional[int] = 1
+    stream: Optional[bool] = False
+    logprobs: Optional[int] = None
+    echo: Optional[bool] = False
+    stop: Optional[str | List[str]] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    best_of: Optional[int] = None
+    user: Optional[str] = None
+
+
 class OpenAIEmbeddingRequest(BaseModel):
     """OpenAI-compatible /v1/embeddings request"""
     input: str | List[str]
@@ -146,6 +165,7 @@ class CreateMappingRequest(BaseModel):
     """Create or update model mapping request"""
     display_name: str
     real_name: str
+    node_id: Optional[int] = None  # NULL = global mapping (all nodes)
     context_length: Optional[str] = None  # Human-friendly format: "198K", "128K", "1M", "32768"
     capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
 
@@ -181,6 +201,8 @@ class ModelMappingResponse(BaseModel):
     """Model mapping response"""
     display_name: str
     real_name: str
+    node_id: Optional[int] = None
+    node_name: Optional[str] = None
     context_length: Optional[int] = None  # Token cinsinden (e.g., 202752)
     context_length_display: Optional[str] = None  # İnsan-dostu format (e.g., "198K")
     capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
@@ -322,6 +344,8 @@ class RequestLogItem(BaseModel):
     username: Optional[str] = None
     model_name: str
     request_type: str
+    source: Optional[str] = None
+    url_path: Optional[str] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -384,6 +408,20 @@ class OllamaModelListItem(BaseModel):
     # Which nodes have this model
     nodes: Optional[List[str]] = None
 
+class VllmModelListItem(BaseModel):
+    """A model from a vLLM node"""
+    name: str
+    node_name: str
+    node_id: int
+    base_url: str
+    model_size: Optional[int] = None
+    model_family: Optional[str] = None
+    digest: Optional[str] = None
+    modified_at: Optional[str] = None
+    is_mapped: bool = False
+    display_name: Optional[str] = None
+
+
 class ModelShowResponse(BaseModel):
     """Detailed model info from Ollama /api/show"""
     name: str
@@ -412,7 +450,10 @@ class OllamaNodeCreate(BaseModel):
     priority: Optional[int] = 0
     weight: Optional[int] = 100
     is_active: Optional[bool] = True
+    node_type: Optional[str] = "ollama"
+    warmup_enabled: Optional[bool] = True
     health_check_url: Optional[str] = None
+    code: Optional[str] = None
 
 
 class OllamaNodeUpdate(BaseModel):
@@ -423,7 +464,10 @@ class OllamaNodeUpdate(BaseModel):
     priority: Optional[int] = None
     weight: Optional[int] = None
     is_active: Optional[bool] = None
+    node_type: Optional[str] = None
+    warmup_enabled: Optional[bool] = None
     health_check_url: Optional[str] = None
+    code: Optional[str] = None
 
 
 class OllamaNodeResponse(BaseModel):
@@ -435,6 +479,9 @@ class OllamaNodeResponse(BaseModel):
     priority: int = 0
     weight: int = 100
     is_active: bool = True
+    node_type: str = "ollama"
+    warmup_enabled: bool = True
+    code: Optional[str] = None
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -458,6 +505,9 @@ class OllamaNodeDetailResponse(BaseModel):
     priority: int = 0
     weight: int = 100
     is_active: bool = True
+    node_type: str = "ollama"
+    warmup_enabled: bool = True
+    code: Optional[str] = None
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -524,51 +574,19 @@ class LoadBalancerStatusResponse(BaseModel):
 # LOAD BALANCING - OLLAMA NODES
 # =============================================================================
 
-# --- Ollama Node Management ---
-
-class OllamaNodeCreate(BaseModel):
-    """Create a new Ollama node"""
-    name: str
-    base_url: str
-    api_key: Optional[str] = None
-    priority: int = 0
-    weight: int = 100
-    is_active: bool = True
-    health_check_url: Optional[str] = None
-
-class OllamaNodeUpdate(BaseModel):
-    """Update an Ollama node"""
-    name: Optional[str] = None
-    base_url: Optional[str] = None
-    api_key: Optional[str] = None
-    priority: Optional[int] = None
-    weight: Optional[int] = None
-    is_active: Optional[bool] = None
-    health_check_url: Optional[str] = None
-
-class OllamaNodeResponse(BaseModel):
-    """Ollama node response"""
-    id: int
-    name: str
-    base_url: str
-    api_key: Optional[str] = None
+class NodePriorityItem(BaseModel):
+    """Single node priority update"""
+    node_id: int
     priority: int
-    weight: int
-    is_active: bool
-    health_check_url: Optional[str] = None
-    last_health_check: Optional[str] = None
-    health_status: str
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    # Computed fields
-    model_count: int = 0
-    active_requests: int = 0
-    avg_response_time_ms: Optional[int] = None
 
-class OllamaNodeListResponse(BaseModel):
-    """List of Ollama nodes with models"""
+class NodePriorityBatchRequest(BaseModel):
+    """Batch update node priorities"""
+    priorities: List[NodePriorityItem]
+
+class NodePriorityBatchResponse(BaseModel):
+    """Batch update node priorities response"""
+    updated: int
     nodes: List[OllamaNodeResponse]
-    total: int
 
 # --- Node Model Discovery ---
 

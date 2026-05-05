@@ -13,6 +13,79 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Lazy import proxy to avoid circular deps
+try:
+    from app.proxy import ollama_proxy
+except Exception:
+    ollama_proxy = None  # type: ignore
+
+
+async def _get_grafana_model() -> str:
+    """Read configured LLM model for Grafana Assistant from SystemConfig, fallback to first available mapped model."""
+    from app.database import async_session_maker
+    from app.models_db import SystemConfig
+
+    async with async_session_maker() as session:
+        row = await session.get(SystemConfig, "grafana_llm_model")
+        if row and row.value:
+            return row.value.strip()
+    # fallback
+    try:
+        from app.config import model_mapper
+        available = model_mapper.get_available_model_names()
+        if available:
+            return available[0]
+    except Exception:
+        pass
+    return "default-model"
+
+
+def _grafana_message_to_openai(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert Grafana message format to OpenAI message."""
+    role = msg.get("role", "user")
+    content_parts = msg.get("content", [])
+    if isinstance(content_parts, list):
+        text_parts = [
+            str(p.get("text", "")) for p in content_parts
+            if isinstance(p, dict) and p.get("type") == "text"
+        ]
+        text = "".join(text_parts)
+    else:
+        text = str(content_parts)
+
+    # Strip leading/trailing whitespace, especially from system prompts
+    text = text.strip()
+
+    openai_msg: Dict[str, Any] = {"role": role, "content": text}
+
+    # Preserve tool calls / tool call ids if present
+    if "tool_calls" in msg:
+        openai_msg["tool_calls"] = msg["tool_calls"]
+    if msg.get("tool_call_id"):
+        openai_msg["tool_call_id"] = msg["tool_call_id"]
+    if msg.get("name"):
+        openai_msg["name"] = msg["name"]
+    return openai_msg
+
+
+def _grafana_messages_to_openai(body: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """Build OpenAI /v1/chat/completions messages list from Grafana prompt-stream body."""
+    messages: list[Dict[str, Any]] = []
+
+    # Grafana sends a large systemPrompt string describing tools and behavior.
+    # If present, prepend it as a system message.
+    system_prompt = body.get("systemPrompt")
+    if system_prompt and isinstance(system_prompt, str):
+        system_prompt = system_prompt.strip()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+
+    for msg in body.get("messages", []):
+        if isinstance(msg, dict):
+            messages.append(_grafana_message_to_openai(msg))
+
+    return messages
+
 router = APIRouter(prefix="/grafana", tags=["Grafana Assistant"])
 
 # ============================================================================
@@ -296,8 +369,8 @@ async def grafana_chats_handler(
     await _log_grafana_request(request)
 
     if request.method == "POST":
-        log = await _log_grafana_request(request)
-        body = log.get("body") or {}
+        log_record = await _log_grafana_request(request)
+        body = log_record.get("body") or {}
 
         chat = await grafana_chat_store.create_chat()
         # Override with client-provided defaults
@@ -406,21 +479,201 @@ async def grafana_create_message(request: Request, chat_id: str):
     )
 
 
-@router.get("/assistant/api/v1/chats/{chat_id}/prompt-stream", include_in_schema=True)
+@router.api_route("/assistant/api/v1/chats/{chat_id}/prompt-stream", methods=["GET", "POST"], include_in_schema=True)
 async def grafana_prompt_stream(
     request: Request,
     chat_id: str,
     application: Optional[str] = Query(None),
     audience: Optional[str] = Query(None),
 ):
-    """Grafana Assistant — SSE prompt stream (returns assistant response)"""
-    await _log_grafana_request(request)
+    """Grafana Assistant — SSE prompt stream (proxies to real LLM if configured)."""
+    log_record = await _log_grafana_request(request)
     chat = await grafana_chat_store.get_chat(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     message_id = str(uuid.uuid4())
+    body = log_record.get("body") or {}
+    chat_messages = body.get("messages", []) if isinstance(body, dict) else []  # type: ignore
 
+    # Determine model
+    model_label = "default-model"
+    try:
+        model_label = await _get_grafana_model()
+    except Exception:
+        pass
+
+    # Build OpenAI messages from Grafana body
+    openai_messages = _grafana_messages_to_openai(body)  # type: ignore
+
+    # If proxy is available and we have messages, stream from real LLM.
+    # Otherwise fall back to the static greeting mock.
+    if ollama_proxy and openai_messages:
+        user_ident = request.headers.get("x-grafana-user") or "grafana-user"
+        openai_payload = {
+            "model": model_label,
+            "messages": openai_messages,
+            "stream": True,
+        }
+        tools = body.get("tools") if isinstance(body, dict) else None  # type: ignore
+        if tools and isinstance(tools, list):
+            openai_payload["tools"] = tools  # type: ignore
+
+        async def _real_sse():
+            meta = json.dumps({"messageId": message_id, "chatId": chat_id, "role": "assistant"})
+            yield f"data: {meta}\n\n"
+
+            total_content = ""
+            buffer = b""
+            stream_finished = False
+
+            try:
+                async for raw_chunk in ollama_proxy.stream_ollama(openai_payload, model_name=model_label, username=user_ident):
+                    if stream_finished:
+                        break
+                    if isinstance(raw_chunk, bytes):
+                        buffer += raw_chunk
+                    elif isinstance(raw_chunk, str):
+                        buffer += raw_chunk.encode("utf-8")
+                    else:
+                        continue
+
+                    while True:
+                        line_end = buffer.find(b"\n")
+                        if line_end == -1:
+                            break
+                        line = buffer[:line_end]
+                        buffer = buffer[line_end + 1:]
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith(b"data: "):
+                            line = line[6:].strip()
+                        if line == b"[DONE]" or not line:
+                            continue
+
+                        try:
+                            chunk_json = json.loads(line.decode("utf-8"))
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            continue
+
+                        choices = chunk_json.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if isinstance(content, str):
+                            total_content += content
+                        finish_reason = choices[0].get("finish_reason")
+
+                        now = datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+                        grafana_msg = {
+                            "id": str(uuid.uuid4()),
+                            "created": now,
+                            "modified": now,
+                            "content": [{"text": total_content, "type": "text"}],
+                            "role": "assistant",
+                            "senderName": "supervisor-single",
+                            "type": "message",
+                            "hidden": False,
+                        }
+                        payload_data = {
+                            "messages": [grafana_msg],
+                            "stopReason": finish_reason,
+                            "usage": {
+                                "InputTokens": 0,
+                                "OutputTokens": len(total_content.split()),
+                                "CacheCreationInputTokens": 0,
+                                "CacheReadInputTokens": 0,
+                            },
+                            "limits": {
+                                "weeklyUserPercentage": 0,
+                                "weeklyTenantPercentage": 0,
+                                "monthlyUserPromptCount": 3,
+                                "monthlyUserPromptLimit": 2000,
+                            },
+                            "model": model_label,
+                        }
+                        if finish_reason:
+                            stream_finished = True
+                        yield f"data: {json.dumps(payload_data)}\nn\n"
+                        if stream_finished:
+                            break
+
+                # Flush remaining buffer
+                if buffer.strip():
+                    remaining = buffer.strip()
+                    if remaining.startswith(b"data: "):
+                        remaining = remaining[6:].strip()
+                    try:
+                        chunk_json = json.loads(remaining.decode("utf-8"))
+                        choices = chunk_json.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if isinstance(content, str):
+                                total_content += content
+                            finish_reason = choices[0].get("finish_reason")
+                            now = datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+                            grafana_msg = {
+                                "id": str(uuid.uuid4()),
+                                "created": now,
+                                "modified": now,
+                                "content": [{"text": total_content, "type": "text"}],
+                                "role": "assistant",
+                                "senderName": "supervisor-single",
+                                "type": "message",
+                                "hidden": False,
+                            }
+                            payload_data = {
+                                "messages": [grafana_msg],
+                                "stopReason": finish_reason or "end_turn",
+                                "usage": {
+                                    "InputTokens": 0,
+                                    "OutputTokens": len(total_content.split()),
+                                    "CacheCreationInputTokens": 0,
+                                    "CacheReadInputTokens": 0,
+                                },
+                                "limits": {
+                                    "weeklyUserPercentage": 0,
+                                    "weeklyTenantPercentage": 0,
+                                    "monthlyUserPromptCount": 3,
+                                    "monthlyUserPromptLimit": 2000,
+                                },
+                                "model": model_label,
+                            }
+                            yield f"data: {json.dumps(payload_data)}\nn\n"
+                    except Exception:
+                        pass
+
+            except Exception as exc:
+                logger.error(f"Grafana LLM proxy error: {exc!r}")
+                # Emit graceful error
+                now = datetime.datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+                err_msg = {
+                    "id": str(uuid.uuid4()),
+                    "created": now,
+                    "modified": now,
+                    "content": [{"text": f"LLM proxy error: {exc}", "type": "text"}],
+                    "role": "assistant",
+                    "senderName": "supervisor-single",
+                    "type": "message",
+                    "hidden": False,
+                }
+                yield f"data: {json.dumps({'messages': [err_msg], 'stopReason': 'end_turn', 'model': model_label})}\nn\n"
+
+        return StreamingResponse(
+            _real_sse(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # -------------------------------------------------------------------------
+    # FALLBACK: static greeting (proxy unavailable or no messages)
+    # -------------------------------------------------------------------------
     async def _sse():
         meta = json.dumps({"messageId": message_id, "chatId": chat_id, "role": "assistant"})
         yield f"data: {meta}\n\n"
@@ -467,7 +720,7 @@ async def grafana_prompt_stream(
                 "monthlyUserPromptCount": 3,
                 "monthlyUserPromptLimit": 2000,
             },
-            "model": "claude-sonnet-4-6",
+            "model": model_label,
         })
         yield f"data: {payload}\n\n"
 

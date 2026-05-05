@@ -23,7 +23,10 @@ class NodeRepository:
         priority: int = 0,
         weight: int = 100,
         is_active: bool = True,
-        health_check_url: Optional[str] = None
+        node_type: str = 'ollama',
+        warmup_enabled: bool = True,
+        health_check_url: Optional[str] = None,
+        code: Optional[str] = None
     ) -> OllamaNode:
         """Create a new Ollama node"""
         node = OllamaNode(
@@ -33,7 +36,10 @@ class NodeRepository:
             priority=priority,
             weight=weight,
             is_active=is_active,
+            node_type=node_type,
+            warmup_enabled=warmup_enabled,
             health_check_url=health_check_url,
+            code=code,
             health_status='unknown'
         )
         self.session.add(node)
@@ -54,7 +60,14 @@ class NodeRepository:
             select(OllamaNode).where(OllamaNode.name == name)
         )
         return result.scalar_one_or_none()
-    
+
+    async def get_by_code(self, code: str) -> Optional[OllamaNode]:
+        """Get node by routing code"""
+        result = await self.session.execute(
+            select(OllamaNode).where(OllamaNode.code == code)
+        )
+        return result.scalar_one_or_none()
+
     async def list_all(self, active_only: bool = False) -> List[OllamaNode]:
         """List all nodes"""
         query = select(OllamaNode).order_by(OllamaNode.priority.desc())
@@ -122,11 +135,17 @@ class NodeRepository:
                 "id": node.id,
                 "name": node.name,
                 "base_url": node.base_url,
+                "api_key_set": bool(node.api_key),
                 "priority": node.priority,
                 "weight": node.weight,
                 "is_active": node.is_active,
+                "node_type": node.node_type,
+                "warmup_enabled": node.warmup_enabled,
+                "code": node.code,
                 "health_status": node.health_status,
                 "last_health_check": node.last_health_check.isoformat() if node.last_health_check else None,
+                "created_at": node.created_at.isoformat() if node.created_at else None,
+                "updated_at": node.updated_at.isoformat() if node.updated_at else None,
                 "model_count": len(node.node_models),
                 "models": [
                     {
@@ -246,6 +265,8 @@ class NodeModelRepository:
                 "node_id": node.id,
                 "node_name": node.name,
                 "base_url": node.base_url,
+                "api_key": node.api_key,
+                "node_type": node.node_type,
                 "priority": node.priority,
                 "weight": node.weight,
                 "health_status": node.health_status
