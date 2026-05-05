@@ -391,6 +391,8 @@ class DashboardService:
         status_code: Optional[int] = None,
         status_category: Optional[str] = None,
         request_type: Optional[str] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
     ) -> Dict[str, Any]:
@@ -418,6 +420,8 @@ class DashboardService:
                 status_code=status_code,
                 status_category=status_category,
                 request_type=request_type,
+                source=source,
+                url_path=url_path,
                 start_date=start_date,
                 end_date=end_date
             )
@@ -429,6 +433,8 @@ class DashboardService:
                     "username": getattr(log, '_username', None),
                     "model_name": log.model_name,
                     "request_type": log.request_type,
+                    "source": log.source,
+                    "url_path": log.url_path,
                     "prompt_tokens": log.prompt_tokens,
                     "completion_tokens": log.completion_tokens,
                     "total_tokens": log.total_tokens,

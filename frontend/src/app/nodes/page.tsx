@@ -45,8 +45,26 @@ import {
     Activity,
     BarChart3,
     Link as LinkIcon,
+    GripVertical,
 } from 'lucide-react';
 import Link from 'next/link';
+import {
+    DndContext,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+    type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+    arrayMove,
+    SortableContext,
+    sortableKeyboardCoordinates,
+    useSortable,
+    rectSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 function HealthBadge({ status }: { status: string }) {
     const map: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
@@ -87,6 +105,7 @@ function NodeCard({
     onDelete,
     healthChecking,
     syncing,
+    isOverlay,
 }: {
     node: Node;
     onHealthCheck: (id: number) => void;
@@ -94,7 +113,21 @@ function NodeCard({
     onDelete: (id: number) => void;
     healthChecking: number | null;
     syncing: number | null;
+    isOverlay?: boolean;
 }) {
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging,
+    } = useSortable({ id: node.id });
+
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+    };
     const qc = useQueryClient();
     const [editOpen, setEditOpen] = useState(false);
     const [form, setForm] = useState({
@@ -105,6 +138,7 @@ function NodeCard({
         weight: node.weight,
         is_active: node.is_active,
         node_type: node.node_type,
+        warmup_enabled: node.warmup_enabled,
     });
 
     const updateMut = useMutation({
@@ -136,21 +170,48 @@ function NodeCard({
                 weight: node.weight,
                 is_active: node.is_active,
                 node_type: node.node_type,
+                warmup_enabled: node.warmup_enabled,
             });
         }
-    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active, node.node_type]);
+    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled]);
+
+    const isInactive = !node.is_active;
 
     return (
-        <Card className="overflow-hidden">
+        <Card
+            ref={setNodeRef}
+            style={style}
+            className={`overflow-hidden ${isInactive ? 'opacity-60 bg-muted/30' : ''} ${isDragging ? 'ring-2 ring-primary z-50' : ''}`}
+        >
             <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2">
-                        <Server className="h-5 w-5 text-muted-foreground" />
+                        <button
+                            className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground"
+                            {...attributes}
+                            {...listeners}
+                        >
+                            <GripVertical className="h-5 w-5" />
+                        </button>
                         <CardTitle className="text-base">{node.name}</CardTitle>
-                        <Badge variant="outline" className="text-xs">
+                        <Badge
+                            variant="outline"
+                            className={`text-xs ${
+                                node.node_type === 'vllm'
+                                    ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                                    : node.node_type === 'ollama'
+                                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                                    : ''
+                            }`}
+                        >
                             {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type}
                         </Badge>
-                        {!node.is_active && (
+                        {!node.warmup_enabled && (
+                            <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10">
+                                Warmup Off
+                            </Badge>
+                        )}
+                        {isInactive && (
                             <Badge variant="outline" className="text-muted-foreground">
                                 Inactive
                             </Badge>
@@ -275,6 +336,13 @@ function NodeCard({
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <Switch
+                                        checked={form.warmup_enabled}
+                                        onCheckedChange={(v) => setForm((f) => ({ ...f, warmup_enabled: v }))}
+                                    />
+                                    <Label>Warmup Enabled</Label>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Switch
                                         checked={form.is_active}
                                         onCheckedChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
                                     />
@@ -334,6 +402,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         weight: 100,
         is_active: true,
         node_type: 'ollama',
+        warmup_enabled: true,
     });
     const qc = useQueryClient();
     const mut = useMutation({
@@ -341,7 +410,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama' });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true });
             toast.success('Node created');
             onSuccess();
         },
@@ -423,6 +492,13 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                     </div>
                     <div className="flex items-center gap-2">
                         <Switch
+                            checked={form.warmup_enabled}
+                            onCheckedChange={(v) => setForm((f) => ({ ...f, warmup_enabled: v }))}
+                        />
+                        <Label>Warmup Enabled</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Switch
                             checked={form.is_active}
                             onCheckedChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
                         />
@@ -451,6 +527,14 @@ export default function NodesPage() {
         queryKey: ['nodes'],
         queryFn: () => nodesApi.list(),
     });
+
+    // Local ordered state for drag-and-drop (sorted by priority desc)
+    const [orderedNodes, setOrderedNodes] = useState<Node[]>([]);
+    useEffect(() => {
+        if (nodes) {
+            setOrderedNodes([...nodes].sort((a, b) => b.priority - a.priority));
+        }
+    }, [nodes]);
 
     const { data: distribution } = useQuery({
         queryKey: ['nodes-distribution'],
@@ -482,6 +566,38 @@ export default function NodesPage() {
         },
         onError: (e) => toast.error(e.message),
     });
+
+    const priorityMut = useMutation({
+        mutationFn: nodesApi.updatePriorities,
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['nodes'] });
+            toast.success('Priorities updated');
+        },
+        onError: (e) => toast.error(e.message),
+    });
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    );
+
+    const handleDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event;
+        if (!over || active.id === over.id) return;
+
+        setOrderedNodes((items) => {
+            const oldIndex = items.findIndex((n) => n.id === active.id);
+            const newIndex = items.findIndex((n) => n.id === over.id);
+            const reordered = arrayMove(items, oldIndex, newIndex);
+            // Assign priorities based on new order (highest first)
+            const priorities = reordered.map((node, idx) => ({
+                node_id: node.id,
+                priority: reordered.length - idx,
+            }));
+            priorityMut.mutate(priorities);
+            return reordered;
+        });
+    };
 
     const handleHealthCheck = async (id: number) => {
         setHealthChecking(id);
@@ -554,7 +670,7 @@ export default function NodesPage() {
                                 <Skeleton key={i} className="h-48" />
                             ))}
                         </div>
-                    ) : nodes?.length === 0 ? (
+                    ) : orderedNodes?.length === 0 ? (
                         <Card>
                             <CardContent className="flex flex-col items-center justify-center py-16">
                                 <Server className="h-12 w-12 text-muted-foreground mb-4" />
@@ -566,19 +682,30 @@ export default function NodesPage() {
                             </CardContent>
                         </Card>
                     ) : (
-                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                            {nodes?.map((node) => (
-                                <NodeCard
-                                    key={node.id}
-                                    node={node}
-                                    onHealthCheck={handleHealthCheck}
-                                    onSync={handleSync}
-                                    onDelete={(id) => deleteMut.mutate(id)}
-                                    healthChecking={healthChecking}
-                                    syncing={syncing}
-                                />
-                            ))}
-                        </div>
+                        <DndContext
+                            sensors={sensors}
+                            collisionDetection={closestCenter}
+                            onDragEnd={handleDragEnd}
+                        >
+                            <SortableContext
+                                items={orderedNodes.map((n) => n.id)}
+                                strategy={rectSortingStrategy}
+                            >
+                                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                                    {orderedNodes.map((node) => (
+                                        <NodeCard
+                                            key={node.id}
+                                            node={node}
+                                            onHealthCheck={handleHealthCheck}
+                                            onSync={handleSync}
+                                            onDelete={(id) => deleteMut.mutate(id)}
+                                            healthChecking={healthChecking}
+                                            syncing={syncing}
+                                        />
+                                    ))}
+                                </div>
+                            </SortableContext>
+                        </DndContext>
                     )}
                 </TabsContent>
 

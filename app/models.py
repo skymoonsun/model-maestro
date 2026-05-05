@@ -344,6 +344,8 @@ class RequestLogItem(BaseModel):
     username: Optional[str] = None
     model_name: str
     request_type: str
+    source: Optional[str] = None
+    url_path: Optional[str] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -449,6 +451,7 @@ class OllamaNodeCreate(BaseModel):
     weight: Optional[int] = 100
     is_active: Optional[bool] = True
     node_type: Optional[str] = "ollama"
+    warmup_enabled: Optional[bool] = True
     health_check_url: Optional[str] = None
 
 
@@ -461,6 +464,7 @@ class OllamaNodeUpdate(BaseModel):
     weight: Optional[int] = None
     is_active: Optional[bool] = None
     node_type: Optional[str] = None
+    warmup_enabled: Optional[bool] = None
     health_check_url: Optional[str] = None
 
 
@@ -474,6 +478,7 @@ class OllamaNodeResponse(BaseModel):
     weight: int = 100
     is_active: bool = True
     node_type: str = "ollama"
+    warmup_enabled: bool = True
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -498,6 +503,7 @@ class OllamaNodeDetailResponse(BaseModel):
     weight: int = 100
     is_active: bool = True
     node_type: str = "ollama"
+    warmup_enabled: bool = True
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -575,6 +581,7 @@ class OllamaNodeCreate(BaseModel):
     weight: int = 100
     is_active: bool = True
     node_type: Optional[str] = "ollama"
+    warmup_enabled: Optional[bool] = True
     health_check_url: Optional[str] = None
 
 class OllamaNodeUpdate(BaseModel):
@@ -586,6 +593,7 @@ class OllamaNodeUpdate(BaseModel):
     weight: Optional[int] = None
     is_active: Optional[bool] = None
     node_type: Optional[str] = None
+    warmup_enabled: Optional[bool] = None
     health_check_url: Optional[str] = None
 
 class OllamaNodeResponse(BaseModel):
@@ -598,6 +606,7 @@ class OllamaNodeResponse(BaseModel):
     weight: int
     is_active: bool
     node_type: str = "ollama"
+    warmup_enabled: bool = True
     health_check_url: Optional[str] = None
     last_health_check: Optional[str] = None
     health_status: str
@@ -612,6 +621,20 @@ class OllamaNodeListResponse(BaseModel):
     """List of Ollama nodes with models"""
     nodes: List[OllamaNodeResponse]
     total: int
+
+class NodePriorityItem(BaseModel):
+    """Single node priority update"""
+    node_id: int
+    priority: int
+
+class NodePriorityBatchRequest(BaseModel):
+    """Batch update node priorities"""
+    priorities: List[NodePriorityItem]
+
+class NodePriorityBatchResponse(BaseModel):
+    """Batch update node priorities response"""
+    updated: int
+    nodes: List[OllamaNodeResponse]
 
 # --- Node Model Discovery ---
 

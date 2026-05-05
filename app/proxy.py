@@ -1709,6 +1709,18 @@ class OllamaProxy:
         
         return True
     
+    def _detect_request_source(self, endpoint: str) -> str:
+        """Detect request source/client from endpoint path."""
+        if endpoint.startswith('/openclaw'):
+            return 'OpenClaw'
+        if endpoint.startswith('/grafana'):
+            return 'Grafana'
+        if endpoint.startswith('/api/'):
+            return 'Ollama Native'
+        if endpoint.startswith('/v1/'):
+            return 'OpenAI-Compatible'
+        return 'Unknown'
+
     async def _log_user_activity(
         self,
         username: str,
@@ -1719,7 +1731,9 @@ class OllamaProxy:
         total_tokens: int = 0,
         status_code: int = None,
         duration_ms: int = None,
-        error_message: str = None
+        error_message: str = None,
+        source: str = None,
+        url_path: str = None
     ):
         """
         Log user activity for token usage and model access (batch processing)
@@ -1736,6 +1750,8 @@ class OllamaProxy:
             status_code: HTTP status code of the response
             duration_ms: Request duration in milliseconds
             error_message: Error message for failed requests
+            source: Request source/client identifier
+            url_path: Full request URL path
         """
         from app.background_tasks import queue_activity_log_async
 
@@ -1748,7 +1764,9 @@ class OllamaProxy:
             total_tokens=total_tokens or (prompt_tokens + completion_tokens),
             status_code=status_code,
             duration_ms=duration_ms,
-            error_message=error_message
+            error_message=error_message,
+            source=source,
+            url_path=url_path
         )
     
     async def proxy_request(
@@ -2576,7 +2594,9 @@ class OllamaProxy:
                                 completion_tokens=completion_tokens,
                                 total_tokens=prompt_tokens + completion_tokens,
                                 status_code=200,
-                                duration_ms=duration_ms
+                                duration_ms=duration_ms,
+                                source=self._detect_request_source(endpoint),
+                                url_path=endpoint
                             )
 
                         # Send [DONE] if not already sent
@@ -2884,7 +2904,9 @@ class OllamaProxy:
                             request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
                             prompt_tokens=0,
                             completion_tokens=0,
-                            total_tokens=0
+                            total_tokens=0,
+                            source=self._detect_request_source(endpoint),
+                            url_path=endpoint
                         )
                     return response.text
 
@@ -2928,7 +2950,9 @@ class OllamaProxy:
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens or (prompt_tokens + completion_tokens),
                         status_code=200,
-                        duration_ms=duration_ms
+                        duration_ms=duration_ms,
+                        source=self._detect_request_source(endpoint),
+                        url_path=endpoint
                     )
 
                 return response_data
@@ -3013,7 +3037,9 @@ class OllamaProxy:
                 request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
                 status_code=error_status,
                 duration_ms=duration_ms,
-                error_message=error_msg[:500]
+                error_message=error_msg[:500],
+                source=self._detect_request_source(endpoint),
+                url_path=endpoint
             )
         if last_error:
             raise last_error

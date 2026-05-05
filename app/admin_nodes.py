@@ -15,7 +15,9 @@ from app.models import (
     ModelDistributionRow,
     NodeSyncResponse,
     PullModelRequest,
-    PullModelResponse
+    PullModelResponse,
+    NodePriorityBatchRequest,
+    NodePriorityBatchResponse
 )
 from app.models_db import OllamaNode, AuditLog
 from app.repositories.node_repository import (
@@ -66,6 +68,7 @@ async def create_node(
             weight=request.weight or 100,
             is_active=request.is_active if request.is_active is not None else True,
             node_type=request.node_type or 'ollama',
+            warmup_enabled=request.warmup_enabled if request.warmup_enabled is not None else True,
             health_check_url=request.health_check_url
         )
         
@@ -88,6 +91,7 @@ async def create_node(
             weight=node.weight,
             is_active=node.is_active,
             node_type=node.node_type,
+            warmup_enabled=node.warmup_enabled,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -197,6 +201,9 @@ async def update_node(
         if request.node_type is not None:
             update_data["node_type"] = request.node_type
 
+        if request.warmup_enabled is not None:
+            update_data["warmup_enabled"] = request.warmup_enabled
+
         if request.health_check_url is not None:
             update_data["health_check_url"] = request.health_check_url
         
@@ -224,6 +231,7 @@ async def update_node(
             weight=node.weight,
             is_active=node.is_active,
             node_type=node.node_type,
+            warmup_enabled=node.warmup_enabled,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -480,3 +488,53 @@ async def get_node_metrics(
             }
         
         return metrics
+
+
+@router.patch("/batch/priority", response_model=NodePriorityBatchResponse)
+async def update_node_priorities(
+    request: NodePriorityBatchRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Batch update node priorities via drag-and-drop reordering.
+
+    Expects a list of {node_id, priority} objects.
+    Higher priority = preferred in fallback order.
+    """
+    async with async_session_maker() as session:
+        repo = NodeRepository(session)
+        updated_nodes = []
+
+        for item in request.priorities:
+            node = await repo.update(item.node_id, priority=item.priority)
+            if node:
+                updated_nodes.append(OllamaNodeResponse(
+                    id=node.id,
+                    name=node.name,
+                    base_url=node.base_url,
+                    api_key_set=bool(node.api_key),
+                    priority=node.priority,
+                    weight=node.weight,
+                    is_active=node.is_active,
+                    node_type=node.node_type,
+                    warmup_enabled=node.warmup_enabled,
+                    health_status=node.health_status,
+                    last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
+                    created_at=node.created_at.isoformat() if node.created_at else None,
+                    updated_at=node.updated_at.isoformat() if node.updated_at else None
+                ))
+
+        # Audit log
+        audit_repo = AuditLogRepository(session)
+        await audit_repo.create(
+            action="batch_update_priorities",
+            entity_type="node",
+            entity_id="batch",
+            details={"updated_count": len(updated_nodes)},
+            admin_ip=None
+        )
+
+        return NodePriorityBatchResponse(
+            updated=len(updated_nodes),
+            nodes=updated_nodes
+        )

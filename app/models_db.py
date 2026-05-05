@@ -79,6 +79,8 @@ class UserActivityLog(Base):
     completion_tokens = Column(Integer, default=0, nullable=False)
     total_tokens = Column(Integer, default=0, nullable=False)
     request_type = Column(String(50), nullable=False)  # generate, chat, embeddings, etc.
+    source = Column(String(100), nullable=True)  # Cursor, Claude, OpenClaw, Ollama Native, OpenAI-Compatible, Grafana
+    url_path = Column(String(500), nullable=True)  # Full request URL path
     status_code = Column(Integer, nullable=True)  # HTTP status: 200, 400, 429, 500
     duration_ms = Column(Integer, nullable=True)  # Request duration in milliseconds
     error_message = Column(Text, nullable=True)  # Error message for failed requests
@@ -232,6 +234,7 @@ class OllamaNode(Base):
     weight = Column(Integer, default=100)  # Load balancing weight
     is_active = Column(Boolean, default=True, nullable=False)
     node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama' or 'vllm'
+    warmup_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Enable model warmup for this node
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'

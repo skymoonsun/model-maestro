@@ -24,6 +24,7 @@ class NodeRepository:
         weight: int = 100,
         is_active: bool = True,
         node_type: str = 'ollama',
+        warmup_enabled: bool = True,
         health_check_url: Optional[str] = None
     ) -> OllamaNode:
         """Create a new Ollama node"""
@@ -35,6 +36,7 @@ class NodeRepository:
             weight=weight,
             is_active=is_active,
             node_type=node_type,
+            warmup_enabled=warmup_enabled,
             health_check_url=health_check_url,
             health_status='unknown'
         )
@@ -129,6 +131,7 @@ class NodeRepository:
                 "weight": node.weight,
                 "is_active": node.is_active,
                 "node_type": node.node_type,
+                "warmup_enabled": node.warmup_enabled,
                 "health_status": node.health_status,
                 "last_health_check": node.last_health_check.isoformat() if node.last_health_check else None,
                 "created_at": node.created_at.isoformat() if node.created_at else None,

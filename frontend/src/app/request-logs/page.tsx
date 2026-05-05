@@ -49,11 +49,12 @@ export default function RequestLogsPage() {
   const [username, setUsername] = useState('');
   const [modelFilter, setModelFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
   const { data, isLoading } = useQuery({
-    queryKey: ['request-logs', offset, username, modelFilter, statusFilter, dateFrom, dateTo],
+    queryKey: ['request-logs', offset, username, modelFilter, statusFilter, sourceFilter, dateFrom, dateTo],
     queryFn: () => dashboardApi.getRequestLog({
       limit: PAGE_SIZE,
       offset,
@@ -61,6 +62,7 @@ export default function RequestLogsPage() {
       model_name: modelFilter || undefined,
       status_category: statusFilter === 'all' ? undefined : statusFilter === 'success' ? 'success' : statusFilter === 'error' ? 'error' : undefined,
       status_code: (statusFilter !== 'all' && statusFilter !== 'success' && statusFilter !== 'error') ? Number(statusFilter) : undefined,
+      source: sourceFilter === 'all' ? undefined : sourceFilter,
       start_date: dateFrom || undefined,
       end_date: dateTo || undefined,
     }),
@@ -117,6 +119,17 @@ export default function RequestLogsPage() {
               <option value="500">500</option>
               <option value="503">503</option>
             </select>
+            <select
+              value={sourceFilter}
+              onChange={(e) => { setSourceFilter(e.target.value); setOffset(0); }}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="all">All Sources</option>
+              <option value="Ollama Native">Ollama Native</option>
+              <option value="OpenAI-Compatible">OpenAI-Compatible</option>
+              <option value="OpenClaw">OpenClaw</option>
+              <option value="Grafana">Grafana</option>
+            </select>
             <Input
               type="date"
               placeholder="From"
@@ -138,6 +151,7 @@ export default function RequestLogsPage() {
                 setUsername('');
                 setModelFilter('');
                 setStatusFilter('all');
+                setSourceFilter('all');
                 setDateFrom('');
                 setDateTo('');
                 setOffset(0);
@@ -165,6 +179,8 @@ export default function RequestLogsPage() {
                   <TableHead>User</TableHead>
                   <TableHead>Model</TableHead>
                   <TableHead>Type</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>URL Path</TableHead>
                   <TableHead className="text-right">Prompt</TableHead>
                   <TableHead className="text-right">Completion</TableHead>
                   <TableHead className="text-right">Total</TableHead>
@@ -181,6 +197,8 @@ export default function RequestLogsPage() {
                     <TableCell className="font-mono text-xs">{log.username || '-'}</TableCell>
                     <TableCell className="font-mono text-xs">{log.model_name}</TableCell>
                     <TableCell className="text-xs">{log.request_type}</TableCell>
+                    <TableCell className="text-xs">{log.source || '-'}</TableCell>
+                    <TableCell className="text-xs font-mono" title={log.url_path || undefined}>{log.url_path || '-'}</TableCell>
                     <TableCell className="text-right text-xs">{formatNumber(log.prompt_tokens ?? 0)}</TableCell>
                     <TableCell className="text-right text-xs">{formatNumber(log.completion_tokens ?? 0)}</TableCell>
                     <TableCell className="text-right text-xs font-medium">{formatNumber(log.total_tokens ?? 0)}</TableCell>
@@ -190,7 +208,7 @@ export default function RequestLogsPage() {
                 ))}
                 {(!data || data.logs.length === 0) && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
+                    <TableCell colSpan={11} className="text-center text-muted-foreground py-12">
                       No request logs found
                     </TableCell>
                   </TableRow>

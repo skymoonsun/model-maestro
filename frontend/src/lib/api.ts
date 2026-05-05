@@ -129,7 +129,8 @@ export const dashboardApi = {
   getRequestLog: (params?: {
     limit?: number; offset?: number; username?: string;
     model_name?: string; status_code?: number; status_category?: string;
-    request_type?: string; start_date?: string; end_date?: string;
+    request_type?: string; source?: string; url_path?: string;
+    start_date?: string; end_date?: string;
   }) => {
     const query = new URLSearchParams();
     if (params?.limit) query.set('limit', String(params.limit));
@@ -139,6 +140,8 @@ export const dashboardApi = {
     if (params?.status_code !== undefined) query.set('status_code', String(params.status_code));
     if (params?.status_category) query.set('status_category', params.status_category);
     if (params?.request_type) query.set('request_type', params.request_type);
+    if (params?.source) query.set('source', params.source);
+    if (params?.url_path) query.set('url_path', params.url_path);
     if (params?.start_date) query.set('start_date', params.start_date);
     if (params?.end_date) query.set('end_date', params.end_date);
     return adminFetch<RequestLogResponse>(`/admin/dashboard/requests-log?${query.toString()}`);
@@ -317,6 +320,11 @@ export const nodesApi = {
     streamFetch('/admin/nodes/pull-model-all', { name, stream: true }, onProgress),
   getMetrics: (nodeId: number) =>
     adminFetch<NodeMetrics>(`/admin/nodes/${nodeId}/metrics`),
+  updatePriorities: (priorities: { node_id: number; priority: number }[]) =>
+    adminFetch<{ updated: number; nodes: OllamaNodeResponse[] }>('/admin/nodes/batch/priority', {
+      method: 'PATCH',
+      body: JSON.stringify({ priorities }),
+    }),
 };
 
 // ==================== Model Groups ====================
@@ -492,6 +500,8 @@ export interface RequestLogItem {
   username: string | null;
   model_name: string;
   request_type: string;
+  source: string | null;
+  url_path: string | null;
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
@@ -644,6 +654,7 @@ export interface OllamaNodeResponse {
   weight: number;
   is_active: boolean;
   node_type: string;
+  warmup_enabled: boolean;
   health_status: string;
   last_health_check: string | null;
   created_at: string | null;
@@ -672,6 +683,7 @@ export interface CreateNode {
   weight?: number;
   is_active?: boolean;
   node_type?: string;
+  warmup_enabled?: boolean;
   health_check_url?: string | null;
 }
 

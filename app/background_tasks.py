@@ -35,7 +35,9 @@ async def queue_activity_log_async(
     total_tokens: int = 0,
     status_code: Optional[int] = None,
     duration_ms: Optional[int] = None,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
+    source: Optional[str] = None,
+    url_path: Optional[str] = None
 ):
     """
     Add activity log to Redis queue for background processing
@@ -50,6 +52,8 @@ async def queue_activity_log_async(
         status_code: HTTP status code of the response
         duration_ms: Request duration in milliseconds
         error_message: Error message for failed requests
+        source: Request source/client identifier (Cursor, Claude, etc.)
+        url_path: Full request URL path
     """
     try:
         if not redis_manager._connected or not redis_manager.redis_client:
@@ -67,6 +71,8 @@ async def queue_activity_log_async(
             "status_code": status_code,
             "duration_ms": duration_ms,
             "error_message": error_message,
+            "source": source,
+            "url_path": url_path,
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -176,6 +182,8 @@ async def process_batch(batch: List[Dict[str, Any]]):
                     "user_id": user_id,
                     "model_name": log['model_name'],
                     "request_type": log['request_type'],
+                    "source": log.get('source'),
+                    "url_path": log.get('url_path'),
                     "prompt_tokens": log.get('prompt_tokens', 0) or 0,
                     "completion_tokens": log.get('completion_tokens', 0) or 0,
                     "total_tokens": log.get('total_tokens', 0) or 0,
@@ -446,6 +454,9 @@ async def model_warmup_task():
                     logger.debug("[WARMUP] No active nodes, skipping")
 
                 for node in nodes:
+                    if not node.warmup_enabled:
+                        continue
+
                     if node.health_status not in ("healthy", "unknown"):
                         continue
 

@@ -87,6 +87,8 @@ async def get_requests_log(
     status_code: Optional[int] = Query(None),
     status_category: Optional[str] = Query(None),
     request_type: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    url_path: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     admin: str = Depends(verify_admin)
@@ -102,6 +104,8 @@ async def get_requests_log(
     - status_code: Filter by exact HTTP status code
     - status_category: Filter by status category ("success" for 2xx, "error" for 4xx/5xx/null)
     - request_type: Filter by request type (chat, generate, embeddings, etc.)
+    - source: Filter by request source (Cursor, Claude, OpenClaw, Ollama Native, OpenAI-Compatible, Grafana)
+    - url_path: Filter by URL path (partial match)
     - start_date: Start date in ISO format (e.g., "2024-01-01")
     - end_date: End date in ISO format (e.g., "2024-01-31")
     """
@@ -121,6 +125,8 @@ async def get_requests_log(
         status_code=status_code,
         status_category=status_category,
         request_type=request_type,
+        source=source,
+        url_path=url_path,
         start_date=start_dt,
         end_date=end_dt
     )
