@@ -54,11 +54,18 @@ class NodeManager:
         self,
         base_url: str,
         api_key: Optional[str] = None,
-        timeout: float = 5.0
+        timeout: float = 5.0,
+        node_type: str = 'ollama'
     ) -> Tuple[bool, Optional[str]]:
         """
         Check if a node is healthy.
-        
+
+        Args:
+            base_url: Node base URL
+            api_key: Optional API key
+            timeout: Request timeout
+            node_type: 'ollama' or 'vllm'
+
         Returns:
             Tuple of (is_healthy, error_message)
         """
@@ -67,18 +74,24 @@ class NodeManager:
             headers = {}
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            
+
+            # Use different health check endpoint based on node type
+            if node_type == 'vllm':
+                health_url = f"{base_url.rstrip('/')}/v1/models"
+            else:
+                health_url = f"{base_url.rstrip('/')}/api/tags"
+
             response = await client.get(
-                f"{base_url.rstrip('/')}/api/tags",
+                health_url,
                 headers=headers,
                 timeout=timeout
             )
-            
+
             if response.status_code == 200:
                 return True, None
             else:
                 return False, f"HTTP {response.status_code}"
-                
+
         except httpx.TimeoutException:
             return False, "Request timeout"
         except httpx.ConnectError as e:
@@ -86,16 +99,23 @@ class NodeManager:
         except Exception as e:
             logger.error(f"Health check error for {base_url}: {e}")
             return False, str(e)
-    
+
     async def discover_models_from_node(
         self,
         base_url: str,
         api_key: Optional[str] = None,
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        node_type: str = 'ollama'
     ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
         """
-        Discover models from a node by calling /api/tags.
-        
+        Discover models from a node.
+
+        Args:
+            base_url: Node base URL
+            api_key: Optional API key
+            timeout: Request timeout
+            node_type: 'ollama' or 'vllm'
+
         Returns:
             Tuple of (success, models_list, error_message)
         """
@@ -104,36 +124,59 @@ class NodeManager:
             headers = {}
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            
+
+            # Use different discovery endpoint based on node type
+            if node_type == 'vllm':
+                discovery_url = f"{base_url.rstrip('/')}/v1/models"
+            else:
+                discovery_url = f"{base_url.rstrip('/')}/api/tags"
+
             response = await client.get(
-                f"{base_url.rstrip('/')}/api/tags",
+                discovery_url,
                 headers=headers,
                 timeout=timeout
             )
-            
+
             if response.status_code != 200:
                 return False, [], f"HTTP {response.status_code}"
-            
+
             data = response.json()
-            models = data.get("models", [])
-            
             result_models = []
-            for model in models:
-                result_models.append({
-                    "name": model.get("name"),
-                    "size": model.get("size"),
-                    "digest": model.get("digest"),
-                    "modified_at": model.get("modified_at"),
-                    "details": model.get("details", {}),
-                    "family": model.get("details", {}).get("family") if isinstance(model.get("details"), dict) else None
-                })
-            
+
+            if node_type == 'vllm':
+                # vLLM returns {"object": "list", "data": [{"id": "model-name", ...}]}
+                models = data.get("data", [])
+                for model in models:
+                    result_models.append({
+                        "name": model.get("id"),
+                        "size": None,
+                        "digest": None,
+                        "modified_at": None,
+                        "details": {"max_model_len": model.get("max_model_len")},
+                        "family": None
+                    })
+            else:
+                # Ollama returns {"models": [{"name": "...", ...}]}
+                models = data.get("models", [])
+                for model in models:
+                    result_models.append({
+                        "name": model.get("name"),
+                        "size": model.get("size"),
+                        "digest": model.get("digest"),
+                        "modified_at": model.get("modified_at"),
+                        "details": model.get("details", {}),
+                        "family": model.get("details", {}).get("family") if isinstance(model.get("details"), dict) else None
+                    })
+
             return True, result_models, None
-            
+
         except httpx.TimeoutException:
             return False, [], "Request timeout"
         except httpx.ConnectError as e:
             return False, [], f"Connection error: {str(e)}"
+        except Exception as e:
+            logger.error(f"Discovery error for {base_url}: {e}")
+            return False, [], str(e)
         except Exception as e:
             logger.error(f"Model discovery error for {base_url}: {e}")
             return False, [], str(e)
@@ -163,7 +206,8 @@ class NodeManager:
         # Discover models
         success, models, error = await self.discover_models_from_node(
             node.base_url,
-            node.api_key
+            node.api_key,
+            node_type=getattr(node, 'node_type', 'ollama')
         )
         
         if not success:

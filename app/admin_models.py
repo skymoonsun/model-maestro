@@ -1,8 +1,9 @@
 """
-Admin Model Management - Ollama entegrasyonu + capabilities yönetimi.
+Admin Model Management - Ollama + vLLM entegrasyonu + capabilities yönetimi.
 
 Endpoints:
     GET  /admin/models/ollama          → Ollama'daki tüm modelleri listele
+    GET  /admin/models/vllm            → vLLM node'larındaki modelleri listele
     POST /admin/models/show            → Tek model detayı (Ollama /api/show)
     POST /admin/models/pull            → Model pull (streaming progress)
     DELETE /admin/models/ollama/{name} → Ollama'dan model sil
@@ -22,6 +23,7 @@ from app.config import get_settings, model_mapper, format_context_length
 from app.models import (
     ModelPullRequest,
     OllamaModelListItem,
+    VllmModelListItem,
     ModelShowResponse,
     ModelMappingResponse,
     SyncCapabilitiesResponse,
@@ -124,6 +126,72 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
         ))
     
     return result
+
+
+# =============================================================================
+# vLLM Model Listesi
+# =============================================================================
+
+@router.get("/vllm", response_model=List[VllmModelListItem])
+async def list_vllm_models(admin: str = Depends(verify_admin)):
+    """
+    Tüm vLLM node'larındaki modelleri listele.
+
+    node_models tablosundan vLLM node_type'a sahip node'ların modellerini döner.
+    """
+    from app.database import async_session_maker
+    from app.repositories.node_repository import NodeModelRepository
+    from sqlalchemy import select, and_
+    from app.models_db import OllamaNode, NodeModel
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(NodeModel, OllamaNode)
+            .join(OllamaNode, NodeModel.node_id == OllamaNode.id)
+            .where(
+                and_(
+                    OllamaNode.node_type == 'vllm',
+                    NodeModel.is_available == True,
+                    OllamaNode.is_active == True,
+                )
+            )
+            .order_by(NodeModel.model_name, OllamaNode.priority.desc())
+        )
+
+        await model_mapper.ensure_loaded()
+
+        items = []
+        for model, node in result.all():
+            model_name = model.model_name
+
+            # Check mapping
+            options = [model_name]
+            if ":" not in model_name:
+                options.append(f"{model_name}:latest")
+            elif model_name.endswith(":latest"):
+                options.append(model_name.replace(":latest", ""))
+
+            mapped_display = None
+            for opt in options:
+                disp_names = model_mapper.get_all_display_names_for_real_name(opt)
+                if disp_names and disp_names != [opt]:
+                    mapped_display = disp_names[0]
+                    break
+
+            items.append(VllmModelListItem(
+                name=model_name,
+                node_name=node.name,
+                node_id=node.id,
+                base_url=node.base_url,
+                model_size=model.model_size,
+                model_family=model.model_family,
+                digest=model.digest,
+                modified_at=model.modified_at.isoformat() if model.modified_at else None,
+                is_mapped=mapped_display is not None,
+                display_name=mapped_display,
+            ))
+
+        return items
 
 
 # =============================================================================

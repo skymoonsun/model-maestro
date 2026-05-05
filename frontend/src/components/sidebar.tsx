@@ -18,6 +18,7 @@ import {
     Network,
     Group,
     FileText,
+    Cpu,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -39,22 +40,37 @@ const navigation: NavItem[] = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
     { label: 'Users', href: '/users', icon: Users },
     {
-        label: 'Ollama',
-        href: '/ollama',
+        label: 'Nodes',
+        href: '/nodes',
         icon: Server,
         children: [
-            { label: 'Nodes', href: '/nodes', icon: Network },
-            { label: 'Models', href: '/models/ollama', icon: Bot },
+            { label: 'All Nodes', href: '/nodes', icon: Network },
+        ],
+    },
+    {
+        label: 'Ollama',
+        href: '/ollama',
+        icon: Bot,
+        children: [
+            { label: 'Models', href: '/models/ollama', icon: Layers },
+        ],
+    },
+    {
+        label: 'vLLM',
+        href: '/vllm',
+        icon: Cpu,
+        children: [
+            { label: 'Models', href: '/models/vllm', icon: Layers },
         ],
     },
     {
         label: 'Models',
         href: '/models',
-        icon: Layers,
+        icon: SlidersHorizontal,
         children: [
             { label: 'Mappings', href: '/models/mappings', icon: Layers },
             { label: 'Groups', href: '/models/groups', icon: Group },
-            { label: 'Config', href: '/models/config', icon: SlidersHorizontal },
+            { label: 'Config', href: '/models/config', icon: Settings },
         ],
     },
     {
@@ -63,7 +79,6 @@ const navigation: NavItem[] = [
         icon: LayoutDashboard,
     },
     { label: 'Tool Sets', href: '/tool-sets', icon: Wrench },
-    { label: 'Settings', href: '/settings', icon: Settings },
     { label: 'Request Logs', href: '/request-logs', icon: FileText },
     { label: 'Audit Logs', href: '/audit-logs', icon: ClipboardList },
 ];

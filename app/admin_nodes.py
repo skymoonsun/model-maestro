@@ -65,6 +65,7 @@ async def create_node(
             priority=request.priority or 0,
             weight=request.weight or 100,
             is_active=request.is_active if request.is_active is not None else True,
+            node_type=request.node_type or 'ollama',
             health_check_url=request.health_check_url
         )
         
@@ -86,6 +87,7 @@ async def create_node(
             priority=node.priority,
             weight=node.weight,
             is_active=node.is_active,
+            node_type=node.node_type,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -191,7 +193,10 @@ async def update_node(
         
         if request.is_active is not None:
             update_data["is_active"] = request.is_active
-        
+
+        if request.node_type is not None:
+            update_data["node_type"] = request.node_type
+
         if request.health_check_url is not None:
             update_data["health_check_url"] = request.health_check_url
         
@@ -218,6 +223,7 @@ async def update_node(
             priority=node.priority,
             weight=node.weight,
             is_active=node.is_active,
+            node_type=node.node_type,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -281,7 +287,8 @@ async def check_node_health(
         # Perform health check
         is_healthy, error = await node_manager.health_check_node(
             node.base_url,
-            node.api_key
+            node.api_key,
+            node_type=getattr(node, 'node_type', 'ollama')
         )
         
         # Update node status

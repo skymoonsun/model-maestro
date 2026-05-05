@@ -222,10 +222,11 @@ class OllamaNode(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False, index=True)  # "main-server", "backup-1"
     base_url = Column(String(500), nullable=False)  # "http://194.87.188.8:11434"
-    api_key = Column(String(500), nullable=True)  # Optional auth header
+    api_key = Column(String(2000), nullable=True)  # Optional auth header (JWT tokens can be very long)
     priority = Column(Integer, default=0)  # Higher = preferred (fallback order)
     weight = Column(Integer, default=100)  # Load balancing weight
     is_active = Column(Boolean, default=True, nullable=False)
+    node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama' or 'vllm'
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'

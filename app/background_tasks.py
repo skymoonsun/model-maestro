@@ -295,7 +295,8 @@ async def node_health_check_task():
                     is_healthy, error = await node_manager.health_check_node(
                         node.base_url,
                         node.api_key,
-                        timeout=3.0
+                        timeout=3.0,
+                        node_type=getattr(node, 'node_type', 'ollama')
                     )
                     return node, is_healthy, error
 

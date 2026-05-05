@@ -60,6 +60,25 @@ class OllamaEmbedRequest(BaseModel):
     keep_alive: Optional[str] = None
 
 
+class CompletionRequest(BaseModel):
+    """OpenAI-compatible /v1/completions request"""
+    model: str
+    prompt: str | List[str]
+    suffix: Optional[str] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    n: Optional[int] = 1
+    stream: Optional[bool] = False
+    logprobs: Optional[int] = None
+    echo: Optional[bool] = False
+    stop: Optional[str | List[str]] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    best_of: Optional[int] = None
+    user: Optional[str] = None
+
+
 class OpenAIEmbeddingRequest(BaseModel):
     """OpenAI-compatible /v1/embeddings request"""
     input: str | List[str]
@@ -384,6 +403,20 @@ class OllamaModelListItem(BaseModel):
     # Which nodes have this model
     nodes: Optional[List[str]] = None
 
+class VllmModelListItem(BaseModel):
+    """A model from a vLLM node"""
+    name: str
+    node_name: str
+    node_id: int
+    base_url: str
+    model_size: Optional[int] = None
+    model_family: Optional[str] = None
+    digest: Optional[str] = None
+    modified_at: Optional[str] = None
+    is_mapped: bool = False
+    display_name: Optional[str] = None
+
+
 class ModelShowResponse(BaseModel):
     """Detailed model info from Ollama /api/show"""
     name: str
@@ -412,6 +445,7 @@ class OllamaNodeCreate(BaseModel):
     priority: Optional[int] = 0
     weight: Optional[int] = 100
     is_active: Optional[bool] = True
+    node_type: Optional[str] = "ollama"
     health_check_url: Optional[str] = None
 
 
@@ -423,6 +457,7 @@ class OllamaNodeUpdate(BaseModel):
     priority: Optional[int] = None
     weight: Optional[int] = None
     is_active: Optional[bool] = None
+    node_type: Optional[str] = None
     health_check_url: Optional[str] = None
 
 
@@ -435,6 +470,7 @@ class OllamaNodeResponse(BaseModel):
     priority: int = 0
     weight: int = 100
     is_active: bool = True
+    node_type: str = "ollama"
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -458,6 +494,7 @@ class OllamaNodeDetailResponse(BaseModel):
     priority: int = 0
     weight: int = 100
     is_active: bool = True
+    node_type: str = "ollama"
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -534,6 +571,7 @@ class OllamaNodeCreate(BaseModel):
     priority: int = 0
     weight: int = 100
     is_active: bool = True
+    node_type: Optional[str] = "ollama"
     health_check_url: Optional[str] = None
 
 class OllamaNodeUpdate(BaseModel):
@@ -544,6 +582,7 @@ class OllamaNodeUpdate(BaseModel):
     priority: Optional[int] = None
     weight: Optional[int] = None
     is_active: Optional[bool] = None
+    node_type: Optional[str] = None
     health_check_url: Optional[str] = None
 
 class OllamaNodeResponse(BaseModel):
@@ -555,6 +594,7 @@ class OllamaNodeResponse(BaseModel):
     priority: int
     weight: int
     is_active: bool
+    node_type: str = "ollama"
     health_check_url: Optional[str] = None
     last_health_check: Optional[str] = None
     health_status: str

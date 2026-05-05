@@ -220,6 +220,11 @@ export const ollamaModelsApi = {
     }),
 };
 
+// ==================== vLLM Models ====================
+export const vllmModelsApi = {
+  list: () => adminFetch<VllmModel[]>('/admin/models/vllm'),
+};
+
 // ==================== Model Config ====================
 export const modelConfigApi = {
   list: () => adminFetch<ModelConfig[]>('/admin/model-config'),
@@ -532,6 +537,19 @@ export interface OllamaModel {
   nodes?: string[] | null;
 }
 
+export interface VllmModel {
+  name: string;
+  node_name: string;
+  node_id: number;
+  base_url: string;
+  model_size: number | null;
+  model_family: string | null;
+  digest: string | null;
+  modified_at: string | null;
+  is_mapped: boolean;
+  display_name: string | null;
+}
+
 export interface SyncResult {
   synced: number;
   failed: number;
@@ -618,6 +636,7 @@ export interface OllamaNodeResponse {
   priority: number;
   weight: number;
   is_active: boolean;
+  node_type: string;
   health_status: string;
   last_health_check: string | null;
   created_at: string | null;
@@ -645,6 +664,7 @@ export interface CreateNode {
   priority?: number;
   weight?: number;
   is_active?: boolean;
+  node_type?: string;
   health_check_url?: string | null;
 }
 

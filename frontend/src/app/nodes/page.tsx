@@ -29,6 +29,13 @@ import {
 import { toast } from 'sonner';
 import { useState, useEffect } from 'react';
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import {
     Plus,
     RefreshCw,
     Heart,
@@ -93,9 +100,11 @@ function NodeCard({
     const [form, setForm] = useState({
         name: node.name,
         base_url: node.base_url,
+        api_key: undefined as string | undefined,
         priority: node.priority,
         weight: node.weight,
         is_active: node.is_active,
+        node_type: node.node_type,
     });
 
     const updateMut = useMutation({
@@ -122,12 +131,14 @@ function NodeCard({
             setForm({
                 name: node.name,
                 base_url: node.base_url,
+                api_key: undefined,
                 priority: node.priority,
                 weight: node.weight,
                 is_active: node.is_active,
+                node_type: node.node_type,
             });
         }
-    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active]);
+    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active, node.node_type]);
 
     return (
         <Card className="overflow-hidden">
@@ -136,6 +147,9 @@ function NodeCard({
                     <div className="flex items-center gap-2">
                         <Server className="h-5 w-5 text-muted-foreground" />
                         <CardTitle className="text-base">{node.name}</CardTitle>
+                        <Badge variant="outline" className="text-xs capitalize">
+                            {node.node_type}
+                        </Badge>
                         {!node.is_active && (
                             <Badge variant="outline" className="text-muted-foreground">
                                 Inactive
@@ -212,6 +226,30 @@ function NodeCard({
                                         value={form.base_url}
                                         onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
                                     />
+                                </div>
+                                <div>
+                                    <Label>API Key (optional)</Label>
+                                    <Input
+                                        type="password"
+                                        placeholder="Bearer token for this endpoint"
+                                        value={form.api_key || ''}
+                                        onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
+                                    />
+                                </div>
+                                <div>
+                                    <Label>Node Type</Label>
+                                    <Select
+                                        value={form.node_type || 'ollama'}
+                                        onValueChange={(v) => setForm((f) => ({ ...f, node_type: v }))}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="ollama">Ollama</SelectItem>
+                                            <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
+                                        </SelectContent>
+                                    </Select>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
@@ -295,6 +333,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         priority: 0,
         weight: 100,
         is_active: true,
+        node_type: 'ollama',
     });
     const qc = useQueryClient();
     const mut = useMutation({
@@ -302,7 +341,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama' });
             toast.success('Node created');
             onSuccess();
         },
@@ -319,13 +358,13 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
             </DialogTrigger>
             <DialogContent>
                 <DialogHeader>
-                    <DialogTitle>Add Ollama Node</DialogTitle>
+                    <DialogTitle>Add Node</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
                     <div>
                         <Label>Name</Label>
                         <Input
-                            placeholder="main-server"
+                            placeholder={form.node_type === 'vllm' ? 'vllm-endpoint' : 'main-server'}
                             value={form.name}
                             onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                         />
@@ -333,9 +372,18 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                     <div>
                         <Label>Base URL</Label>
                         <Input
-                            placeholder="http://192.168.1.10:11434"
+                            placeholder={form.node_type === 'vllm' ? 'https://api.example.com/llm/model' : 'http://192.168.1.10:11434'}
                             value={form.base_url}
                             onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
+                        />
+                    </div>
+                    <div>
+                        <Label>API Key (optional)</Label>
+                        <Input
+                            type="password"
+                            placeholder="Bearer token for this endpoint"
+                            value={form.api_key || ''}
+                            onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
                         />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
@@ -359,6 +407,19 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                                 }
                             />
                         </div>
+                    </div>
+                    <div>
+                        <Label>Node Type</Label>
+                        <Select
+                            value={form.node_type || 'ollama'}
+                            onValueChange={(v) => setForm((f) => ({ ...f, node_type: v }))}
+                        >
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="ollama">Ollama</SelectItem>
+                                <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
+                            </SelectContent>
+                        </Select>
                     </div>
                     <div className="flex items-center gap-2">
                         <Switch
@@ -499,7 +560,7 @@ export default function NodesPage() {
                                 <Server className="h-12 w-12 text-muted-foreground mb-4" />
                                 <p className="text-muted-foreground mb-2">No nodes configured</p>
                                 <p className="text-sm text-muted-foreground mb-4">
-                                    Add your first Ollama node to enable load balancing
+                                    Add your first node (Ollama or vLLM) to enable load balancing
                                 </p>
                                 <AddNodeDialog onSuccess={() => {}} />
                             </CardContent>
