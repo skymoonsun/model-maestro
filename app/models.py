@@ -453,6 +453,7 @@ class OllamaNodeCreate(BaseModel):
     node_type: Optional[str] = "ollama"
     warmup_enabled: Optional[bool] = True
     health_check_url: Optional[str] = None
+    code: Optional[str] = None
 
 
 class OllamaNodeUpdate(BaseModel):
@@ -466,6 +467,7 @@ class OllamaNodeUpdate(BaseModel):
     node_type: Optional[str] = None
     warmup_enabled: Optional[bool] = None
     health_check_url: Optional[str] = None
+    code: Optional[str] = None
 
 
 class OllamaNodeResponse(BaseModel):
@@ -479,6 +481,7 @@ class OllamaNodeResponse(BaseModel):
     is_active: bool = True
     node_type: str = "ollama"
     warmup_enabled: bool = True
+    code: Optional[str] = None
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -504,6 +507,7 @@ class OllamaNodeDetailResponse(BaseModel):
     is_active: bool = True
     node_type: str = "ollama"
     warmup_enabled: bool = True
+    code: Optional[str] = None
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
@@ -569,58 +573,6 @@ class LoadBalancerStatusResponse(BaseModel):
 # =============================================================================
 # LOAD BALANCING - OLLAMA NODES
 # =============================================================================
-
-# --- Ollama Node Management ---
-
-class OllamaNodeCreate(BaseModel):
-    """Create a new Ollama node"""
-    name: str
-    base_url: str
-    api_key: Optional[str] = None
-    priority: int = 0
-    weight: int = 100
-    is_active: bool = True
-    node_type: Optional[str] = "ollama"
-    warmup_enabled: Optional[bool] = True
-    health_check_url: Optional[str] = None
-
-class OllamaNodeUpdate(BaseModel):
-    """Update an Ollama node"""
-    name: Optional[str] = None
-    base_url: Optional[str] = None
-    api_key: Optional[str] = None
-    priority: Optional[int] = None
-    weight: Optional[int] = None
-    is_active: Optional[bool] = None
-    node_type: Optional[str] = None
-    warmup_enabled: Optional[bool] = None
-    health_check_url: Optional[str] = None
-
-class OllamaNodeResponse(BaseModel):
-    """Ollama node response"""
-    id: int
-    name: str
-    base_url: str
-    api_key: Optional[str] = None
-    priority: int
-    weight: int
-    is_active: bool
-    node_type: str = "ollama"
-    warmup_enabled: bool = True
-    health_check_url: Optional[str] = None
-    last_health_check: Optional[str] = None
-    health_status: str
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    # Computed fields
-    model_count: int = 0
-    active_requests: int = 0
-    avg_response_time_ms: Optional[int] = None
-
-class OllamaNodeListResponse(BaseModel):
-    """List of Ollama nodes with models"""
-    nodes: List[OllamaNodeResponse]
-    total: int
 
 class NodePriorityItem(BaseModel):
     """Single node priority update"""

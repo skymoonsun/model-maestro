@@ -685,6 +685,7 @@ export interface CreateNode {
   node_type?: string;
   warmup_enabled?: boolean;
   health_check_url?: string | null;
+  code?: string | null;
 }
 
 export interface HealthCheckResult {

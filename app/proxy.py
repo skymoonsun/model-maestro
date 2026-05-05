@@ -1721,6 +1721,20 @@ class OllamaProxy:
             return 'OpenAI-Compatible'
         return 'Unknown'
 
+    def _parse_node_prefix(self, model_name: str):
+        """Parse node-scoped model name prefix.
+
+        Format: node:{code}:{actual_model_name}
+        Example: node:trmix:kimi-k2.6:latest -> ("trmix", "kimi-k2.6:latest")
+
+        Returns: (node_code, actual_model) or (None, model_name) if no prefix.
+        """
+        if isinstance(model_name, str) and model_name.startswith('node:'):
+            parts = model_name.split(':', 2)
+            if len(parts) >= 3:
+                return parts[1], parts[2]
+        return None, model_name
+
     async def _log_user_activity(
         self,
         username: str,
@@ -1834,6 +1848,37 @@ class OllamaProxy:
             model_name = data.get('model') or data.get('name')
             if model_name:
                 tried_models.add(model_name)
+
+        # Node-scoped routing via model name prefix (node:code:model)
+        if model_name and isinstance(model_name, str):
+            node_code, actual_model = self._parse_node_prefix(model_name)
+            if node_code:
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeRepository
+                    async with async_session_maker() as session:
+                        node_repo = NodeRepository(session)
+                        node = await node_repo.get_by_code(node_code)
+                        if not node:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=f"Node with code '{node_code}' not found"
+                            )
+                        # Inject preferred node and replace model name
+                        data['_preferred_node_id'] = node.id
+                        if 'model' in data:
+                            data['model'] = actual_model
+                        elif 'name' in data:
+                            data['name'] = actual_model
+                        model_name = actual_model
+                        tried_models.discard(f"node:{node_code}:{actual_model}")
+                        tried_models.add(actual_model)
+                        logger.info(f"[LB] Node-scoped routing: code='{node_code}' -> node='{node.name}', model='{actual_model}'")
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[LB] Error looking up node by code '{node_code}': {e}")
+                    raise HTTPException(status_code=500, detail=f"Error resolving node code '{node_code}'")
 
         # Check for preferred node from model group member resolution
         preferred_node_id = data.pop('_preferred_node_id', None) if isinstance(data, dict) else None

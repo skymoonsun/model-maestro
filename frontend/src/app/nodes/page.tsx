@@ -139,6 +139,7 @@ function NodeCard({
         is_active: node.is_active,
         node_type: node.node_type,
         warmup_enabled: node.warmup_enabled,
+        code: node.code,
     });
 
     const updateMut = useMutation({
@@ -171,9 +172,10 @@ function NodeCard({
                 is_active: node.is_active,
                 node_type: node.node_type,
                 warmup_enabled: node.warmup_enabled,
+                code: node.code,
             });
         }
-    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled]);
+    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code]);
 
     const isInactive = !node.is_active;
 
@@ -206,6 +208,11 @@ function NodeCard({
                         >
                             {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type}
                         </Badge>
+                        {node.code && (
+                            <Badge variant="outline" className="text-xs font-mono text-cyan-400 border-cyan-400/30 bg-cyan-400/10">
+                                {node.code}
+                            </Badge>
+                        )}
                         {!node.warmup_enabled && (
                             <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10">
                                 Warmup Off
@@ -296,6 +303,17 @@ function NodeCard({
                                         value={form.api_key || ''}
                                         onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
                                     />
+                                </div>
+                                <div>
+                                    <Label>Code</Label>
+                                    <Input
+                                        placeholder="code"
+                                        value={form.code || ''}
+                                        onChange={(e) => setForm((f) => ({ ...f, code: e.target.value || undefined }))}
+                                    />
+                                    <p className="text-xs text-muted-foreground mt-1">
+                                        1-30 chars, lowercase alphanumeric with hyphens/underscores
+                                    </p>
                                 </div>
                                 <div>
                                     <Label>Node Type</Label>
@@ -403,6 +421,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         is_active: true,
         node_type: 'ollama',
         warmup_enabled: true,
+        code: null,
     });
     const qc = useQueryClient();
     const mut = useMutation({
@@ -410,7 +429,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null });
             toast.success('Node created');
             onSuccess();
         },
@@ -454,6 +473,17 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             value={form.api_key || ''}
                             onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
                         />
+                    </div>
+                    <div>
+                        <Label>Code</Label>
+                        <Input
+                            placeholder="code"
+                            value={form.code || ''}
+                            onChange={(e) => setForm((f) => ({ ...f, code: e.target.value || undefined }))}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                            1-30 chars, lowercase alphanumeric with hyphens/underscores
+                        </p>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div>

@@ -235,6 +235,7 @@ class OllamaNode(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama' or 'vllm'
     warmup_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Enable model warmup for this node
+    code = Column(String(30), unique=True, nullable=True, index=True)  # Short routing code e.g. "trmix", "us-east-1"
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'

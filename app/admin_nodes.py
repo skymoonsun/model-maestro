@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import logging
+import re
 
 from app.database import async_session_maker
 from app.models import (
@@ -53,12 +54,20 @@ async def create_node(
     """
     async with async_session_maker() as session:
         repo = NodeRepository(session)
-        
+
         # Check if name already exists
         existing = await repo.get_by_name(request.name)
         if existing:
             raise HTTPException(status_code=400, detail=f"Node '{request.name}' already exists")
-        
+
+        # Validate code format
+        if request.code is not None:
+            if not re.match(r'^[a-z0-9_-]{1,30}$', request.code):
+                raise HTTPException(status_code=400, detail="Node code must be 1-30 chars, lowercase alphanumeric with hyphens/underscores only")
+            existing_code = await repo.get_by_code(request.code)
+            if existing_code:
+                raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
+
         # Create node
         node = await repo.create(
             name=request.name,
@@ -69,19 +78,20 @@ async def create_node(
             is_active=request.is_active if request.is_active is not None else True,
             node_type=request.node_type or 'ollama',
             warmup_enabled=request.warmup_enabled if request.warmup_enabled is not None else True,
-            health_check_url=request.health_check_url
+            health_check_url=request.health_check_url,
+            code=request.code
         )
-        
+
         # Audit log
         audit_repo = AuditLogRepository(session)
         await audit_repo.create(
             action="create_node",
             entity_type="node",
             entity_id=str(node.id),
-            details={"name": node.name, "base_url": node.base_url},
+            details={"name": node.name, "base_url": node.base_url, "code": node.code},
             admin_ip=None
         )
-        
+
         return OllamaNodeResponse(
             id=node.id,
             name=node.name,
@@ -92,6 +102,7 @@ async def create_node(
             is_active=node.is_active,
             node_type=node.node_type,
             warmup_enabled=node.warmup_enabled,
+            code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -143,6 +154,9 @@ async def get_node(
             priority=node.priority,
             weight=node.weight,
             is_active=node.is_active,
+            node_type=node.node_type,
+            warmup_enabled=node.warmup_enabled,
+            code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
@@ -206,7 +220,18 @@ async def update_node(
 
         if request.health_check_url is not None:
             update_data["health_check_url"] = request.health_check_url
-        
+
+        if request.code is not None:
+            if request.code == '':
+                update_data["code"] = None
+            elif not re.match(r'^[a-z0-9_-]{1,30}$', request.code):
+                raise HTTPException(status_code=400, detail="Node code must be 1-30 chars, lowercase alphanumeric with hyphens/underscores only")
+            else:
+                existing_code = await repo.get_by_code(request.code)
+                if existing_code and existing_code.id != node_id:
+                    raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
+                update_data["code"] = request.code
+
         node = await repo.update(node_id, **update_data)
         
         if not node:
@@ -232,6 +257,7 @@ async def update_node(
             is_active=node.is_active,
             node_type=node.node_type,
             warmup_enabled=node.warmup_enabled,
+            code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
