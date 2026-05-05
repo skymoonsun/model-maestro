@@ -1,6 +1,6 @@
 """Proxy logic and model routing for Model Maestro"""
 
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, AsyncGenerator
 import httpx
 
 # orjson is optional — provides ~8x faster JSON serialization.
@@ -2992,6 +2992,39 @@ class OllamaProxy:
             status_code=500,
             detail="All fallback attempts failed"
         )
+
+
+    async def get_node_url(self, model_name: str = "") -> str:
+        """Public helper: get the best node URL for a given model (using load balancer)."""
+        await self._ensure_mappings_loaded()
+        try:
+            return await self._select_node_url(model_name)
+        except Exception:
+            return self.base_url
+
+    async def stream_ollama(self, data: Dict[str, Any], model_name: str = "", username: Optional[str] = None) -> AsyncGenerator[bytes, None]:
+        """Public helper: return raw SSE bytes stream for a chat completion.
+        Caller must wrap in StreamingResponse."""
+        from fastapi.responses import StreamingResponse  # type: ignore
+        # Delegate to proxy_request for full failover and logging logic,
+        # but unwrap the StreamingResponse by consuming its internal iterator.
+        resp = await self.proxy_request(
+            method="POST",
+            endpoint="/v1/chat/completions",
+            data=data,
+            stream=True,
+            username=username,
+        )
+        # FastAPI StreamingResponse stores body_iterator internally
+        # (it may be a starlette Response or our own StreamingResponse)
+        if hasattr(resp, "body_iterator"):
+            async for chunk in resp.body_iterator:  # type: ignore
+                yield chunk  # type: ignore
+        elif hasattr(resp, "__aiter__"):
+            async for chunk in resp:
+                yield chunk
+        else:
+            raise RuntimeError("Unexpected response type from proxy_request")
 
 
 # Global proxy instance

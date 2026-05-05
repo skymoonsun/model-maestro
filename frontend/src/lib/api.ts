@@ -250,6 +250,23 @@ export const systemConfigApi = {
     adminFetch<void>('/admin/config', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
+// ==================== Grafana Config ====================
+export interface GrafanaConfigResponse {
+  model: string;
+  available_models: string[];
+}
+
+export interface GrafanaConfigUpdate {
+  model: string;
+  api_base_url?: string;
+}
+
+export const grafanaConfigApi = {
+  get: () => adminFetch<GrafanaConfigResponse>('/admin/grafana/config'),
+  update: (data: GrafanaConfigUpdate) =>
+    adminFetch<void>('/admin/grafana/config', { method: 'PUT', body: JSON.stringify(data) }),
+};
+
 // ==================== Nodes (Load Balancing) ====================
 export const nodesApi = {
   list: (activeOnly?: boolean) =>

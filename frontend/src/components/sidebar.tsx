@@ -57,6 +57,11 @@ const navigation: NavItem[] = [
             { label: 'Config', href: '/models/config', icon: SlidersHorizontal },
         ],
     },
+    {
+        label: 'Grafana Config',
+        href: '/grafana-config',
+        icon: LayoutDashboard,
+    },
     { label: 'Tool Sets', href: '/tool-sets', icon: Wrench },
     { label: 'Settings', href: '/settings', icon: Settings },
     { label: 'Request Logs', href: '/request-logs', icon: FileText },

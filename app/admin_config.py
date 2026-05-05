@@ -494,3 +494,71 @@ async def get_audit_logs(
             "limit": limit,
             "offset": offset,
         }
+
+
+# =============================================================================
+# Grafana Assistant Configuration Endpoints
+# =============================================================================
+
+@router.get("/grafana/config", tags=["Admin - Grafana Config"])
+async def get_grafana_config(admin: str = Depends(verify_admin)):
+    """
+    Get Grafana Assistant LLM configuration.
+    Returns the configured model name and available mapped models (display names).
+    """
+    from app.models_db import SystemConfig
+
+    async with async_session_maker() as session:
+        cfg = await session.get(SystemConfig, "grafana_llm_model")
+        current = cfg.value.strip() if cfg and cfg.value else ""
+
+    available: list[str] = []
+    try:
+        from app.config import model_mapper
+        # Force-load mappings from DB/cache file
+        model_mapper.reload()
+        available = list(model_mapper.get_all_mappings().keys())
+    except Exception as exc:
+        logger.warning(f"Failed to get model list for Grafana config: {exc}")
+
+    return {
+        "model": current,
+        "available_models": available,
+    }
+
+
+@router.put("/grafana/config", tags=["Admin - Grafana Config"])
+async def update_grafana_config(
+    request: Request,
+    update: dict,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Update Grafana Assistant LLM configuration (e.g. which model to use).
+    """
+    from app.models_db import SystemConfig
+
+    model_name = str(update.get("model", "")).strip()
+    if not model_name:
+        raise HTTPException(status_code=400, detail="'model' is required")
+
+    async with async_session_maker() as session:
+        cfg = await session.get(SystemConfig, "grafana_llm_model")
+        if cfg:
+            cfg.value = model_name
+        else:
+            session.add(SystemConfig(
+                key="grafana_llm_model",
+                value=model_name,
+                description="LLM model for Grafana Assistant proxy",
+            ))
+        await session.commit()
+
+    await _audit_log(
+        "update_grafana_config", "system_config",
+        entity_id="grafana_llm_model",
+        details=update,
+        request=request,
+    )
+
+    return {"model": model_name, "status": "updated"}
