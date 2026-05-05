@@ -43,8 +43,8 @@ Model Maestro acts as a unified gateway between LLM clients (IDEs, CLI tools, ap
           │                    │                    │
           ▼                    ▼                    ▼
 ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│ Ollama Node 1 │    │ Ollama Node 2 │    │ Other Provider│
-│ (primary)     │    │ (backup)      │    │ (OpenAI, etc) │
+│ Ollama Node 1 │    │ vLLM Node 2   │    │ Other Provider│
+│ (primary)     │    │ (OpenAI fmt)  │    │ (OpenAI, etc) │
 └───────────────┘    └───────────────┘    └───────────────┘
 ```
 
@@ -67,12 +67,16 @@ If the requested model name matches a group, the gateway resolves it to a specif
 
 Translates between display names (what the client sees) and real names (what Ollama receives). Mappings are stored in PostgreSQL and cached to a JSON file on disk for fast lookups without DB hits.
 
+**Node-scoped mappings**: A mapping can be bound to a specific `node_id`. When a request is routed to that node, the node-scoped mapping takes precedence over global mappings. This allows the same display name to resolve to different real names on different backends.
+
 ### 4. Load Balancer (`app/load_balancer.py`)
 
 Selects which Ollama node to send the request to. Nodes are filtered by health status, then selected by:
 - Priority (higher = preferred)
 - Weight (higher = more traffic)
 - Active request count (least-loaded)
+
+**Node prefix routing**: If the model name starts with `node:{code}:{model}`, the load balancer is skipped entirely and the request is routed directly to the node matching `code`.
 
 ### 5. Proxy Engine (`app/proxy.py`)
 
@@ -81,14 +85,20 @@ Uses `httpx` (with HTTP/2 support) to forward requests to the selected Ollama no
 - Response body rewriting (reverse model name translation)
 - Streaming (SSE) passthrough
 - Tool call validation and sanitization (Cursor compatibility)
+- **DeepSeek tool call parsing**: Auto-detects and converts DeepSeek XML tool call output to OpenAI `tool_calls` format
+- **Request source detection**: Identifies the client (Cursor, Claude, OpenClaw, Grafana, Ollama Native, OpenAI-Compatible) for usage analytics
+- **Node prefix routing**: Parses `node:{code}:{model}` syntax to force direct node selection
+- **vLLM proxying**: Forwards `Authorization: Bearer` headers to vLLM nodes and handles OpenAI-compatible responses
 - Failover retries across nodes and model group members
 
 ### 6. Node Manager (`app/node_manager.py`)
 
-Manages Ollama nodes:
-- **Health checks**: Periodic HTTP health checks to each node.
-- **Model discovery**: Periodically fetches `/api/tags` from each node to populate the `node_models` table.
+Manages Ollama and vLLM nodes:
+- **Health checks**: Periodic HTTP health checks to each node (`/api/tags` for Ollama, `/v1/models` for vLLM).
+- **Model discovery**: Periodically fetches available models from each node to populate the `node_models` table.
 - **Activation toggling**: Nodes can be activated/deactivated via admin API.
+- **Node type discrimination**: Nodes are tagged as `ollama` or `vllm`. vLLM nodes use OpenAI-compatible health checks and forward `Authorization: Bearer` headers.
+- **Warmup toggle**: Per-node `warmup_enabled` flag controls whether model warmup requests are sent to that node.
 
 ### 7. Background Tasks (`app/background_tasks.py`)
 
@@ -120,9 +130,22 @@ Client Request
          │
          ▼
 ┌─────────────────┐
+│ Node Prefix     │
+│ Parser          │
+└────────┬────────┘
+         │ No prefix
+         ▼
+┌─────────────────┐
+│ Model Group     │
+│ Resolver        │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
 │ Model Mapper    │
 │ (PostgreSQL +   │
 │  JSON cache)    │
+│  node-scoped    │
 └────────┬────────┘
          │
          ▼
@@ -130,12 +153,19 @@ Client Request
          │
          ▼
 ┌─────────────────┐
-│ Proxy Engine    │
-│ (httpx → Ollama)│
+│ Load Balancer   │
+│ or Direct Node  │
+│ (if prefix)     │
 └────────┬────────┘
          │
          ▼
-    Ollama Node
+┌─────────────────┐
+│ Proxy Engine    │
+│ (httpx → Node)  │
+└────────┬────────┘
+         │
+         ▼
+    Ollama / vLLM Node
          │
          ▼
     Response (model: "gpt-oss:120b-cloud")
@@ -199,6 +229,7 @@ model_mappings
 ├── real_name
 ├── context_length
 ├── capabilities (JSONB)
+├── node_id (FK, nullable)
 └── created_at
 
 model_groups
@@ -222,9 +253,12 @@ ollama_nodes
 ├── name
 ├── base_url
 ├── api_key
+├── node_type (ollama | vllm)
+├── code (unique, nullable)
 ├── priority
 ├── weight
 ├── is_active
+├── warmup_enabled
 ├── health_status
 ├── last_health_check
 └── created_at
@@ -260,6 +294,8 @@ user_activity_logs
 ├── prompt_tokens
 ├── completion_tokens
 ├── total_tokens
+├── source (Cursor, Claude, OpenClaw, Grafana, etc.)
+├── url_path
 └── created_at
 
 audit_logs
@@ -291,6 +327,7 @@ audit_logs
 3. **Basic Auth for docs**: Swagger UI and ReDoc are protected by `DOCS_USERNAME`/`DOCS_PASSWORD`.
 4. **Model Access Control**: Users can only access models explicitly assigned to them (or all models if `has_all_models=true`).
 5. **Rate Limiting**: Per-user daily request and token limits can be configured.
+6. **vLLM Auth Forwarding**: For vLLM nodes, the proxy forwards `Authorization: Bearer <api_key>` headers using the node's stored `api_key`.
 
 ---
 

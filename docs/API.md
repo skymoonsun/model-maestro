@@ -20,7 +20,14 @@ Complete reference for all Model Maestro API endpoints.
   - [Create](#create)
 - [OpenAI Compatible](#openai-compatible)
   - [Chat Completions](#chat-completions)
+  - [Completions](#completions)
+  - [Embeddings](#embeddings)
   - [Models](#models)
+- [Grafana Assistant](#grafana-assistant)
+  - [Chats](#chats)
+  - [Chat Stream](#chat-stream)
+  - [Config](#config)
+  - [Discovery](#discovery)
 - [Admin Endpoints](#admin-endpoints)
   - [Users](#users)
   - [Model Assignments](#model-assignments)
@@ -333,6 +340,88 @@ POST /v1/chat/completions
 
 ---
 
+### Completions
+
+```bash
+POST /v1/completions
+```
+
+**Request body:**
+
+```json
+{
+  "model": "gpt-oss:120b",
+  "prompt": "Once upon a time",
+  "max_tokens": 100,
+  "temperature": 0.7,
+  "stream": false
+}
+```
+
+**Response:**
+
+```json
+{
+  "id": "cmpl-...",
+  "object": "text_completion",
+  "created": 1712345678,
+  "model": "gpt-oss:120b",
+  "choices": [
+    {
+      "text": " there was a developer who loved LLMs.",
+      "index": 0,
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 10,
+    "total_tokens": 15
+  }
+}
+```
+
+---
+
+### Embeddings
+
+```bash
+POST /v1/embeddings
+```
+
+**Request body:**
+
+```json
+{
+  "model": "bge-m3:latest",
+  "input": "Hello world",
+  "encoding_format": "float"
+}
+```
+
+**Response:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "embedding": [0.0123, -0.0456, ...],
+      "index": 0
+    }
+  ],
+  "model": "bge-m3:latest",
+  "usage": {
+    "prompt_tokens": 2,
+    "total_tokens": 2
+  }
+}
+```
+
+---
+
 ### Models
 
 ```bash
@@ -516,10 +605,52 @@ GET /admin/users/{username}/activity?limit=50&offset=0
       "prompt_tokens": 150,
       "completion_tokens": 300,
       "total_tokens": 450,
+      "source": "Cursor",
+      "url_path": "/api/chat",
       "created_at": "2024-01-20T10:30:00"
     }
   ],
   "total_returned": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
+### Request Logs
+
+#### Get System-Wide Request Logs
+
+```bash
+GET /admin/dashboard/requests-log?limit=50&offset=0&source=Cursor&url_path=/api/chat
+```
+
+**Query params:**
+- `limit` — default 50
+- `offset` — default 0
+- `source` — filter by request source (`Cursor`, `Claude`, `OpenClaw`, `Grafana`, `Ollama Native`, `OpenAI-Compatible`, `Unknown`)
+- `url_path` — filter by URL path
+
+**Response:**
+
+```json
+{
+  "requests": [
+    {
+      "id": 1,
+      "username": "john",
+      "model_name": "gpt-oss:120b",
+      "request_type": "chat",
+      "prompt_tokens": 150,
+      "completion_tokens": 300,
+      "total_tokens": 450,
+      "source": "Cursor",
+      "url_path": "/api/chat",
+      "created_at": "2024-01-20T10:30:00"
+    }
+  ],
+  "total": 1,
   "limit": 50,
   "offset": 0
 }
@@ -601,9 +732,12 @@ POST /admin/model-mappings
   "display_name": "gpt-oss:120b",
   "real_name": "gpt-oss:120b-cloud",
   "context_length": 128000,
-  "capabilities": ["completion", "tools"]
+  "capabilities": ["completion", "tools"],
+  "node_id": null
 }
 ```
+
+- `node_id` — optional node ID for node-scoped mappings. When set, this mapping only applies when the request is routed to the specified node. Use `null` for global mappings.
 
 #### List Mappings
 
@@ -659,9 +793,16 @@ POST /admin/nodes
   "base_url": "http://localhost:11434",
   "priority": 100,
   "weight": 10,
-  "is_active": true
+  "is_active": true,
+  "code": "trmix",
+  "node_type": "ollama",
+  "warmup_enabled": true
 }
 ```
+
+- `code` — unique short identifier for node prefix routing (`^[a-z0-9_-]{1,30}$`)
+- `node_type` — `"ollama"` or `"vllm"`
+- `warmup_enabled` — whether to run model warmup on this node
 
 #### Update Node
 
@@ -698,6 +839,25 @@ POST /admin/nodes/{id}/discover
 ```
 
 Manually triggers model discovery on the node.
+
+#### Reorder Priorities (Batch)
+
+```bash
+PATCH /admin/nodes/batch/priority
+```
+
+**Body:**
+
+```json
+{
+  "priorities": [
+    {"id": 1, "priority": 200},
+    {"id": 2, "priority": 100}
+  ]
+}
+```
+
+Updates the priority of multiple nodes in a single request. Used by the drag-and-drop reordering in the admin panel.
 
 ---
 
@@ -905,6 +1065,130 @@ GET /admin/audit-logs?limit=50&offset=0&action=create&entity_type=user
   "total": 1,
   "limit": 50,
   "offset": 0
+}
+```
+
+---
+
+## Grafana Assistant
+
+Grafana-native LLM Assistant compatibility endpoints.
+
+### Chats
+
+#### List Chats
+
+```bash
+GET /grafana/assistant/chats
+```
+
+**Headers:** `Authorization: Bearer <jwt-token>`
+
+**Response:**
+
+```json
+[
+  {
+    "id": "chat-1",
+    "title": "Python question",
+    "messages": [
+      {"role": "user", "content": "How do I use list comprehensions?"},
+      {"role": "assistant", "content": "List comprehensions provide a concise way..."}
+    ],
+    "created_at": "2024-01-20T10:30:00",
+    "updated_at": "2024-01-20T10:31:00"
+  }
+]
+```
+
+#### Create Chat
+
+```bash
+POST /grafana/assistant/chats
+```
+
+**Body:**
+
+```json
+{
+  "message": "How do I use list comprehensions?"
+}
+```
+
+**Response:** Same chat object with assistant reply appended.
+
+---
+
+### Chat Stream
+
+```bash
+POST /grafana/assistant/chat/stream
+```
+
+**Body:**
+
+```json
+{
+  "message": "Tell me a story"
+}
+```
+
+**Response:** SSE stream with `data:` lines.
+
+---
+
+### Config
+
+#### Get LLM Config
+
+```bash
+GET /grafana/assistant/config
+```
+
+**Response:**
+
+```json
+{
+  "model": "gpt-oss:120b",
+  "temperature": 0.7,
+  "max_tokens": 2048
+}
+```
+
+#### Update LLM Config
+
+```bash
+POST /grafana/assistant/config
+```
+
+**Body:**
+
+```json
+{
+  "model": "gpt-oss:120b",
+  "temperature": 0.7,
+  "max_tokens": 2048
+}
+```
+
+---
+
+### Discovery
+
+#### Get Infrastructure Discovery Status
+
+```bash
+GET /grafana/assistant/discovery
+```
+
+**Response:**
+
+```json
+{
+  "status": "completed",
+  "nodes_discovered": 3,
+  "models_discovered": 12,
+  "last_run": "2024-01-20T10:30:00"
 }
 ```
 
