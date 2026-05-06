@@ -46,6 +46,8 @@ import {
     BarChart3,
     Link as LinkIcon,
     GripVertical,
+    Eye,
+    EyeOff,
 } from 'lucide-react';
 import Link from 'next/link';
 import {
@@ -130,10 +132,11 @@ function NodeCard({
     };
     const qc = useQueryClient();
     const [editOpen, setEditOpen] = useState(false);
+    const [showEditApiKey, setShowEditApiKey] = useState(false);
     const [form, setForm] = useState({
         name: node.name,
         base_url: node.base_url,
-        api_key: undefined as string | undefined,
+        api_key: node.api_key ?? undefined,
         priority: node.priority,
         weight: node.weight,
         is_active: node.is_active,
@@ -166,7 +169,7 @@ function NodeCard({
             setForm({
                 name: node.name,
                 base_url: node.base_url,
-                api_key: undefined,
+                api_key: node.api_key ?? undefined,
                 priority: node.priority,
                 weight: node.weight,
                 is_active: node.is_active,
@@ -175,7 +178,7 @@ function NodeCard({
                 code: node.code,
             });
         }
-    }, [editOpen, node.name, node.base_url, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code]);
+    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code]);
 
     const isInactive = !node.is_active;
 
@@ -297,12 +300,22 @@ function NodeCard({
                                 </div>
                                 <div>
                                     <Label>API Key (optional)</Label>
-                                    <Input
-                                        type="password"
-                                        placeholder="Bearer token for this endpoint"
-                                        value={form.api_key || ''}
-                                        onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
-                                    />
+                                    <div className="flex items-center gap-2">
+                                        <Input
+                                            type={showEditApiKey ? 'text' : 'password'}
+                                            placeholder="Bearer token for this endpoint"
+                                            value={form.api_key || ''}
+                                            onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={() => setShowEditApiKey((s) => !s)}
+                                        >
+                                            {showEditApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                        </Button>
+                                    </div>
                                 </div>
                                 <div>
                                     <Label>Code</Label>
@@ -413,6 +426,7 @@ function NodeCard({
 
 function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
     const [open, setOpen] = useState(false);
+    const [showAddApiKey, setShowAddApiKey] = useState(false);
     const [form, setForm] = useState<CreateNode>({
         name: '',
         base_url: 'http://localhost:11434',
@@ -467,12 +481,22 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                     </div>
                     <div>
                         <Label>API Key (optional)</Label>
-                        <Input
-                            type="password"
-                            placeholder="Bearer token for this endpoint"
-                            value={form.api_key || ''}
-                            onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
-                        />
+                        <div className="flex items-center gap-2">
+                            <Input
+                                type={showAddApiKey ? 'text' : 'password'}
+                                placeholder="Bearer token for this endpoint"
+                                value={form.api_key || ''}
+                                onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
+                            />
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setShowAddApiKey((s) => !s)}
+                            >
+                                {showAddApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </Button>
+                        </div>
                     </div>
                     <div>
                         <Label>Code</Label>

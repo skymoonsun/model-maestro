@@ -1915,6 +1915,15 @@ class OllamaProxy:
         if data:
             data = self._map_model_to_ollama(data)
 
+        # vLLM nodes don't support Ollama-specific parameters
+        if node_type == 'vllm' and isinstance(data, dict):
+            data = data.copy()
+            data.pop('keep_alive', None)
+            if isinstance(data.get('options'), dict):
+                data['options'] = {k: v for k, v in data['options'].items() if k not in ('num_ctx', 'num_gpu', 'num_thread')}
+                if not data['options']:
+                    data.pop('options', None)
+
         # Step 3: Strip images from messages if model doesn't support vision
         # Use the mapped (real) model name for capability lookup
         mapped_model = data.get('model') or data.get('name') if data else None
@@ -2054,7 +2063,8 @@ class OllamaProxy:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
 
                     async with client.stream("POST", current_url, json=current_data, headers=request_headers) as resp:
-                        logger.info(f"[STREAM] Ollama response status: {resp.status_code}")
+                        provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                        logger.info(f"[STREAM] {provider_label} response status: {resp.status_code}")
 
                         # Check status code before streaming
                         if resp.status_code != 200:
@@ -2073,7 +2083,7 @@ class OllamaProxy:
                             except (_json_decode_error, KeyError, TypeError):
                                 pass
 
-                            logger.error(f"Ollama upstream error ({resp.status_code}): {error_msg}")
+                            logger.error(f"{provider_label} upstream error ({resp.status_code}): {error_msg}")
                             logger.error(f"Request URL: {current_url}")
                             logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")
 
@@ -2156,7 +2166,8 @@ class OllamaProxy:
                                 )
                                 logger.warning(f"[CONTEXT OVERFLOW] Model context limit reached: {error_msg}")
                             else:
-                                friendly_msg = f"Ollama upstream error: {error_msg}"
+                                provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                                friendly_msg = f"{provider_label} upstream error: {error_msg}"
 
                             error_response = {
                                 "error": {
@@ -2866,7 +2877,8 @@ class OllamaProxy:
                 # Check response status
                 if response.status_code >= 400:
                     error_text = response.text
-                    logger.error(f"Ollama error ({response.status_code}): {error_text}")
+                    provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                    logger.error(f"{provider_label} error ({response.status_code}): {error_text}")
                     logger.error(f"Request URL: {current_url}")
                     if current_data:
                         logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")

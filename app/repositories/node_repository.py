@@ -135,6 +135,7 @@ class NodeRepository:
                 "id": node.id,
                 "name": node.name,
                 "base_url": node.base_url,
+                "api_key": node.api_key,
                 "api_key_set": bool(node.api_key),
                 "priority": node.priority,
                 "weight": node.weight,

@@ -475,6 +475,7 @@ class OllamaNodeResponse(BaseModel):
     id: int
     name: str
     base_url: str
+    api_key: Optional[str] = None
     api_key_set: bool = False
     priority: int = 0
     weight: int = 100
@@ -501,6 +502,7 @@ class OllamaNodeDetailResponse(BaseModel):
     id: int
     name: str
     base_url: str
+    api_key: Optional[str] = None
     api_key_set: bool = False
     priority: int = 0
     weight: int = 100

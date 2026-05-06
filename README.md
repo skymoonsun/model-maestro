@@ -93,16 +93,22 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **JWT Authentication** — Bearer-token auth on every LLM request.
 - **Admin Dashboard** — Next.js 16 panel for visual management of users, nodes, models, groups and audit logs.
 - **Model Mapping** — Translate display names (`gpt-oss:120b`) to real names (`gpt-oss:120b-cloud`) via PostgreSQL with JSON-file caching.
-- **Multi-Node Load Balancing** — Round-robin, weighted and priority-based strategies across Ollama nodes.
+- **Node-Scoped Model Mappings** — Bind a mapping to a specific node so the same display name can resolve to different real names on different backends.
+- **Node-Scoped Routing via Model Prefix** — Force a request to a specific node by prefixing the model name: `node:trmix:kimi-k2.6:latest` routes directly to the node with code `trmix`.
+- **Multi-Node Load Balancing** — Round-robin, weighted and priority-based strategies across Ollama and vLLM nodes.
+- **vLLM Support** — Native vLLM (OpenAI-compatible) node type with automatic health checks, model discovery and `Authorization: Bearer` header forwarding.
 - **Model Groups** — Group models into logical units with fallback chains. Requests dynamically resolve to the best member based on capability tags (vision, tools) and strategy.
-- **Node Health Management** — Automatic health checks, model discovery and availability tracking.
+- **Node Health Management** — Automatic health checks, model discovery and availability tracking for both Ollama and vLLM nodes.
+- **Per-Node Warmup Toggle** — Enable or disable model warmup per node via admin UI.
+- **Drag-and-Drop Node Priority** — Reorder node cards in the admin panel to update fallback priority visually.
 - **User-Level Access Control** — Per-user model allowlists and rate limits (requests / tokens per day).
-- **Token Usage Tracking** — Background-batched activity logs with prompt / completion / total token breakdowns.
+- **Token Usage Tracking** — Background-batched activity logs with prompt / completion / total token breakdowns, plus request source identification (Cursor, Claude, OpenClaw, Grafana, etc.).
 - **Tool Set Filtering** — Restrict which tools a model is allowed to invoke via configurable tool sets.
 - **Context Length Config** — Per-model context length stored in mappings (used by Cursor/Antigravity for usage bars).
 - **Streaming** — SSE-based streaming on `/api/chat`, `/api/generate` and `/v1/chat/completions`.
-- **OpenAI Compatible** — Drop-in `/v1/chat/completions` and `/v1/models` endpoints.
+- **OpenAI Compatible** — Drop-in `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and `/v1/models` endpoints.
 - **Full Ollama API** — `/api/generate`, `/api/chat`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/copy`, `/api/delete`, `/api/pull`, `/api/push`, `/api/create`.
+- **Grafana Assistant API** — Full Grafana LLM Assistant compatibility endpoints (`/grafana/assistant/*`) for Grafana-native AI features.
 - **DeepSeek Tool Call Parsing** — Auto-detects and converts DeepSeek's raw XML tool call output (`<tool_calls><invoke>`, `<CallMcpTool>`, `<tool_call name="...">`) to OpenAI `tool_calls` format in streaming and non-streaming responses. Kimi/Moonshot `<|tool_calls_section_begin|>` format also supported.
 - **Streaming-Aware Background Tasks** — Health checks, model discovery and warmup defer when streams are active, preventing interruptions.
 - **Node-Aware Model Warmup** — Warmup requests target only models that exist on each node, eliminating 404 errors from stale model names.
@@ -228,12 +234,13 @@ The Next.js dashboard (`http://localhost:3000`) provides a visual interface for 
 |---|---|
 | **Dashboard** | Node health, model counts, user statistics |
 | **Users** | Create users, manage tokens, assign models, set limits |
-| **Ollama > Nodes** | Add/edit Ollama nodes, view health status, trigger discovery |
-| **Ollama > Models** | Browse discovered models per node |
-| **Models > Mappings** | Display↔Real name mappings, set context length, capabilities |
+| **Nodes** | Add/edit Ollama and vLLM nodes, set codes, view health, trigger discovery, drag-and-drop priority |
+| **Models per Node** | Browse discovered models per node |
+| **Models > Mappings** | Display↔Real name mappings, node-scoped overrides, context length, capabilities |
 | **Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
 | **Models > Config** | Per-model tool restrictions and settings |
 | **Tool Sets** | Create tool groups and assign to models |
+| **Request Logs** | Filterable request history with source identification (Cursor, Claude, OpenClaw, Grafana, etc.) |
 | **Settings** | System-wide configuration |
 | **Audit Logs** | Filterable history of all admin actions |
 
@@ -273,6 +280,8 @@ Authorization: Bearer <admin-token>
 | `POST` | `/api/pull` | Pull model |
 | `POST` | `/api/push` | Push model |
 | `POST` | `/api/create` | Create model from Modelfile |
+| `POST` | `/v1/completions` | OpenAI-compatible completions |
+| `POST` | `/v1/embeddings` | OpenAI-compatible embeddings |
 
 **Example — Chat**
 
@@ -370,15 +379,27 @@ curl -X DELETE http://localhost:8000/admin/model-mappings/gpt-oss:120b \
 **Nodes**
 
 ```bash
-# Add node
+# Add node (with optional code for prefix routing)
 curl -X POST http://localhost:8000/admin/nodes \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name": "main", "base_url": "http://localhost:11434", "priority": 100}'
+  -d '{
+    "name": "main",
+    "base_url": "http://localhost:11434",
+    "priority": 100,
+    "code": "trmix",
+    "node_type": "ollama"
+  }'
 
 # Toggle activation
 curl -X PATCH http://localhost:8000/admin/nodes/1/toggle \
   -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Reorder node priorities (drag-and-drop)
+curl -X PATCH http://localhost:8000/admin/nodes/batch/priority \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"priorities": [{"id": 1, "priority": 200}, {"id": 2, "priority": 100}]}'
 ```
 
 **Model Groups**
@@ -397,11 +418,47 @@ curl -X POST http://localhost:8000/admin/model-groups/coding/members \
   -d '{"model_display_name": "qwen3-coder:480b", "priority": 1}'
 ```
 
+**Grafana Assistant**
+
+```bash
+# List chats
+curl http://localhost:8000/grafana/assistant/chats \
+  -H "Authorization: Bearer $TOKEN"
+
+# Create chat
+curl -X POST http://localhost:8000/grafana/assistant/chats \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello"}'
+
+# Stream chat
+curl -X POST http://localhost:8000/grafana/assistant/chat/stream \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello"}'
+
+# Get LLM config
+curl http://localhost:8000/grafana/assistant/config \
+  -H "Authorization: Bearer $TOKEN"
+
+# Update LLM config
+curl -X POST http://localhost:8000/grafana/assistant/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-oss:120b", "temperature": 0.7}'
+
+# Check infrastructure discovery status
+curl http://localhost:8000/grafana/assistant/discovery \
+  -H "Authorization: Bearer $TOKEN"
+```
+
 ### OpenAI Compatible
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/v1/chat/completions` | Chat completions (OpenAI format) |
+| `POST` | `/v1/completions` | Text completions (OpenAI format) |
+| `POST` | `/v1/embeddings` | Embeddings (OpenAI format) |
 | `GET`  | `/v1/models` | Model list (OpenAI format) |
 
 **Example — OpenAI Compatible**
@@ -437,6 +494,24 @@ Proxy translates:   gpt-oss:120b-cloud → gpt-oss:120b
 Client sees:        gpt-oss:120b
 ```
 
+**Node Prefix Routing**
+
+Force a request to a specific node by prefixing the model name with its `code`:
+
+```
+Client sends:       node:trmix:kimi-k2.6:latest
+Gateway parses:     code = "trmix", model = "kimi-k2.6:latest"
+Node lookup:        trmix → node #3
+Model mapping:      kimi-k2.6:latest → kimi-k2.6:latest-cloud
+Node #3 receives:   kimi-k2.6:latest-cloud
+```
+
+- Syntax: `node:{code}:{model_name}`
+- The `code` is the unique short identifier set on each node in the admin panel.
+- If the code does not exist, the gateway returns `404 Node with code 'x' not found`.
+- When a prefix is present, the load balancer is skipped and the request goes directly to the matched node.
+- Prefix routing works on every endpoint that accepts a `model` parameter: `/api/chat`, `/api/generate`, `/v1/chat/completions`, `/v1/embeddings`, etc.
+
 **Model Groups**
 
 If the requested model is a group, the gateway resolves it dynamically:
@@ -448,6 +523,10 @@ If the requested model is a group, the gateway resolves it dynamically:
    - `weighted` — weighted random selection
    - `priority` — always pick lowest priority number
 4. If the selected model fails, retry with the next member in priority order.
+
+**Node-Scoped Mappings**
+
+A model mapping can be bound to a specific node so the same display name resolves to a different real name on different backends. This is useful when nodes host different variants of the same model (e.g. a CPU-quantized version on one node and a full-GPU version on another).
 
 ---
 

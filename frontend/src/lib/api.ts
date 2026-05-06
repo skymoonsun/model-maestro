@@ -649,6 +649,7 @@ export interface OllamaNodeResponse {
   id: number;
   name: string;
   base_url: string;
+  api_key?: string | null;
   api_key_set: boolean;
   priority: number;
   weight: number;
