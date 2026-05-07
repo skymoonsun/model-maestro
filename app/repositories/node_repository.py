@@ -255,6 +255,13 @@ class NodeModelRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_all_available_models(self) -> List[NodeModel]:
+        """Get all available models from all nodes"""
+        result = await self.session.execute(
+            select(NodeModel).where(NodeModel.is_available == True)
+        )
+        return list(result.scalars().all())
+
     async def get_nodes_for_model(self, model_name: str) -> List[Dict[str, Any]]:
         """Get all nodes that have a specific model"""
         from app.models_db import OllamaNode

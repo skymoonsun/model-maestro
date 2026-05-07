@@ -5,8 +5,9 @@ Manages system config, model config, tool sets, and format patterns.
 
 import json
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
 
 from app.auth import verify_admin
 from app.database import async_session_maker
@@ -512,18 +513,76 @@ async def get_grafana_config(admin: str = Depends(verify_admin)):
         cfg = await session.get(SystemConfig, "grafana_llm_model")
         current = cfg.value.strip() if cfg and cfg.value else ""
 
-    available: list[str] = []
+    available: set[str] = set()
     try:
         from app.config import model_mapper
         # Force-load mappings from DB/cache file
-        model_mapper.reload()
-        available = list(model_mapper.get_all_mappings().keys())
+        await model_mapper.reload()
+        # Add all mapped display names
+        available.update(model_mapper.get_all_mappings().keys())
     except Exception as exc:
-        logger.warning(f"Failed to get model list for Grafana config: {exc}")
+        logger.warning(f"Failed to get mapped model list for Grafana config: {exc}")
+
+    try:
+        # Add all live models from nodes (both Ollama and vLLM)
+        from app.node_manager import node_manager
+        all_models = await node_manager.get_all_models_from_nodes()
+        logger.info(f"[GrafanaConfig] Live models fetched: {len(all_models.get('models', []))} total, "
+                    f"queried={all_models.get('nodes_queried')}, failed={all_models.get('nodes_failed')}")
+        for m in all_models.get("models", []):
+            name = m.get("name")
+            if name:
+                available.add(name)
+                logger.debug(f"[GrafanaConfig] Adding live model: {name}")
+    except Exception as exc:
+        logger.warning(f"Failed to get live models for Grafana config: {exc}")
+
+    # Also add real model names from DB (as fallback if node discovery failed)
+    try:
+        from app.models_db import NodeModel
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(NodeModel.model_name).where(NodeModel.is_available == True).distinct()
+            )
+            available.update(row[0] for row in result.all() if row[0])
+    except Exception as exc:
+        logger.warning(f"Failed to get DB models for Grafana config: {exc}")
+
+    # Ensure currently selected model stays in the list even if unmapped
+    if current:
+        available.add(current)
+
+    # Build enriched model details
+    model_details = []
+    try:
+        from app.models_db import NodeModel, OllamaNode
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(NodeModel.model_name, OllamaNode.name, OllamaNode.node_type)
+                .join(OllamaNode, NodeModel.node_id == OllamaNode.id)
+                .where(NodeModel.is_available == True)
+            )
+            model_nodes_map: Dict[str, List[Dict[str, str]]] = {}
+            for model_name, node_name, node_type in result.all():
+                model_nodes_map.setdefault(model_name, []).append({"name": node_name, "node_type": node_type})
+
+        for name in sorted(available):
+            display_name = model_mapper.get_display_model_name(name)
+            is_mapped = display_name is not None and display_name != name
+            nodes = model_nodes_map.get(name, [])
+            model_details.append({
+                "name": name,
+                "display_name": display_name if is_mapped else None,
+                "is_mapped": is_mapped,
+                "nodes": [{"name": n["name"], "node_type": n["node_type"]} for n in nodes],
+            })
+    except Exception as exc:
+        logger.warning(f"Failed to build model details for Grafana config: {exc}")
 
     return {
         "model": current,
-        "available_models": available,
+        "available_models": sorted(available),
+        "model_details": model_details,
     }
 
 

@@ -267,6 +267,12 @@ export const systemConfigApi = {
 export interface GrafanaConfigResponse {
   model: string;
   available_models: string[];
+  model_details: Array<{
+    name: string;
+    display_name: string | null;
+    is_mapped: boolean;
+    nodes: Array<{ name: string; node_type: string }>;
+  }>;
 }
 
 export interface GrafanaConfigUpdate {
