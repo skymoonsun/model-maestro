@@ -242,7 +242,26 @@ class NodeModelRepository:
             select(NodeModel).where(NodeModel.node_id == node_id)
         )
         return list(result.scalars().all())
-    
+
+    async def get_by_node_and_name(self, node_id: int, model_name: str) -> Optional[NodeModel]:
+        """Get a specific model by node_id and model_name"""
+        result = await self.session.execute(
+            select(NodeModel).where(
+                and_(
+                    NodeModel.node_id == node_id,
+                    NodeModel.model_name == model_name
+                )
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_all_available_models(self) -> List[NodeModel]:
+        """Get all available models from all nodes"""
+        result = await self.session.execute(
+            select(NodeModel).where(NodeModel.is_available == True)
+        )
+        return list(result.scalars().all())
+
     async def get_nodes_for_model(self, model_name: str) -> List[Dict[str, Any]]:
         """Get all nodes that have a specific model"""
         from app.models_db import OllamaNode

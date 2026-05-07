@@ -521,6 +521,7 @@ class NodeManager:
                             "name": node.name,
                             "base_url": node.base_url,
                             "api_key": node.api_key,
+                            "node_type": getattr(node, 'node_type', 'ollama'),
                         })
         except Exception as e:
             logger.error(f"[ModelAggregation] Error fetching nodes from DB: {e}")
@@ -538,8 +539,14 @@ class NodeManager:
                 if node_info["api_key"]:
                     headers["Authorization"] = f"Bearer {node_info['api_key']}"
 
+                node_type = node_info.get("node_type", "ollama")
+                if node_type == "vllm":
+                    discovery_url = f"{node_info['base_url'].rstrip('/')}/v1/models"
+                else:
+                    discovery_url = f"{node_info['base_url'].rstrip('/')}/api/tags"
+
                 response = await client.get(
-                    f"{node_info['base_url'].rstrip('/')}/api/tags",
+                    discovery_url,
                     headers=headers,
                     timeout=15.0,
                 )
@@ -551,7 +558,23 @@ class NodeManager:
                     return node_info["name"], [], False
 
                 data = response.json()
-                models = data.get("models", [])
+
+                if node_type == "vllm":
+                    # vLLM returns {"object": "list", "data": [{"id": "...", ...}]}
+                    # Convert to Ollama-compatible format {"models": [{"name": "...", ...}]}
+                    raw_models = data.get("data", [])
+                    models = []
+                    for m in raw_models:
+                        models.append({
+                            "name": m.get("id"),
+                            "size": None,
+                            "digest": None,
+                            "modified_at": None,
+                            "details": None,
+                        })
+                else:
+                    models = data.get("models", [])
+
                 return node_info["name"], models, True
 
             except Exception as e:

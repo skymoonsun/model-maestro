@@ -27,6 +27,7 @@ from app.models import (
     ModelShowResponse,
     ModelMappingResponse,
     SyncCapabilitiesResponse,
+    SyncVllmMetaResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,12 +104,21 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
             options.append(model_name.replace(":latest", ""))
 
         mapped_display = None
+        context_length = None
+        capabilities = None
         for opt in options:
             disp_names = model_mapper.get_all_display_names_for_real_name(opt)
             # if get_all_display_names_for_real_name returns [opt], it means unmapped
             if disp_names and disp_names != [opt]:
                 mapped_display = disp_names[0]
+                context_length = model_mapper.get_context_length(opt)
+                capabilities = model_mapper.get_capabilities(opt)
                 break
+
+        # Fallback: try model_name directly if no mapping found
+        if not mapped_display:
+            context_length = model_mapper.get_context_length(model_name)
+            capabilities = model_mapper.get_capabilities(model_name)
 
         # Find which nodes have this model
         model_node_list = model_nodes_map.get(model_name)
@@ -123,6 +133,8 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
             is_mapped=mapped_display is not None,
             display_name=mapped_display,
             nodes=model_node_list,
+            context_length=context_length,
+            capabilities=capabilities,
         ))
     
     return result
@@ -172,11 +184,25 @@ async def list_vllm_models(admin: str = Depends(verify_admin)):
                 options.append(model_name.replace(":latest", ""))
 
             mapped_display = None
+            context_length = None
+            capabilities = None
             for opt in options:
                 disp_names = model_mapper.get_all_display_names_for_real_name(opt)
                 if disp_names and disp_names != [opt]:
                     mapped_display = disp_names[0]
+                    # Fetch context length and capabilities from mapping
+                    ctx = model_mapper.get_context_length(opt)
+                    if ctx:
+                        context_length = ctx
+                    caps = model_mapper.get_capabilities(opt)
+                    if caps:
+                        capabilities = caps
                     break
+
+            # Extract max_model_len from stored capabilities (JSONB)
+            max_model_len = None
+            if isinstance(model.model_capabilities, dict):
+                max_model_len = model.model_capabilities.get("max_model_len")
 
             items.append(VllmModelListItem(
                 name=model_name,
@@ -189,6 +215,9 @@ async def list_vllm_models(admin: str = Depends(verify_admin)):
                 modified_at=model.modified_at.isoformat() if model.modified_at else None,
                 is_mapped=mapped_display is not None,
                 display_name=mapped_display,
+                context_length=context_length,
+                capabilities=capabilities,
+                max_model_len=max_model_len,
             ))
 
         return items
@@ -363,57 +392,70 @@ async def sync_all_capabilities(admin: str = Depends(verify_admin)):
         async with httpx.AsyncClient(timeout=15) as client:
             for mapping in mappings:
                 try:
-                    # Eğer mapping node-specific ise ve node vLLM ise atla
-                    if mapping.node_id:
-                        from app.repositories.node_repository import NodeRepository
-                        node_repo = NodeRepository(session)
-                        node = await node_repo.get_by_id(mapping.node_id)
-                        if node and node.node_type == 'vllm':
-                            results.append({
-                                "display_name": mapping.display_name,
-                                "real_name": mapping.real_name,
-                                "capabilities": mapping.capabilities,
-                                "status": "skipped",
-                                "error": "vLLM nodes do not support capability sync"
-                            })
-                            skipped += 1
-                            continue
-
                     # Find which node has this model
                     show_url = None
                     selected_node_type = 'ollama'
+                    selected_node = None
                     try:
                         nodes = await node_manager.get_nodes_for_model(mapping.real_name, session)
                         if nodes:
-                            # Prefer Ollama nodes for sync
+                            # Prefer Ollama nodes for sync, fallback to vLLM
                             ollama_nodes = [n for n in nodes if n.get('node_type') == 'ollama']
-                            chosen = ollama_nodes[0] if ollama_nodes else nodes[0]
+                            vllm_nodes = [n for n in nodes if n.get('node_type') == 'vllm']
+                            chosen = ollama_nodes[0] if ollama_nodes else (vllm_nodes[0] if vllm_nodes else nodes[0])
                             show_url = chosen["base_url"].rstrip("/")
                             selected_node_type = chosen.get('node_type', 'ollama')
+                            selected_node = chosen
                         else:
                             # Fallback: try display name
                             nodes = await node_manager.get_nodes_for_model(mapping.display_name, session)
                             if nodes:
                                 ollama_nodes = [n for n in nodes if n.get('node_type') == 'ollama']
-                                chosen = ollama_nodes[0] if ollama_nodes else nodes[0]
+                                vllm_nodes = [n for n in nodes if n.get('node_type') == 'vllm']
+                                chosen = ollama_nodes[0] if ollama_nodes else (vllm_nodes[0] if vllm_nodes else nodes[0])
                                 show_url = chosen["base_url"].rstrip("/")
                                 selected_node_type = chosen.get('node_type', 'ollama')
+                                selected_node = chosen
                     except Exception:
                         pass
 
                     if not show_url:
                         show_url = _get_ollama_url().rstrip("/")
 
-                    # vLLM node'larda /api/show yok, atla
                     if selected_node_type == 'vllm':
+                        # vLLM: /v1/models'den max_model_len çek
+                        api_key = selected_node.get('api_key') if selected_node else None
+                        headers = {}
+                        if api_key:
+                            headers["Authorization"] = f"Bearer {api_key}"
+                        vllm_response = await client.get(
+                            f"{show_url}/v1/models",
+                            headers=headers,
+                            timeout=15
+                        )
+                        vllm_response.raise_for_status()
+                        vllm_data = vllm_response.json()
+                        models_list = vllm_data.get("data", [])
+
+                        max_model_len = None
+                        for m in models_list:
+                            if m.get("id") == mapping.real_name or m.get("id") == mapping.display_name:
+                                max_model_len = m.get("max_model_len")
+                                break
+
+                        if max_model_len:
+                            mapping.context_length = max_model_len
+
                         results.append({
                             "display_name": mapping.display_name,
                             "real_name": mapping.real_name,
                             "capabilities": mapping.capabilities,
-                            "status": "skipped",
-                            "error": "vLLM nodes do not support /api/show"
+                            "context_length": mapping.context_length,
+                            "status": "synced",
+                            "provider": "vLLM"
                         })
-                        skipped += 1
+                        synced += 1
+                        logger.info(f"vLLM meta synced: {mapping.display_name} -> ctx={max_model_len}")
                         continue
 
                     response = await client.post(
@@ -432,7 +474,8 @@ async def sync_all_capabilities(admin: str = Depends(verify_admin)):
                         "display_name": mapping.display_name,
                         "real_name": mapping.real_name,
                         "capabilities": capabilities,
-                        "status": "synced"
+                        "status": "synced",
+                        "provider": "Ollama"
                     })
                     synced += 1
                     logger.info(f"Capabilities synced: {mapping.display_name} -> {capabilities}")
@@ -454,6 +497,95 @@ async def sync_all_capabilities(admin: str = Depends(verify_admin)):
     await model_mapper.reload()
 
     return SyncCapabilitiesResponse(
+        synced=synced,
+        failed=failed,
+        results=results
+    )
+
+
+# =============================================================================
+# vLLM Metadata Sync
+# =============================================================================
+
+@router.post("/sync-vllm-meta", response_model=SyncVllmMetaResponse)
+async def sync_vllm_meta(admin: str = Depends(verify_admin)):
+    """
+    Tüm aktif vLLM node'larından /v1/models çekerek max_model_len'i NodeModel DB'ye yaz.
+    """
+    from app.repositories.node_repository import NodeRepository, NodeModelRepository
+    from app.database import async_session_maker
+
+    results = []
+    synced = 0
+    failed = 0
+
+    async with async_session_maker() as session:
+        node_repo = NodeRepository(session)
+        model_repo = NodeModelRepository(session)
+
+        # Get all active vLLM nodes
+        vllm_nodes = await node_repo.get_nodes_with_models()
+        vllm_nodes = [n for n in vllm_nodes if n.get('node_type') == 'vllm']
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            for node_info in vllm_nodes:
+                node_id = node_info['id']
+                base_url = node_info['base_url'].rstrip('/')
+                api_key = node_info.get('api_key')
+                headers = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+
+                try:
+                    response = await client.get(
+                        f"{base_url}/v1/models",
+                        headers=headers,
+                        timeout=15
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    models_list = data.get("data", [])
+
+                    for m in models_list:
+                        model_id = m.get("id")
+                        max_model_len = m.get("max_model_len")
+                        if model_id and max_model_len:
+                            # Update NodeModel.model_capabilities with max_model_len
+                            existing = await model_repo.get_by_node_and_name(node_id, model_id)
+                            if existing:
+                                caps = existing.model_capabilities or {}
+                                if isinstance(caps, dict):
+                                    caps["max_model_len"] = max_model_len
+                                else:
+                                    caps = {"max_model_len": max_model_len}
+                                existing.model_capabilities = caps
+                                await session.commit()
+                                results.append({
+                                    "model": model_id,
+                                    "node": node_info['name'],
+                                    "max_model_len": max_model_len,
+                                    "status": "synced"
+                                })
+                                synced += 1
+                            else:
+                                # Model not in DB yet, skip
+                                results.append({
+                                    "model": model_id,
+                                    "node": node_info['name'],
+                                    "status": "skipped",
+                                    "error": "Model not found in DB, run node sync first"
+                                })
+
+                except Exception as e:
+                    results.append({
+                        "node": node_info['name'],
+                        "status": "failed",
+                        "error": str(e)
+                    })
+                    failed += 1
+                    logger.warning(f"vLLM meta sync failed for node {node_info['name']}: {e}")
+
+    return SyncVllmMetaResponse(
         synced=synced,
         failed=failed,
         results=results

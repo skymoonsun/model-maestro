@@ -230,6 +230,7 @@ export const ollamaModelsApi = {
 // ==================== vLLM Models ====================
 export const vllmModelsApi = {
   list: () => adminFetch<VllmModel[]>('/admin/models/vllm'),
+  syncMeta: () => adminFetch<SyncVllmMetaResult>('/admin/models/sync-vllm-meta', { method: 'POST' }),
 };
 
 // ==================== Model Config ====================
@@ -266,6 +267,12 @@ export const systemConfigApi = {
 export interface GrafanaConfigResponse {
   model: string;
   available_models: string[];
+  model_details: Array<{
+    name: string;
+    display_name: string | null;
+    is_mapped: boolean;
+    nodes: Array<{ name: string; node_type: string }>;
+  }>;
 }
 
 export interface GrafanaConfigUpdate {
@@ -529,6 +536,7 @@ export interface ModelMapping {
   real_name: string;
   node_id: number | null;
   node_name: string | null;
+  node_type: string | null;
   context_length: number;
   context_length_display: string;
   capabilities: string[];
@@ -552,6 +560,8 @@ export interface OllamaModel {
   is_mapped: boolean;
   display_name: string | null;
   nodes?: string[] | null;
+  context_length: number | null;
+  capabilities: string[] | null;
 }
 
 export interface VllmModel {
@@ -565,6 +575,9 @@ export interface VllmModel {
   modified_at: string | null;
   is_mapped: boolean;
   display_name: string | null;
+  context_length: number | null;
+  capabilities: string[] | null;
+  max_model_len: number | null;
 }
 
 export interface SyncResult {
@@ -575,6 +588,18 @@ export interface SyncResult {
     real_name: string;
     capabilities: string[];
     status: string;
+  }>;
+}
+
+export interface SyncVllmMetaResult {
+  synced: number;
+  failed: number;
+  results: Array<{
+    model?: string;
+    node?: string;
+    max_model_len?: number;
+    status: string;
+    error?: string;
   }>;
 }
 
@@ -655,6 +680,7 @@ export interface OllamaNodeResponse {
   weight: number;
   is_active: boolean;
   node_type: string;
+  code?: string | null;
   warmup_enabled: boolean;
   health_status: string;
   last_health_check: string | null;

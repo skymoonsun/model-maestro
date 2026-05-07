@@ -6,7 +6,6 @@ import { useState, useEffect } from 'react';
 import {
     LayoutDashboard,
     Users,
-    Bot,
     Wrench,
     Settings,
     ClipboardList,
@@ -18,7 +17,6 @@ import {
     Network,
     Group,
     FileText,
-    Cpu,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -38,6 +36,17 @@ interface NavItem {
 
 const navigation: NavItem[] = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
+    {
+        label: 'AI Models',
+        href: '/models',
+        icon: SlidersHorizontal,
+        children: [
+            { label: 'Models', href: '/models', icon: Layers },
+            { label: 'Mappings', href: '/models/mappings', icon: Layers },
+            { label: 'Groups', href: '/models/groups', icon: Group },
+            { label: 'Config', href: '/models/config', icon: Settings },
+        ],
+    },
     { label: 'Users', href: '/users', icon: Users },
     {
         label: 'Nodes',
@@ -45,32 +54,6 @@ const navigation: NavItem[] = [
         icon: Server,
         children: [
             { label: 'All Nodes', href: '/nodes', icon: Network },
-        ],
-    },
-    {
-        label: 'Ollama',
-        href: '/ollama',
-        icon: Bot,
-        children: [
-            { label: 'Models', href: '/models/ollama', icon: Layers },
-        ],
-    },
-    {
-        label: 'vLLM',
-        href: '/vllm',
-        icon: Cpu,
-        children: [
-            { label: 'Models', href: '/models/vllm', icon: Layers },
-        ],
-    },
-    {
-        label: 'Models',
-        href: '/models',
-        icon: SlidersHorizontal,
-        children: [
-            { label: 'Mappings', href: '/models/mappings', icon: Layers },
-            { label: 'Groups', href: '/models/groups', icon: Group },
-            { label: 'Config', href: '/models/config', icon: Settings },
         ],
     },
     {
@@ -129,7 +112,7 @@ export function Sidebar() {
                         {navigation.map((item) => {
                             if (item.children) {
                                 const isOpen = openGroups[item.href] ?? isGroupActive(item);
-                                const isParentActive = isGroupActive(item);
+                                const isParentActive = pathname === item.href;
                                 return (
                                     <div key={item.href}>
                                         <button
@@ -157,9 +140,7 @@ export function Sidebar() {
                                                         href={child.href}
                                                         className={cn(
                                                             'flex items-center gap-3 px-3 py-2 text-sm rounded-lg transition-colors',
-                                                            pathname === child.href ||
-                                                                (child.href !== '/' &&
-                                                                    pathname.startsWith(child.href))
+                                                            pathname === child.href
                                                                 ? 'bg-accent text-foreground font-medium'
                                                                 : 'text-muted-foreground hover:text-foreground hover:bg-accent'
                                                         )}

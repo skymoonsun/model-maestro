@@ -297,8 +297,9 @@ async def create_or_update_model_mapping(
             request.node_id
         )
 
-        # Resolve node name for response
+        # Resolve node name and type for response
         node_name = None
+        node_type = None
         if mapping.get("node_id"):
             from app.repositories.node_repository import NodeRepository
             from app.database import async_session_maker
@@ -307,6 +308,7 @@ async def create_or_update_model_mapping(
                 node = await node_repo.get_by_id(mapping["node_id"])
                 if node:
                     node_name = node.name
+                    node_type = node.node_type
 
         # Format context_length for display
         ctx_display = format_context_length(mapping.get("context_length")) if mapping.get("context_length") else None
@@ -316,6 +318,7 @@ async def create_or_update_model_mapping(
             real_name=mapping["real_name"],
             node_id=mapping.get("node_id"),
             node_name=node_name,
+            node_type=node_type,
             context_length=mapping.get("context_length"),
             context_length_display=ctx_display,
             capabilities=mapping.get("capabilities"),
@@ -337,8 +340,9 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
 
     mappings = await model_mapper.list_mappings()
 
-    # Resolve node names
+    # Resolve node names and types
     node_names = {}
+    node_types = {}
     async with async_session_maker() as session:
         node_repo = NodeRepository(session)
         node_ids = {m.get("node_id") for m in mappings if m.get("node_id")}
@@ -346,6 +350,7 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
             node = await node_repo.get_by_id(nid)
             if node:
                 node_names[nid] = node.name
+                node_types[nid] = node.node_type
 
     return [
         ModelMappingResponse(
@@ -353,6 +358,7 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
             real_name=m["real_name"],
             node_id=m.get("node_id"),
             node_name=node_names.get(m.get("node_id")),
+            node_type=node_types.get(m.get("node_id")),
             context_length=m.get("context_length"),
             context_length_display=format_context_length(m.get("context_length")) if m.get("context_length") else None,
             capabilities=m.get("capabilities"),
@@ -401,6 +407,7 @@ async def update_model_mapping(
         )
 
         node_name = None
+        node_type = None
         if mapping.get("node_id"):
             from app.repositories.node_repository import NodeRepository
             from app.database import async_session_maker
@@ -409,6 +416,7 @@ async def update_model_mapping(
                 node = await node_repo.get_by_id(mapping["node_id"])
                 if node:
                     node_name = node.name
+                    node_type = node.node_type
 
         ctx_display = format_context_length(mapping.get("context_length")) if mapping.get("context_length") else None
 
@@ -417,6 +425,7 @@ async def update_model_mapping(
             real_name=mapping["real_name"],
             node_id=mapping.get("node_id"),
             node_name=node_name,
+            node_type=node_type,
             context_length=mapping.get("context_length"),
             context_length_display=ctx_display,
             capabilities=mapping.get("capabilities"),

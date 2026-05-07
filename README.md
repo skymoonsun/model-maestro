@@ -50,6 +50,7 @@
   - [Admin Endpoints](#admin-endpoints)
   - [OpenAI Compatible](#openai-compatible)
 - [Model Mapping & Routing](#model-mapping--routing)
+- [IDE Integration](#ide-integration)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [License](#license)
@@ -104,6 +105,8 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **User-Level Access Control** — Per-user model allowlists and rate limits (requests / tokens per day).
 - **Token Usage Tracking** — Background-batched activity logs with prompt / completion / total token breakdowns, plus request source identification (Cursor, Claude, OpenClaw, Grafana, etc.).
 - **Tool Set Filtering** — Restrict which tools a model is allowed to invoke via configurable tool sets.
+- **Unified Models Page** — Single tabbed view for both Ollama and vLLM models with live metadata (context length, capabilities, max model len) and one-click sync.
+- **Sync Caps / Sync Meta** — Pull capabilities from Ollama (`/api/show`) and max_model_len from vLLM (`/v1/models`) directly from the admin UI.
 - **Context Length Config** — Per-model context length stored in mappings (used by Cursor/Antigravity for usage bars).
 - **Streaming** — SSE-based streaming on `/api/chat`, `/api/generate` and `/v1/chat/completions`.
 - **OpenAI Compatible** — Drop-in `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` and `/v1/models` endpoints.
@@ -235,10 +238,10 @@ The Next.js dashboard (`http://localhost:3000`) provides a visual interface for 
 | **Dashboard** | Node health, model counts, user statistics |
 | **Users** | Create users, manage tokens, assign models, set limits |
 | **Nodes** | Add/edit Ollama and vLLM nodes, set codes, view health, trigger discovery, drag-and-drop priority |
-| **Models per Node** | Browse discovered models per node |
-| **Models > Mappings** | Display↔Real name mappings, node-scoped overrides, context length, capabilities |
-| **Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
-| **Models > Config** | Per-model tool restrictions and settings |
+| **AI Models > Models** | Tabbed view for Ollama and vLLM models with sync buttons, capabilities and context length |
+| **AI Models > Mappings** | Display↔Real name mappings with provider badge (Ollama/vLLM), node-scoped overrides, context length, capabilities, sync caps |
+| **AI Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
+| **AI Models > Config** | Per-model tool restrictions and settings |
 | **Tool Sets** | Create tool groups and assign to models |
 | **Request Logs** | Filterable request history with source identification (Cursor, Claude, OpenClaw, Grafana, etc.) |
 | **Settings** | System-wide configuration |
@@ -530,6 +533,18 @@ A model mapping can be bound to a specific node so the same display name resolve
 
 ---
 
+## IDE Integration
+
+Model Maestro is designed to be the backend for modern AI-powered IDEs. See the full integration guide for step-by-step setup:
+
+- **[Claude Code](docs/IDE_INTEGRATION.md#claude-code)** — `ANTHROPIC_BASE_URL` override
+- **[OpenClaw](docs/IDE_INTEGRATION.md#openclaw)** — `openclaw.json` provider configuration
+- **[Cursor](docs/IDE_INTEGRATION.md#cursor)** — OpenAI API Key + custom base URL
+
+For complete configuration examples and troubleshooting, see [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md).
+
+---
+
 ## Troubleshooting
 
 **Restart the full stack**
@@ -645,6 +660,7 @@ cd frontend && npm run lint
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System architecture, request flow, database schema
 - [`docs/API.md`](docs/API.md) — Complete API reference with all endpoints, requests and responses
 - [`docs/SETUP.md`](docs/SETUP.md) — Detailed setup guide, environment variables, production deployment
+- [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md) — Claude Code, OpenClaw and Cursor setup
 - [`QUICKSTART.md`](QUICKSTART.md) — Get running in under 5 minutes
 
 ---

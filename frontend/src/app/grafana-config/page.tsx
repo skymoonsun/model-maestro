@@ -4,19 +4,25 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { grafanaConfigApi } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { useState, useEffect } from 'react';
-import { Save, BrainCircuit } from 'lucide-react';
+import { Save, BrainCircuit, Check } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import {
-    Select,
-    SelectContent,
-    SelectGroup,
-    SelectItem,
-    SelectLabel,
-    SelectTrigger,
-    SelectValue,
-} from '@/components/ui/select';
+    Command,
+    CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
+} from '@/components/ui/command';
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from '@/components/ui/popover';
 
 export default function GrafanaConfigPage() {
     const queryClient = useQueryClient();
@@ -26,6 +32,7 @@ export default function GrafanaConfigPage() {
     });
 
     const [selectedModel, setSelectedModel] = useState<string>('');
+    const [open, setOpen] = useState(false);
 
     useEffect(() => {
         if (cfg?.model) {
@@ -43,7 +50,7 @@ export default function GrafanaConfigPage() {
     });
 
     const handleSave = () => {
-        if (!selectedModel || selectedModel === '__none__') return;
+        if (!selectedModel) return;
         updateMutation.mutate(selectedModel);
     };
 
@@ -57,8 +64,10 @@ export default function GrafanaConfigPage() {
         );
     }
 
+    const detailsMap = new Map(
+        (cfg?.model_details ?? []).map((d) => [d.name, d])
+    );
     const available = cfg?.available_models ?? [];
-    console.log('[GrafanaConfig] available_models:', available);
 
     return (
         <div className="space-y-4 max-w-xl">
@@ -75,33 +84,78 @@ export default function GrafanaConfigPage() {
                 <CardContent className="space-y-4">
                     <div className="space-y-1.5">
                         <label className="text-sm font-medium text-muted-foreground">Model</label>
-                        <Select value={selectedModel || '__none__'} onValueChange={(v) => setSelectedModel(v === '__none__' ? '' : v)}>
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder="Select a model…" />
-                            </SelectTrigger>
-                            <SelectContent position="popper">
-                                <SelectGroup>
-                                    {available.length > 0 ? (
-                                        <>
-                                            <SelectLabel>Mapped Models</SelectLabel>
-                                            {available.map((m) => (
-                                                <SelectItem key={m} value={m}>
-                                                    {m}
-                                                </SelectItem>
-                                            ))}
-                                        </>
-                                    ) : (
-                                        <SelectItem value="__none__" disabled>
-                                            No mapped models found — add model mappings in Settings
-                                        </SelectItem>
-                                    )}
-                                </SelectGroup>
-                            </SelectContent>
-                        </Select>
+                        <Popover open={open} onOpenChange={setOpen}>
+                            <PopoverTrigger asChild>
+                                <Button
+                                    variant="outline"
+                                    role="combobox"
+                                    aria-expanded={open}
+                                    className="w-full justify-between"
+                                >
+                                    {selectedModel || 'Select a model…'}
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[400px] p-0" align="start">
+                                <Command>
+                                    <CommandInput placeholder="Search models…" />
+                                    <CommandList>
+                                        <CommandEmpty>No models found.</CommandEmpty>
+                                        <CommandGroup>
+                                            {available.map((m) => {
+                                                const detail = detailsMap.get(m);
+                                                const isMapped = detail?.is_mapped ?? false;
+                                                const nodes = detail?.nodes ?? [];
+                                                const nodeNames = nodes.map((n) => n.name).join(', ');
+                                                return (
+                                                    <CommandItem
+                                                        key={m}
+                                                        value={m}
+                                                        onSelect={(currentValue) => {
+                                                            setSelectedModel(currentValue === selectedModel ? '' : currentValue);
+                                                            setOpen(false);
+                                                        }}
+                                                    >
+                                                        <div className="flex items-start gap-2 w-full">
+                                                            <Check
+                                                                className={cn(
+                                                                    'mt-0.5 h-4 w-4 shrink-0',
+                                                                    selectedModel === m ? 'opacity-100' : 'opacity-0'
+                                                                )}
+                                                            />
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="font-medium truncate">
+                                                                        {m}
+                                                                    </span>
+                                                                    {isMapped ? (
+                                                                        <Badge variant="outline" className="text-emerald-400 border-emerald-400/30 bg-emerald-400/10 text-[10px] px-1 py-0">
+                                                                            Mapped
+                                                                        </Badge>
+                                                                    ) : (
+                                                                        <Badge variant="outline" className="text-amber-400 border-amber-400/30 bg-amber-400/10 text-[10px] px-1 py-0">
+                                                                            Unmapped
+                                                                        </Badge>
+                                                                    )}
+                                                                </div>
+                                                                {nodes.length > 0 && (
+                                                                    <div className="text-[11px] text-muted-foreground truncate mt-0.5">
+                                                                        {nodeNames}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </CommandItem>
+                                                );
+                                            })}
+                                        </CommandGroup>
+                                    </CommandList>
+                                </Command>
+                            </PopoverContent>
+                        </Popover>
                     </div>
 
                     <div className="flex items-center justify-end pt-2">
-                        <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending || !selectedModel || selectedModel === '__none__'}>
+                        <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending || !selectedModel}>
                             <Save className="h-4 w-4 mr-2" />
                             {updateMutation.isPending ? 'Saving…' : 'Save'}
                         </Button>
