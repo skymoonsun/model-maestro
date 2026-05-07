@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { useState, useCallback } from 'react';
-import { Download, Trash2, Search, HardDrive, Server } from 'lucide-react';
+import { Download, Trash2, Search, HardDrive, Server, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 
 function formatSize(bytes: number) {
@@ -42,10 +42,11 @@ function PullModelSection() {
     const [targetNode, setTargetNode] = useState<string>(PULL_ALL);
     const queryClient = useQueryClient();
 
-    const { data: nodes } = useQuery({
+    const { data: allNodes } = useQuery({
         queryKey: ['nodes'],
         queryFn: () => nodesApi.list(),
     });
+    const nodes = allNodes?.filter((n) => n.node_type === 'ollama');
 
     const handlePull = useCallback(async () => {
         if (!modelName.trim()) return;
@@ -156,6 +157,28 @@ function PullModelSection() {
     );
 }
 
+function capabilityBadge(cap: string) {
+    switch (cap) {
+        case 'tools':
+            return <Badge key={cap} variant="outline" className="text-blue-400 border-blue-400/30 bg-blue-400/10 text-xs">Tools</Badge>;
+        case 'thinking':
+            return <Badge key={cap} variant="outline" className="text-purple-400 border-purple-400/30 bg-purple-400/10 text-xs">Thinking</Badge>;
+        case 'vision':
+            return <Badge key={cap} variant="outline" className="text-emerald-400 border-emerald-400/30 bg-emerald-400/10 text-xs">Vision</Badge>;
+        case 'completion':
+            return null;
+        default:
+            return <Badge key={cap} variant="outline" className="text-xs">{cap}</Badge>;
+    }
+}
+
+function formatContextLen(n: number | null) {
+    if (!n) return '—';
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+    return String(n);
+}
+
 export default function OllamaModelsPage() {
     const [search, setSearch] = useState('');
     const queryClient = useQueryClient();
@@ -169,6 +192,16 @@ export default function OllamaModelsPage() {
         onSuccess: (_, name) => {
             queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
             toast.success(`${name} deleted`);
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const syncMutation = useMutation({
+        mutationFn: ollamaModelsApi.syncCapabilities,
+        onSuccess: (result) => {
+            queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
+            queryClient.invalidateQueries({ queryKey: ['model-mappings'] });
+            toast.success(`${result.synced} models synchronized`);
         },
         onError: (err) => toast.error(err.message),
     });
@@ -187,9 +220,15 @@ export default function OllamaModelsPage() {
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input placeholder="Search models..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
                 </div>
-                <Badge variant="outline" className="text-muted-foreground">
-                    <HardDrive className="h-3 w-3 mr-1" /> {models?.length || 0} models
-                </Badge>
+                <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending}>
+                        <RefreshCw className={`h-4 w-4 mr-2 ${syncMutation.isPending ? 'animate-spin' : ''}`} />
+                        Sync Caps
+                    </Button>
+                    <Badge variant="outline" className="text-muted-foreground">
+                        <HardDrive className="h-3 w-3 mr-1" /> {models?.length || 0} models
+                    </Badge>
+                </div>
             </div>
 
             <Card>
@@ -205,6 +244,8 @@ export default function OllamaModelsPage() {
                                     <TableHead>Status</TableHead>
                                     <TableHead>Display Name</TableHead>
                                     <TableHead>Nodes</TableHead>
+                                    <TableHead>Context Length</TableHead>
+                                    <TableHead>Capabilities</TableHead>
                                     <TableHead className="text-right">Action</TableHead>
                                 </TableRow>
                             </TableHeader>
@@ -240,13 +281,14 @@ export default function OllamaModelsPage() {
                                                 <span className="text-xs text-muted-foreground">—</span>
                                             )}
                                         </TableCell>
+                                        <TableCell className="text-sm">{formatContextLen(m.context_length)}</TableCell>
                                         <TableCell>
-                                            {m.display_name ? (
-                                                <span className="text-sm">{m.display_name}</span>
+                                            {m.capabilities && m.capabilities.length > 0 ? (
+                                                <div className="flex flex-wrap gap-1">
+                                                    {m.capabilities.filter(c => c !== 'completion').map((cap) => capabilityBadge(cap))}
+                                                </div>
                                             ) : (
-                                                <Link href="/models/mappings">
-                                                    <Button variant="ghost" size="sm" className="text-xs text-blue-400">Map →</Button>
-                                                </Link>
+                                                <span className="text-xs text-muted-foreground">—</span>
                                             )}
                                         </TableCell>
                                         <TableCell className="text-right">
@@ -274,7 +316,7 @@ export default function OllamaModelsPage() {
                                 ))}
                                 {filtered.length === 0 && (
                                     <TableRow>
-                                        <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
+                                        <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
                                             {search ? 'No results found' : 'No models found on Ollama server'}
                                         </TableCell>
                                     </TableRow>

@@ -203,6 +203,7 @@ class ModelMappingResponse(BaseModel):
     real_name: str
     node_id: Optional[int] = None
     node_name: Optional[str] = None
+    node_type: Optional[str] = None  # 'ollama' | 'vllm'
     context_length: Optional[int] = None  # Token cinsinden (e.g., 202752)
     context_length_display: Optional[str] = None  # İnsan-dostu format (e.g., "198K")
     capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
@@ -407,6 +408,8 @@ class OllamaModelListItem(BaseModel):
     display_name: Optional[str] = None
     # Which nodes have this model
     nodes: Optional[List[str]] = None
+    context_length: Optional[int] = None
+    capabilities: Optional[List[str]] = None
 
 class VllmModelListItem(BaseModel):
     """A model from a vLLM node"""
@@ -420,6 +423,9 @@ class VllmModelListItem(BaseModel):
     modified_at: Optional[str] = None
     is_mapped: bool = False
     display_name: Optional[str] = None
+    context_length: Optional[int] = None
+    capabilities: Optional[List[str]] = None
+    max_model_len: Optional[int] = None
 
 
 class ModelShowResponse(BaseModel):
@@ -433,6 +439,13 @@ class ModelShowResponse(BaseModel):
 
 class SyncCapabilitiesResponse(BaseModel):
     """Response from capabilities sync"""
+    synced: int
+    failed: int
+    results: List[Dict[str, Any]]
+
+
+class SyncVllmMetaResponse(BaseModel):
+    """Response from vLLM metadata sync"""
     synced: int
     failed: int
     results: List[Dict[str, Any]]

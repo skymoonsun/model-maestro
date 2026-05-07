@@ -328,6 +328,7 @@ export default function ModelMappingsPage() {
                             <TableRow>
                                 <TableHead>Display Name</TableHead>
                                 <TableHead>Real Name</TableHead>
+                                <TableHead>Provider</TableHead>
                                 <TableHead>Node</TableHead>
                                 <TableHead>Context</TableHead>
                                 <TableHead>Capabilities</TableHead>
@@ -339,6 +340,13 @@ export default function ModelMappingsPage() {
                                 <TableRow key={m.display_name}>
                                     <TableCell className="font-medium">{m.display_name}</TableCell>
                                     <TableCell className="font-mono text-xs text-muted-foreground">{m.real_name}</TableCell>
+                                    <TableCell>
+                                        {m.node_type ? (
+                                            <Badge variant="outline" className="text-xs capitalize">{m.node_type}</Badge>
+                                        ) : (
+                                            <span className="text-xs text-muted-foreground">—</span>
+                                        )}
+                                    </TableCell>
                                     <TableCell>
                                         {m.node_id ? (
                                             <Badge variant="outline" className="text-xs flex items-center gap-1">
@@ -388,7 +396,7 @@ export default function ModelMappingsPage() {
                             ))}
                             {filtered.length === 0 && (
                                 <TableRow>
-                                    <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
+                                    <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
                                         {search || nodeFilter !== 'all' || capFilter !== 'all' || ctxMin ? 'No results match your filters' : 'No mappings yet'}
                                     </TableCell>
                                 </TableRow>
