@@ -535,11 +535,12 @@ A model mapping can be bound to a specific node so the same display name resolve
 
 ## IDE Integration
 
-Model Maestro is designed to be the backend for modern AI-powered IDEs. See the full integration guide for step-by-step setup:
+Model Maestro is designed to be the backend for modern AI-powered IDEs and tools. See the full integration guide for step-by-step setup:
 
 - **[Claude Code](docs/IDE_INTEGRATION.md#claude-code)** — `ANTHROPIC_BASE_URL` override
 - **[OpenClaw](docs/IDE_INTEGRATION.md#openclaw)** — `openclaw.json` provider configuration
 - **[Cursor](docs/IDE_INTEGRATION.md#cursor)** — OpenAI API Key + custom base URL
+- **[Grafana Assistant](docs/IDE_INTEGRATION.md#grafana-assistant)** — Grafana plugin with domain bypass script or reverse proxy
 
 For complete configuration examples and troubleshooting, see [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md).
 
@@ -660,7 +661,7 @@ cd frontend && npm run lint
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System architecture, request flow, database schema
 - [`docs/API.md`](docs/API.md) — Complete API reference with all endpoints, requests and responses
 - [`docs/SETUP.md`](docs/SETUP.md) — Detailed setup guide, environment variables, production deployment
-- [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md) — Claude Code, OpenClaw and Cursor setup
+- [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md) — Claude Code, OpenClaw, Cursor and Grafana Assistant setup
 - [`QUICKSTART.md`](QUICKSTART.md) — Get running in under 5 minutes
 
 ---

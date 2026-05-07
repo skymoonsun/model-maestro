@@ -1,12 +1,13 @@
 # IDE Integration Guide
 
-Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide covers setup for **Claude Code**, **OpenClaw** and **Cursor**.
+Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide covers setup for **Claude Code**, **OpenClaw**, **Cursor** and **Grafana Assistant**.
 
 ## Table of Contents
 
 - [Claude Code](#claude-code)
 - [OpenClaw](#openclaw)
 - [Cursor](#cursor)
+- [Grafana Assistant](#grafana-assistant)
 
 ---
 
@@ -120,12 +121,76 @@ Cursor supports custom OpenAI base URLs for all LLM requests.
 
 ---
 
+## Grafana Assistant
+
+Grafana Assistant is an official Grafana plugin that adds AI-powered features inside Grafana dashboards. Model Maestro provides a fully compatible backend for this plugin.
+
+### Requirements
+
+- **Grafana >= 13.0.0-0**
+- **Grafana Assistant plugin** installed from the plugin catalog
+
+### Installation
+
+1. In Grafana, go to **Administration > Plugins and data > Plugins**.
+2. Search for and install **Grafana Assistant**.
+3. After installation, navigate to the plugin's details page (`/plugins/grafana-assistant-app`).
+4. Switch to the **Connection** tab.
+
+### Configuration (Method 1 — Browser Script, Recommended)
+
+The plugin validates that the Backend URL ends with `.grafana.net` by default. Use the bypass script to override this restriction:
+
+1. On the plugin's Connection page, click **Manual configuration** to expand the form.
+2. Open your browser's DevTools (`F12 > Console`).
+3. Paste the contents of [`docs/grafana-assistant-bypass.js`](../grafana-assistant-bypass.js) and press **Enter**.
+4. The script will:
+   - Auto-expand the form if needed
+   - Fill the fields automatically
+   - Bypass domain validation
+   - Click **Save & connect**
+
+**Script default values:**
+
+| Field | Default Value | Description |
+|---|---|---|
+| Backend URL | `http://localhost:8000/grafana/assistant` | Point this at your Maestro Grafana Assistant endpoint |
+| Instance ID | `1622805` | Fixed Grafana Assistant instance ID |
+| API Token | `API_KEY` | Replace this with a valid Maestro JWT token before running the script |
+
+> **Important:** Edit the `CONFIG.apiToken` value in the script to your actual Maestro JWT token before pasting it into the console.
+
+### Configuration (Method 2 — Reverse Proxy)
+
+If you prefer not to use the browser script, expose your Maestro instance through a reverse proxy that serves it on a `.grafana.net` subdomain:
+
+```
+https://maestro.example.com/grafana/assistant  →  http://localhost:8000/grafana/assistant
+```
+
+Then fill the Connection form manually with:
+
+| Field | Value |
+|---|---|
+| Backend URL | `https://maestro.example.com/grafana/assistant` |
+| Instance ID | `1622805` |
+| API Token | Your Maestro JWT token |
+
+### Notes
+
+- The `/grafana/assistant` endpoint supports streaming chat, chat history, model config and infrastructure discovery.
+- Configure the default model for Grafana Assistant in the Maestro admin panel under **Grafana Config**.
+- Request logs from Grafana Assistant are tagged with source `grafana` in the admin panel.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | `401 Unauthorized` | JWT token expired or wrong | Refresh token in admin panel; verify `Authorization: Bearer <token>` header |
-| `404 Not Found` | Wrong base URL path | Ensure Claude uses `/claude/`, OpenClaw uses `/openclaw`, Cursor uses `/cursor` |
+| `404 Not Found` | Wrong base URL path | Ensure Claude uses `/claude/`, OpenClaw uses `/openclaw`, Cursor uses `/cursor`, Grafana uses `/grafana/assistant` |
 | Model not listed | No mapping created | Create a model mapping in the admin panel (AI Models > Mappings) |
 | Connection refused (Cursor) | Localhost not reachable from Cursor cloud | Expose Maestro via public URL or tunnel |
 | Empty model list in Cursor | `/cursor` endpoint not returning models | Check Maestro logs; ensure model discovery succeeded for at least one node |
+| Grafana "Domain not allowed" | Backend URL does not end with `.grafana.net` | Use the bypass script (Method 1) or reverse proxy with `.grafana.net` domain (Method 2) |
