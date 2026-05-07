@@ -1928,7 +1928,7 @@ class OllamaProxy:
             # If not provided, default to a reasonable value.
             if 'max_tokens' not in data and 'max_completion_tokens' not in data:
                 data['max_tokens'] = 4096
-                logger.info(f"[vLLM] Default max_tokens=4096 injected for model {mapped_model}")
+                logger.info(f"[vLLM] Default max_tokens=4096 injected for model {model_name}")
 
         # Step 3: Strip images from messages if model doesn't support vision
         # Use the mapped (real) model name for capability lookup
