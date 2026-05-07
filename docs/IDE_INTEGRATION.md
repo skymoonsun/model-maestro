@@ -143,7 +143,7 @@ The plugin validates that the Backend URL ends with `.grafana.net` by default. U
 
 1. On the plugin's Connection page, click **Manual configuration** to expand the form.
 2. Open your browser's DevTools (`F12 > Console`).
-3. Paste the contents of [`docs/grafana-assistant-bypass.js`](../grafana-assistant-bypass.js) and press **Enter**.
+3. Paste the contents of [`docs/grafana-assistant-bypass.js`](grafana-assistant-bypass.js) and press **Enter**.
 4. The script will:
    - Auto-expand the form if needed
    - Fill the fields automatically
