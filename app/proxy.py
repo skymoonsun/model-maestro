@@ -33,7 +33,7 @@ import xml.etree.ElementTree as ET
 from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
-from app.config import get_settings, model_mapper, model_group_manager
+from app.config import get_settings, model_mapper, model_group_manager, get_context_length_for_model
 from app.user_manager import user_manager
 from app.auth import get_current_user
 
@@ -1924,6 +1924,12 @@ class OllamaProxy:
                 if not data['options']:
                     data.pop('options', None)
 
+            # vLLM needs max_tokens to avoid "0 output tokens" errors when input is long.
+            # If not provided, default to a reasonable value.
+            if 'max_tokens' not in data and 'max_completion_tokens' not in data:
+                data['max_tokens'] = 4096
+                logger.info(f"[vLLM] Default max_tokens=4096 injected for model {mapped_model}")
+
         # Step 3: Strip images from messages if model doesn't support vision
         # Use the mapped (real) model name for capability lookup
         mapped_model = data.get('model') or data.get('name') if data else None
@@ -1961,7 +1967,8 @@ class OllamaProxy:
                     endpoint=endpoint,
                     base_url=base_url,
                     api_key=api_key,
-                    start_time=start_time
+                    start_time=start_time,
+                    node_type=node_type
                 )
 
             # Non-streaming requests with failover support
@@ -1977,7 +1984,8 @@ class OllamaProxy:
                 tried_nodes=tried_nodes,
                 model_name=model_name,
                 api_key=api_key,
-                start_time=start_time
+                start_time=start_time,
+                node_type=node_type
             )
 
         except HTTPException:
@@ -2006,7 +2014,8 @@ class OllamaProxy:
         endpoint: str,
         base_url: str,
         api_key: Optional[str],
-        start_time: float
+        start_time: float,
+        node_type: str = 'ollama'
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2825,7 +2834,8 @@ class OllamaProxy:
         tried_nodes: set,
         model_name: Optional[str],
         api_key: Optional[str],
-        start_time: float
+        start_time: float,
+        node_type: str = 'ollama'
     ):
         """
         Handle non-streaming requests with automatic failover.
