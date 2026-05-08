@@ -1926,7 +1926,10 @@ class OllamaProxy:
 
             # vLLM needs max_tokens to avoid "0 output tokens" errors when input is long.
             # If not provided, default to a reasonable value.
-            if 'max_tokens' not in data and 'max_completion_tokens' not in data:
+            # Skip for NVIDIA NIM endpoints — known to crash with certain models (e.g. Kimi K2.6)
+            # when max_tokens is injected. See: CherryHQ/cherry-studio#14868
+            is_nvidia = base_url and ('nvidia.com' in base_url or 'integrate.api.nvidia.com' in base_url)
+            if not is_nvidia and 'max_tokens' not in data and 'max_completion_tokens' not in data:
                 data['max_tokens'] = 4096
                 logger.info(f"[vLLM] Default max_tokens=4096 injected for model {model_name}")
 
@@ -2070,6 +2073,11 @@ class OllamaProxy:
                     request_headers = {}
                     if current_api_key:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
+
+                    # Log full outgoing request body for debugging upstream issues
+                    if current_data:
+                        _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                        logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
 
                     async with client.stream("POST", current_url, json=current_data, headers=request_headers) as resp:
                         provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
@@ -2874,6 +2882,11 @@ class OllamaProxy:
                 request_headers = {}
                 if current_api_key:
                     request_headers["Authorization"] = f"Bearer {current_api_key}"
+
+                # Log full outgoing request body for debugging upstream issues
+                if current_data:
+                    _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                    logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
 
                 if method.upper() == "GET":
                     response = await client.get(current_url, headers=request_headers)
