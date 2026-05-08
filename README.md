@@ -599,6 +599,23 @@ docker compose -f docker-compose.dev.yml logs -f maestro
 docker compose -f docker-compose.dev.yml logs -f frontend
 ```
 
+**NVIDIA API (`integrate.api.nvidia.com`) — Known Limitations**
+
+NVIDIA's hosted NIM endpoints are not fully OpenAI-compatible and impose strict request validation:
+
+| Parameter | Status | Notes |
+|---|---|---|
+| `tools` | **Unsupported** | NVIDIA backend crashes with `unhashable type: 'dict'` (CherryHQ/cherry-studio#14868). Proxy strips this automatically for NVIDIA endpoints. |
+| `tool_choice` | **Unsupported** | Stripped automatically. |
+| `stream_options` | **Unsupported** | Stripped automatically. |
+| `presence_penalty` | **Unsupported** | Returns 422. Stripped automatically. |
+| `frequency_penalty` | **Unsupported** | Returns 422. Stripped automatically. |
+| `max_tokens` | **Avoid** | Injection causes 500 errors on some models (e.g. Kimi K2.6). Proxy skips injection for NVIDIA URLs. |
+| `system` role | **Avoid** | May be rejected; use `user` role only. |
+| Message order | **Strict** | Must alternate `user`/`assistant`. System message can only appear at the start. |
+
+> **Workaround:** If you need tool support with Kimi K2.6 or other NVIDIA-hosted models, run them on a self-hosted vLLM node instead. Generic vLLM nodes support tools, tool_choice and all standard parameters without restriction.
+
 ---
 
 ## Development

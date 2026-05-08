@@ -1924,11 +1924,28 @@ class OllamaProxy:
                 if not data['options']:
                     data.pop('options', None)
 
+            # NVIDIA NIM endpoints are very strict about params (Kilo-Org/kilocode#9652).
+            # Strip unsupported params to avoid 422/500 errors.
+            is_nvidia = base_url and ('nvidia.com' in base_url or 'integrate.api.nvidia.com' in base_url)
+            if is_nvidia:
+                nvidia_unsupported = ('tools', 'tool_choice', 'stream_options', 'presence_penalty',
+                                      'frequency_penalty', 'logit_bias', 'logprobs', 'top_logprobs',
+                                      'response_format', 'parallel_tool_calls', 'store', 'metadata',
+                                      'prediction', 'modalities', 'audio', 'service_tier', 'user')
+                stripped_nvidia = [k for k in nvidia_unsupported if k in data]
+                for k in stripped_nvidia:
+                    data.pop(k, None)
+                # Also remove the entire 'options' dict — NVIDIA does not recognise it
+                if 'options' in data:
+                    data.pop('options', None)
+                    stripped_nvidia.append('options')
+                if stripped_nvidia:
+                    logger.info(f"[vLLM-NVIDIA] Stripped unsupported params for NVIDIA: {', '.join(stripped_nvidia)}")
+
             # vLLM needs max_tokens to avoid "0 output tokens" errors when input is long.
             # If not provided, default to a reasonable value.
             # Skip for NVIDIA NIM endpoints — known to crash with certain models (e.g. Kimi K2.6)
             # when max_tokens is injected. See: CherryHQ/cherry-studio#14868
-            is_nvidia = base_url and ('nvidia.com' in base_url or 'integrate.api.nvidia.com' in base_url)
             if not is_nvidia and 'max_tokens' not in data and 'max_completion_tokens' not in data:
                 data['max_tokens'] = 4096
                 logger.info(f"[vLLM] Default max_tokens=4096 injected for model {model_name}")
@@ -2508,8 +2525,9 @@ class OllamaProxy:
 
                                                 if isinstance(mapped_data, dict) and 'usage' in mapped_data:
                                                     usage = mapped_data['usage']
-                                                    prompt_tokens += usage.get('prompt_tokens', 0)
-                                                    completion_tokens += usage.get('completion_tokens', 0)
+                                                    if usage:
+                                                        prompt_tokens += usage.get('prompt_tokens', 0)
+                                                        completion_tokens += usage.get('completion_tokens', 0)
 
                                                 should_skip = False
 
