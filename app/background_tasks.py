@@ -304,7 +304,8 @@ async def node_health_check_task():
                         node.base_url,
                         node.api_key,
                         timeout=3.0,
-                        node_type=getattr(node, 'node_type', 'ollama')
+                        node_type=getattr(node, 'node_type', 'ollama'),
+                        headers=getattr(node, 'headers', None)
                     )
                     return node, is_healthy, error
 
@@ -399,11 +400,14 @@ async def _warmup_model_on_node(
     client,
     node_base_url: str,
     node_api_key: Optional[str],
-    model_name: str
+    model_name: str,
+    node_headers: Optional[Dict[str, str]] = None
 ) -> bool:
     """Send a minimal warmup request for a model on a specific node."""
     url = f"{node_base_url.rstrip('/')}/api/chat"
     headers = {"Content-Type": "application/json"}
+    if node_headers:
+        headers.update(node_headers)
     if node_api_key:
         headers["Authorization"] = f"Bearer {node_api_key}"
 
@@ -484,7 +488,8 @@ async def model_warmup_task():
                         async def _warmup_with_limit(model_name: str) -> None:
                             async with semaphore:
                                 await _warmup_model_on_node(
-                                    client, node.base_url, node.api_key, model_name
+                                    client, node.base_url, node.api_key, model_name,
+                                    node_headers=getattr(node, 'headers', None)
                                 )
 
                         await asyncio.gather(
