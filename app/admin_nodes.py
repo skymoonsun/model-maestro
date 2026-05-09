@@ -79,7 +79,8 @@ async def create_node(
             node_type=request.node_type or 'ollama',
             warmup_enabled=request.warmup_enabled if request.warmup_enabled is not None else True,
             health_check_url=request.health_check_url,
-            code=request.code
+            code=request.code,
+            headers=request.headers
         )
 
         # Audit log
@@ -107,7 +108,8 @@ async def create_node(
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
-            updated_at=node.updated_at.isoformat() if node.updated_at else None
+            updated_at=node.updated_at.isoformat() if node.updated_at else None,
+            headers=node.headers
         )
 
 
@@ -234,11 +236,17 @@ async def update_node(
                     raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
                 update_data["code"] = request.code
 
+        if request.headers is not None:
+            update_data["headers"] = request.headers if request.headers else None
+
         node = await repo.update(node_id, **update_data)
-        
+
         if not node:
             raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
-        
+
+        # Invalidate Redis cache so proxy picks up new api_key / headers immediately
+        await node_manager.invalidate_cache()
+
         # Audit log
         audit_repo = AuditLogRepository(session)
         await audit_repo.create(
@@ -264,7 +272,8 @@ async def update_node(
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
-            updated_at=node.updated_at.isoformat() if node.updated_at else None
+            updated_at=node.updated_at.isoformat() if node.updated_at else None,
+            headers=node.headers
         )
 
 
@@ -325,7 +334,8 @@ async def check_node_health(
         is_healthy, error = await node_manager.health_check_node(
             node.base_url,
             node.api_key,
-            node_type=getattr(node, 'node_type', 'ollama')
+            node_type=getattr(node, 'node_type', 'ollama'),
+            headers=getattr(node, 'headers', None)
         )
         
         # Update node status

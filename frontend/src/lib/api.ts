@@ -686,6 +686,7 @@ export interface OllamaNodeResponse {
   last_health_check: string | null;
   created_at: string | null;
   updated_at: string | null;
+  headers?: Record<string, string> | null;
 }
 
 export interface NodeModel {
@@ -713,6 +714,7 @@ export interface CreateNode {
   warmup_enabled?: boolean;
   health_check_url?: string | null;
   code?: string | null;
+  headers?: Record<string, string> | null;
 }
 
 export interface HealthCheckResult {

@@ -55,7 +55,8 @@ class NodeManager:
         base_url: str,
         api_key: Optional[str] = None,
         timeout: float = 5.0,
-        node_type: str = 'ollama'
+        node_type: str = 'ollama',
+        headers: Optional[Dict[str, str]] = None
     ) -> Tuple[bool, Optional[str]]:
         """
         Check if a node is healthy.
@@ -65,15 +66,18 @@ class NodeManager:
             api_key: Optional API key
             timeout: Request timeout
             node_type: 'ollama' or 'vllm'
+            headers: Optional custom headers
 
         Returns:
             Tuple of (is_healthy, error_message)
         """
         try:
             client = await self.get_client()
-            headers = {}
+            request_headers = {}
+            if headers:
+                request_headers.update(headers)
             if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
+                request_headers["Authorization"] = f"Bearer {api_key}"
 
             # Use different health check endpoint based on node type
             if node_type == 'vllm':
@@ -83,7 +87,7 @@ class NodeManager:
 
             response = await client.get(
                 health_url,
-                headers=headers,
+                headers=request_headers,
                 timeout=timeout
             )
 
@@ -105,7 +109,8 @@ class NodeManager:
         base_url: str,
         api_key: Optional[str] = None,
         timeout: float = 30.0,
-        node_type: str = 'ollama'
+        node_type: str = 'ollama',
+        headers: Optional[Dict[str, str]] = None
     ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
         """
         Discover models from a node.
@@ -115,15 +120,18 @@ class NodeManager:
             api_key: Optional API key
             timeout: Request timeout
             node_type: 'ollama' or 'vllm'
+            headers: Optional custom headers
 
         Returns:
             Tuple of (success, models_list, error_message)
         """
         try:
             client = await self.get_client()
-            headers = {}
+            request_headers = {}
+            if headers:
+                request_headers.update(headers)
             if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
+                request_headers["Authorization"] = f"Bearer {api_key}"
 
             # Use different discovery endpoint based on node type
             if node_type == 'vllm':
@@ -133,7 +141,7 @@ class NodeManager:
 
             response = await client.get(
                 discovery_url,
-                headers=headers,
+                headers=request_headers,
                 timeout=timeout
             )
 
@@ -207,7 +215,8 @@ class NodeManager:
         success, models, error = await self.discover_models_from_node(
             node.base_url,
             node.api_key,
-            node_type=getattr(node, 'node_type', 'ollama')
+            node_type=getattr(node, 'node_type', 'ollama'),
+            headers=getattr(node, 'headers', None)
         )
         
         if not success:
@@ -421,17 +430,19 @@ class NodeManager:
             raise ValueError(f"Node {node_id} not found")
         
         client = await self.get_client()
-        headers = {}
+        request_headers = {}
+        if getattr(node, 'headers', None):
+            request_headers.update(node.headers)
         if node.api_key:
-            headers["Authorization"] = f"Bearer {node.api_key}"
-        
+            request_headers["Authorization"] = f"Bearer {node.api_key}"
+
         url = f"{node.base_url.rstrip('/')}/api/pull"
-        
+
         async with client.stream(
             "POST",
             url,
             json={"name": model_name, "stream": stream},
-            headers=headers,
+            headers=request_headers,
             timeout=600.0  # 10 minutes
         ) as response:
             if response.status_code != 200:

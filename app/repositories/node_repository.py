@@ -26,7 +26,8 @@ class NodeRepository:
         node_type: str = 'ollama',
         warmup_enabled: bool = True,
         health_check_url: Optional[str] = None,
-        code: Optional[str] = None
+        code: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
     ) -> OllamaNode:
         """Create a new Ollama node"""
         node = OllamaNode(
@@ -40,6 +41,7 @@ class NodeRepository:
             warmup_enabled=warmup_enabled,
             health_check_url=health_check_url,
             code=code,
+            headers=headers,
             health_status='unknown'
         )
         self.session.add(node)
@@ -143,6 +145,7 @@ class NodeRepository:
                 "node_type": node.node_type,
                 "warmup_enabled": node.warmup_enabled,
                 "code": node.code,
+                "headers": node.headers,
                 "health_status": node.health_status,
                 "last_health_check": node.last_health_check.isoformat() if node.last_health_check else None,
                 "created_at": node.created_at.isoformat() if node.created_at else None,
@@ -289,7 +292,8 @@ class NodeModelRepository:
                 "node_type": node.node_type,
                 "priority": node.priority,
                 "weight": node.weight,
-                "health_status": node.health_status
+                "health_status": node.health_status,
+                "headers": node.headers
             }
             for model, node in result.all()
         ]
