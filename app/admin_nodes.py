@@ -240,10 +240,13 @@ async def update_node(
             update_data["headers"] = request.headers if request.headers else None
 
         node = await repo.update(node_id, **update_data)
-        
+
         if not node:
             raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
-        
+
+        # Invalidate Redis cache so proxy picks up new api_key / headers immediately
+        await node_manager.invalidate_cache()
+
         # Audit log
         audit_repo = AuditLogRepository(session)
         await audit_repo.create(

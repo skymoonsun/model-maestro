@@ -1886,6 +1886,7 @@ class OllamaProxy:
         base_url = None
         api_key = None
         node_type = 'ollama'
+        node_headers = None
         if preferred_node_id:
             try:
                 from app.database import async_session_maker
@@ -1905,7 +1906,6 @@ class OllamaProxy:
             except Exception as e:
                 logger.warning(f"[LB] Error looking up preferred node {preferred_node_id}: {e}, falling back")
 
-        node_headers = None
         if not base_url:
             # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
             base_url, api_key, node_type, node_headers = await self._select_node_url(model_name or '')
@@ -2100,10 +2100,11 @@ class OllamaProxy:
                     if current_api_key:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
 
-                    # Log full outgoing request body for debugging upstream issues
+                    # Log full outgoing request body and headers for debugging
                     if current_data:
                         _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
                         logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
+                    logger.info(f"[OUTGOING] request headers: {request_headers}")
 
                     async with client.stream("POST", current_url, json=current_data, headers=request_headers) as resp:
                         provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
@@ -2916,10 +2917,11 @@ class OllamaProxy:
                 if current_api_key:
                     request_headers["Authorization"] = f"Bearer {current_api_key}"
 
-                # Log full outgoing request body for debugging upstream issues
+                # Log full outgoing request body and headers for debugging
                 if current_data:
                     _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
                     logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
+                logger.info(f"[OUTGOING] request headers: {request_headers}")
 
                 if method.upper() == "GET":
                     response = await client.get(current_url, headers=request_headers)
