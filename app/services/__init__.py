@@ -29,6 +29,8 @@ DEFAULT_SYSTEM_CONFIG = {
     "http_client.timeout": "1200",
     "defaults.context_length": "32768",
     "defaults.log_level": "INFO",
+    "search.web_search_url": "https://ollama.com/api/web_search",
+    "search.web_search_api_key": "",
 }
 
 # Default ollama unsupported params
@@ -70,6 +72,24 @@ class ConfigManager:
             logger.info("Configuration loaded from database")
         except Exception as e:
             logger.warning(f"Failed to load config from DB, using defaults: {e}")
+
+    async def ensure_defaults(self):
+        """Ensure all default config keys exist in DB (auto-seed missing ones)"""
+        try:
+            added = 0
+            async with async_session_maker() as session:
+                repo = SystemConfigRepository(session)
+                for key, value in DEFAULT_SYSTEM_CONFIG.items():
+                    existing = await repo.get_by_key(key)
+                    if not existing:
+                        await repo.upsert(key, value)
+                        added += 1
+                await session.commit()
+            if added:
+                logger.info(f"Auto-seeded {added} missing config keys")
+                await self.load_all()
+        except Exception as e:
+            logger.warning(f"Failed to auto-seed defaults: {e}")
     
     async def _load_system_config(self):
         """Load system config from DB into cache"""
@@ -178,9 +198,10 @@ class ConfigManager:
             "background_tasks": {},
             "http_client": {},
             "defaults": {},
+            "search": {},
             "ollama_unsupported_params": self.get_ollama_unsupported_params(),
         }
-        
+
         for key, value in self._config_cache.items():
             parts = key.split(".", 1)
             if len(parts) == 2 and parts[0] in result:
@@ -193,7 +214,7 @@ class ConfigManager:
                     except ValueError:
                         converted = value
                 result[parts[0]][parts[1]] = converted
-        
+
         return result
     
     def get_ollama_unsupported_params(self) -> List[str]:

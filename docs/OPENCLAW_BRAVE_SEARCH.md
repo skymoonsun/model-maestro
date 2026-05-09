@@ -13,16 +13,20 @@ Model Maestro provides a Brave Search-compatible endpoint (`/res/v1/web/search`)
 
 ### 1. Configure Maestro
 
-Add search backend settings to your `.env`:
+Search backend settings are managed dynamically via the **Settings** page in the admin panel.
 
-```bash
-# Ollama Web Search (default)
-OLLAMA_API_KEY=sk-ollama-api-key
-OLLAMA_WEB_SEARCH_URL=https://api.ollama.ai/api/search
+Go to **Settings > Search** and configure:
 
-# Alternative: Custom DuckDuckGo / SerpAPI proxy
-# OLLAMA_WEB_SEARCH_URL=https://your-search-proxy.com/search
-```
+| Setting | Default | Description |
+|---|---|---|
+| `web_search_url` | `https://ollama.com/api/web_search` | Web search backend URL |
+| `web_search_api_key` | *(empty)* | API key for the search backend |
+
+You can point the URL to any compatible proxy:
+- **Ollama Web Search** (default): `https://ollama.com/api/web_search`
+- **Custom proxy** (DuckDuckGo, SerpAPI, etc.): `https://your-search-proxy.com/search`
+
+> **Legacy `.env` support:** `OLLAMA_WEB_SEARCH_URL` and `OLLAMA_API_KEY` in `.env` are no longer used by the search endpoint. All configuration is now read from the Settings page.
 
 ### 2. OpenClaw `openclaw.json` Configuration
 
@@ -147,7 +151,7 @@ Both methods use the same Maestro JWT token.
 | `401 Unauthorized` | Missing or invalid token | Generate a new token from the Maestro admin panel |
 | `500 Internal Server Error` | Search backend (Ollama) is unreachable | Verify `OLLAMA_API_KEY` and `OLLAMA_WEB_SEARCH_URL` in `.env` |
 | OpenClaw cannot search | URL still points to `api.search.brave.com` | Check patcher log: `cat /var/log/openclaw-patcher.log` |
-| Empty results | Ollama API key missing | Add `OLLAMA_API_KEY` to your `.env` file |
+| Empty results | Web search API key missing | Set `web_search_api_key` in **Settings > Search** |
 
 ## Advanced: Custom Search Backends
 
@@ -165,8 +169,8 @@ Instead of the default Ollama Web Search you can point to your own proxy. The pr
 }
 ```
 
-Set your proxy URL in `.env`:
+Set your proxy URL in **Settings > Search**:
 
-```bash
-OLLAMA_WEB_SEARCH_URL=https://my-proxy.example.com/search
-```
+| Setting | Value |
+|---|---|
+| `web_search_url` | `https://my-proxy.example.com/search` |
