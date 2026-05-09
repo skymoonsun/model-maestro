@@ -259,7 +259,7 @@ export const toolSetsApi = {
 export const systemConfigApi = {
   get: () => adminFetch<Record<string, Record<string, string>>>('/admin/config'),
   getRaw: () => adminFetch<SystemConfigRaw[]>('/admin/config/raw'),
-  update: (data: Record<string, string>) =>
+  update: (data: Record<string, Record<string, string>>) =>
     adminFetch<void>('/admin/config', { method: 'PUT', body: JSON.stringify(data) }),
 };
 

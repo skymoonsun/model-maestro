@@ -173,6 +173,10 @@ async def startup_event():
     from app.services import config_manager
     await config_manager.load_all()
     logger.info("Configuration loaded from database")
+
+    # Ensure all default config keys exist in DB (auto-seed new ones)
+    await config_manager.ensure_defaults()
+    logger.info("Default configuration keys ensured")
     
     # Start background tasks
     from app.background_tasks import start_background_tasks
@@ -572,25 +576,30 @@ async def brave_search_mock(
     but runs Ollama's web search in the background.
     """
     logger.info(f"User {username} requesting Brave Search mock with query: {q}")
-    settings = get_settings()
-    
+
+    from app.services import config_manager
+    await config_manager.ensure_loaded()
+
+    web_search_url = config_manager.get("search.web_search_url", "https://ollama.com/api/web_search")
+    web_search_api_key = config_manager.get("search.web_search_api_key", "")
+
     # Format the request exactly as Ollama Cloud expects
     ollama_request_data = {"query": q}
     ollama_results = []
-    
-    if settings.ollama_api_key:
+
+    if web_search_api_key:
         try:
             headers = {
-                "Authorization": f"Bearer {settings.ollama_api_key}",
+                "Authorization": f"Bearer {web_search_api_key}",
                 "Content-Type": "application/json"
             }
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
-                    settings.ollama_web_search_url,
+                    web_search_url,
                     json=ollama_request_data,
                     headers=headers
                 )
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     ollama_results = data.get("results", [])
@@ -599,13 +608,13 @@ async def brave_search_mock(
         except Exception as e:
             logger.error(f"Error fetching from Ollama web_search: {e}")
     else:
-        logger.warning("OLLAMA_API_KEY is not set. Using mocked fallback results for web search.")
+        logger.warning("search.web_search_api_key is not set. Using mocked fallback results for web search.")
         # Fallback to mock search result (taklit/mock fallback)
         ollama_results = [
             {
                 "title": f"Mock Title for: {q} (No API Key set)",
                 "url": "https://example.com/mock-search-result",
-                "content": "Configure OLLAMA_API_KEY in .env to enable real web search."
+                "content": "Configure search.web_search_api_key in Settings to enable real web search."
             },
             {
                 "title": "Ollama",

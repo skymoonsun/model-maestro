@@ -24,6 +24,16 @@ SYSTEM_CONFIGS = {
     "defaults.context_length": ("32768", "DB'de tanımsız modeller için varsayılan context uzunluğu"),
     "defaults.log_level": ("INFO", "Uygulama log seviyesi"),
 
+    # Search
+    "search.web_search_url": (
+        "https://ollama.com/api/web_search",
+        "Web search backend URL (Ollama Web Search, DuckDuckGo proxy, etc.)"
+    ),
+    "search.web_search_api_key": (
+        "",
+        "Web search backend API key"
+    ),
+
     # Ollama Unsupported Params
     "ollama_unsupported_params": (
         '["logit_bias","logprobs","top_logprobs","top_k","response_format","user","service_tier","parallel_tool_calls","store","metadata","prediction","modalities","audio"]',

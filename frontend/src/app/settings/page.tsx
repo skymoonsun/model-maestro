@@ -26,7 +26,7 @@ export default function SettingsPage() {
     }, [config]);
 
     const updateMutation = useMutation({
-        mutationFn: (data: Record<string, string>) => systemConfigApi.update(data),
+        mutationFn: (data: Record<string, Record<string, string>>) => systemConfigApi.update(data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['system-config'] });
             toast.success('Settings updated');
@@ -35,14 +35,17 @@ export default function SettingsPage() {
     });
 
     const handleSave = () => {
-        // Flatten to key-value
-        const flat: Record<string, string> = {};
-        Object.entries(editValues).forEach(([, group]) => {
-            Object.entries(group).forEach(([key, value]) => {
-                flat[key] = value;
+        // Send grouped data directly (backend expects { category: { key: value } })
+        // Filter out ollama_unsupported_params since it's handled separately
+        const grouped: Record<string, Record<string, string>> = {};
+        Object.entries(editValues).forEach(([category, values]) => {
+            if (category === 'ollama_unsupported_params') return;
+            grouped[category] = {};
+            Object.entries(values).forEach(([key, value]) => {
+                grouped[category][key] = value;
             });
         });
-        updateMutation.mutate(flat);
+        updateMutation.mutate(grouped);
     };
 
     if (isLoading) return <Card><CardContent className="p-6"><Skeleton className="h-96 w-full" /></CardContent></Card>;
@@ -70,6 +73,7 @@ export default function SettingsPage() {
                                 <div key={key}>
                                     <label className="text-xs text-muted-foreground font-mono">{key}</label>
                                     <Input
+                                        type={category === 'search' && key === 'web_search_api_key' ? 'password' : 'text'}
                                         value={typeof value === 'string' ? value : JSON.stringify(value)}
                                         onChange={(e) => setEditValues((prev) => ({
                                             ...prev,

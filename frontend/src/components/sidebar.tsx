@@ -17,6 +17,7 @@ import {
     Network,
     Group,
     FileText,
+    Cog,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -64,6 +65,7 @@ const navigation: NavItem[] = [
     { label: 'Tool Sets', href: '/tool-sets', icon: Wrench },
     { label: 'Request Logs', href: '/request-logs', icon: FileText },
     { label: 'Audit Logs', href: '/audit-logs', icon: ClipboardList },
+    { label: 'Settings', href: '/settings', icon: Cog },
 ];
 
 export function Sidebar() {

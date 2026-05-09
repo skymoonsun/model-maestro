@@ -122,10 +122,14 @@ async def update_system_config(
     if update.defaults:
         for key, value in update.defaults.items():
             updates[f"defaults.{key}"] = str(value)
-    
+
+    if update.search:
+        for key, value in update.search.items():
+            updates[f"search.{key}"] = str(value)
+
     if update.ollama_unsupported_params is not None:
         updates["ollama_unsupported_params"] = json.dumps(update.ollama_unsupported_params)
-    
+
     if updates:
         async with async_session_maker() as session:
             repo = SystemConfigRepository(session)
