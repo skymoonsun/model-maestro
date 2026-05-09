@@ -532,8 +532,11 @@ async def show_model(
 
 
 # ============================================================================
-# Search Provider Mock Endpoints (Brave Search Compatible)
+# Brave Search Compatible Endpoint
 # ============================================================================
+# Forwards web search requests to the configured backend (Ollama Web Search,
+# DuckDuckGo, SerpAPI, etc.) and returns results in Brave Search API format.
+# Used by OpenClaw and other clients that expect Brave Search semantics.
 
 async def get_search_user(request: Request) -> str:
     """Dependency to get user from X-Subscription-Token or Authorization header"""
@@ -556,7 +559,7 @@ async def get_search_user(request: Request) -> str:
     return await get_current_user(f"Bearer {token}")
 
 
-@app.get("/res/v1/web/search", tags=["Search Provider Mock"])
+@app.get("/res/v1/web/search", tags=["Brave Search"])
 async def brave_search_mock(
     request: Request,
     q: str,

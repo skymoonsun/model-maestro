@@ -285,6 +285,7 @@ Authorization: Bearer <admin-token>
 | `POST` | `/api/create` | Create model from Modelfile |
 | `POST` | `/v1/completions` | OpenAI-compatible completions |
 | `POST` | `/v1/embeddings` | OpenAI-compatible embeddings |
+| `GET`  | `/res/v1/web/search` | Brave Search-compatible web search |
 
 **Example — Chat**
 
@@ -543,6 +544,39 @@ Model Maestro is designed to be the backend for modern AI-powered IDEs and tools
 - **[Grafana Assistant](docs/IDE_INTEGRATION.md#grafana-assistant)** — Grafana plugin with domain bypass script or reverse proxy
 
 For complete configuration examples and troubleshooting, see [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md).
+
+## Web Search Integration (Brave Search)
+
+Model Maestro provides a **Brave Search-compatible endpoint** (`/res/v1/web/search`) that can be used by OpenClaw and other clients expecting Brave Search semantics.
+
+- **Authentication**: `X-Subscription-Token` or `Authorization: Bearer <token>`
+- **Backend**: Forwards to Ollama Web Search (or any custom search proxy)
+- **Response Format**: Full Brave Search API compatibility
+
+### Quick Setup (OpenClaw)
+
+Add to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "brave": {
+        "enabled": true,
+        "config": {
+          "webSearch": {
+            "apiKey": "<maestro-jwt-token>"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Use the [patcher script](docs/OPENCLAW_BRAVE_SEARCH.md#3-brave-url-patcher-scripti) to automatically redirect OpenClaw's Brave URL to your Maestro instance.
+
+For the complete setup guide (including cron configuration, manual testing, and backend proxy options), see [`docs/OPENCLAW_BRAVE_SEARCH.md`](docs/OPENCLAW_BRAVE_SEARCH.md).
 
 ---
 

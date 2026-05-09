@@ -81,6 +81,29 @@ Add a `maestro` provider block under `models.providers`:
 }
 ```
 
+### Web Search (Brave Search Plugin)
+
+OpenClaw can use Maestro as its Brave Search backend for web search capabilities. Add the `brave` plugin entry to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "brave": {
+        "enabled": true,
+        "config": {
+          "webSearch": {
+            "apiKey": "<your-maestro-jwt-token>"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Then use the [patcher script](../docs/OPENCLAW_BRAVE_SEARCH.md#3-brave-url-patcher-script) to redirect OpenClaw's hardcoded Brave URL (`https://api.search.brave.com`) to your Maestro instance. See [`docs/OPENCLAW_BRAVE_SEARCH.md`](../docs/OPENCLAW_BRAVE_SEARCH.md) for full setup including cron configuration.
+
 ### Notes
 
 - `baseUrl` points to Maestro's OpenClaw-compatible endpoint (`/openclaw`).
