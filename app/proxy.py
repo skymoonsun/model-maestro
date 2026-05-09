@@ -995,7 +995,7 @@ class OllamaProxy:
     # (model might be available on a different node)
     NODE_RETRYABLE_STATUS_CODES = {404, 423, 429, 500, 502, 503, 504}
 
-    async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> Tuple[str, Optional[str], str]:
+    async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
         """
         Select the best node URL for a model using load balancing.
         Uses Redis cache first (zero DB hits per request).
@@ -1005,7 +1005,7 @@ class OllamaProxy:
             exclude_nodes: List of base_url strings to exclude (already tried nodes)
 
         Returns:
-            Tuple of (base_url, api_key, node_type). Falls back to self.base_url if load balancing is not configured or no nodes available.
+            Tuple of (base_url, api_key, node_type, headers). Falls back to self.base_url if load balancing is not configured or no nodes available.
         """
         try:
             from app.node_manager import node_manager
@@ -1025,9 +1025,9 @@ class OllamaProxy:
                 # No nodes have this model - use default (if not excluded)
                 if exclude_nodes and self.base_url in exclude_nodes:
                     logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
-                    return "", None, 'ollama'
+                    return "", None, 'ollama', None
                 logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
-                return self.base_url, None, 'ollama'
+                return self.base_url, None, 'ollama', None
 
             # Filter out excluded nodes
             if exclude_nodes:
@@ -1045,9 +1045,9 @@ class OllamaProxy:
                     # All known nodes excluded, try default if not excluded
                     if self.base_url not in exclude_nodes:
                         logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
-                        return self.base_url, None, 'ollama'
+                        return self.base_url, None, 'ollama', None
                     logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
-                    return "", None, 'ollama'
+                    return "", None, 'ollama', None
 
             # Select best node using load balancer (Redis-first, no session)
             selected_node = await load_balancer.select_node(
@@ -1059,11 +1059,12 @@ class OllamaProxy:
                 node_base_url = selected_node.get('base_url')
                 node_api_key = selected_node.get('api_key')
                 node_type = selected_node.get('node_type', 'ollama')
+                node_headers = selected_node.get('headers')
                 logger.info(f"[LB] Selected node {node_name} ({node_type}) for model {model_name}")
                 if node_base_url:
-                    return node_base_url, node_api_key, node_type
+                    return node_base_url, node_api_key, node_type, node_headers
 
-            return self.base_url, None, 'ollama'
+            return self.base_url, None, 'ollama', None
 
         except Exception as e:
             logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
@@ -1896,6 +1897,7 @@ class OllamaProxy:
                         base_url = node.base_url
                         api_key = node.api_key
                         node_type = getattr(node, 'node_type', 'ollama')
+                        node_headers = getattr(node, 'headers', None)
                         logger.info(f"[LB] Preferred node '{node.name}' ({node.base_url}) selected for group member '{model_name}'")
                     else:
                         reason = 'inactive' if node and not node.is_active else 'unhealthy' if node else 'not found'
@@ -1903,9 +1905,10 @@ class OllamaProxy:
             except Exception as e:
                 logger.warning(f"[LB] Error looking up preferred node {preferred_node_id}: {e}, falling back")
 
+        node_headers = None
         if not base_url:
             # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
-            base_url, api_key, node_type = await self._select_node_url(model_name or '')
+            base_url, api_key, node_type, node_headers = await self._select_node_url(model_name or '')
 
         url = f"{base_url}{endpoint}"
         if base_url:
@@ -1988,7 +1991,8 @@ class OllamaProxy:
                     base_url=base_url,
                     api_key=api_key,
                     start_time=start_time,
-                    node_type=node_type
+                    node_type=node_type,
+                    node_headers=node_headers
                 )
 
             # Non-streaming requests with failover support
@@ -2005,7 +2009,8 @@ class OllamaProxy:
                 model_name=model_name,
                 api_key=api_key,
                 start_time=start_time,
-                node_type=node_type
+                node_type=node_type,
+                node_headers=node_headers
             )
 
         except HTTPException:
@@ -2035,7 +2040,8 @@ class OllamaProxy:
         base_url: str,
         api_key: Optional[str],
         start_time: float,
-        node_type: str = 'ollama'
+        node_type: str = 'ollama',
+        node_headers: Optional[Dict[str, Any]] = None
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2074,6 +2080,7 @@ class OllamaProxy:
             current_data = data.copy() if data else {}
             current_url = url
             current_api_key = api_key
+            current_headers = node_headers
 
             for attempt in range(MAX_FAILOVER_RETRIES + 1):
                 client = await self._get_http_client()
@@ -2088,6 +2095,8 @@ class OllamaProxy:
                         logger.info(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in current_data.get('tools', [])]}")
 
                     request_headers = {}
+                    if current_headers:
+                        request_headers.update(current_headers)
                     if current_api_key:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
 
@@ -2128,7 +2137,7 @@ class OllamaProxy:
                                 current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                                 tried_nodes.add(current_base_url)
 
-                                new_base_url, new_api_key, _ = await self._select_node_url(
+                                new_base_url, new_api_key, _, new_headers = await self._select_node_url(
                                     current_model, exclude_nodes=list(tried_nodes)
                                 )
                                 if new_base_url:
@@ -2138,6 +2147,7 @@ class OllamaProxy:
                                     )
                                     current_url = f"{new_base_url}{endpoint}"
                                     current_api_key = new_api_key
+                                    current_headers = new_headers
                                     continue
                                 logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
 
@@ -2168,11 +2178,12 @@ class OllamaProxy:
                                         current_data = self._strip_images_from_messages(current_data, fallback_mapped)
 
                                     # Select new node URL for fallback (reset tried_nodes for new model)
-                                    new_base_url, new_api_key, _ = await self._select_node_url(fallback_model)
+                                    new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model)
                                     current_url = f"{new_base_url}{endpoint}"
                                     if new_base_url:
                                         tried_nodes.add(new_base_url)
                                         current_api_key = new_api_key
+                                        current_headers = new_headers
 
                                     # Log failover attempt
                                     logger.info(f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})")
@@ -2763,7 +2774,7 @@ class OllamaProxy:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                         tried_nodes.add(current_base_url)
 
-                        new_base_url, new_api_key, _ = await self._select_node_url(
+                        new_base_url, new_api_key, _, _ = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes)
                         )
                         if new_base_url:
@@ -2794,7 +2805,7 @@ class OllamaProxy:
                             if fb_mapped:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
-                            new_base_url, new_api_key, _ = await self._select_node_url(fallback_model)
+                            new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model)
                             current_url = f"{new_base_url}{endpoint}"
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
@@ -2861,7 +2872,8 @@ class OllamaProxy:
         model_name: Optional[str],
         api_key: Optional[str],
         start_time: float,
-        node_type: str = 'ollama'
+        node_type: str = 'ollama',
+        node_headers: Optional[Dict[str, Any]] = None
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -2889,6 +2901,7 @@ class OllamaProxy:
         current_url = url
         current_data = data.copy() if data else {}
         current_api_key = api_key
+        current_headers = node_headers
 
         for attempt in range(MAX_FAILOVER_RETRIES + 1):
             client = await self._get_http_client()
@@ -2898,6 +2911,8 @@ class OllamaProxy:
                 logger.info(f"Sending request to Ollama: {current_url} (attempt {attempt + 1})")
 
                 request_headers = {}
+                if current_headers:
+                    request_headers.update(current_headers)
                 if current_api_key:
                     request_headers["Authorization"] = f"Bearer {current_api_key}"
 
@@ -2930,7 +2945,7 @@ class OllamaProxy:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                         tried_nodes.add(current_base_url)
 
-                        new_base_url, new_api_key, _ = await self._select_node_url(
+                        new_base_url, new_api_key, _, new_headers = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes)
                         )
                         if new_base_url:
@@ -2940,6 +2955,7 @@ class OllamaProxy:
                             )
                             current_url = f"{new_base_url}{endpoint}"
                             current_api_key = new_api_key
+                            current_headers = new_headers
                             last_error = HTTPException(
                                 status_code=response.status_code,
                                 detail=f"Ollama error: {error_text}"
@@ -2973,11 +2989,12 @@ class OllamaProxy:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             # Select new node URL for fallback
-                            new_base_url, new_api_key, _ = await self._select_node_url(fallback_model)
+                            new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model)
                             current_url = f"{new_base_url}{endpoint}"
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
+                                current_headers = new_headers
 
                             last_error = HTTPException(
                                 status_code=response.status_code,
@@ -3064,7 +3081,7 @@ class OllamaProxy:
                     current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                     tried_nodes.add(current_base_url)
 
-                    new_base_url, new_api_key, _ = await self._select_node_url(
+                    new_base_url, new_api_key, _, _ = await self._select_node_url(
                         current_model, exclude_nodes=list(tried_nodes)
                     )
                     if new_base_url:
@@ -3098,7 +3115,7 @@ class OllamaProxy:
                         if fb_mapped:
                             current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
-                        new_base_url, new_api_key, _ = await self._select_node_url(fallback_model)
+                        new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model)
                         current_url = f"{new_base_url}{endpoint}"
                         if new_base_url:
                             tried_nodes.add(new_base_url)
@@ -3151,7 +3168,7 @@ class OllamaProxy:
         """Public helper: get the best node URL for a given model (using load balancer)."""
         await self._ensure_mappings_loaded()
         try:
-            base_url, _, _ = await self._select_node_url(model_name)
+            base_url, _, _, _ = await self._select_node_url(model_name)
             return base_url
         except Exception:
             return self.base_url

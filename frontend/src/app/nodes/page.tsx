@@ -133,7 +133,7 @@ function NodeCard({
     const qc = useQueryClient();
     const [editOpen, setEditOpen] = useState(false);
     const [showEditApiKey, setShowEditApiKey] = useState(false);
-    const [form, setForm] = useState({
+    const [form, setForm] = useState<CreateNode>({
         name: node.name,
         base_url: node.base_url,
         api_key: node.api_key ?? undefined,
@@ -143,7 +143,11 @@ function NodeCard({
         node_type: node.node_type,
         warmup_enabled: node.warmup_enabled,
         code: node.code,
+        headers: node.headers ?? undefined,
     });
+    const [headersStr, setHeadersStr] = useState<string>(
+        node.headers ? JSON.stringify(node.headers, null, 2) : ''
+    );
 
     const updateMut = useMutation({
         mutationFn: (data: Partial<CreateNode>) => nodesApi.update(node.id, data),
@@ -176,9 +180,11 @@ function NodeCard({
                 node_type: node.node_type,
                 warmup_enabled: node.warmup_enabled,
                 code: node.code,
+                headers: node.headers ?? undefined,
             });
+            setHeadersStr(node.headers ? JSON.stringify(node.headers, null, 2) : '');
         }
-    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code]);
+    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code, node.headers]);
 
     const isInactive = !node.is_active;
 
@@ -318,6 +324,18 @@ function NodeCard({
                                     </div>
                                 </div>
                                 <div>
+                                    <Label>Custom Headers (optional)</Label>
+                                    <textarea
+                                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                        placeholder='{"X-Custom-Header": "value"}'
+                                        value={headersStr}
+                                        onChange={(e) => setHeadersStr(e.target.value)}
+                                    />
+                                    <p className="text-xs text-muted-foreground mt-1">
+                                        JSON object with custom HTTP headers sent with every request to this node.
+                                    </p>
+                                </div>
+                                <div>
                                     <Label>Code</Label>
                                     <Input
                                         placeholder="code"
@@ -384,7 +402,23 @@ function NodeCard({
                                 <Button variant="ghost" onClick={() => setEditOpen(false)}>
                                     Cancel
                                 </Button>
-                                <Button onClick={() => updateMut.mutate(form)} disabled={updateMut.isPending}>
+                                <Button
+                                    onClick={() => {
+                                        const payload = { ...form };
+                                        if (headersStr.trim()) {
+                                            try {
+                                                payload.headers = JSON.parse(headersStr);
+                                            } catch {
+                                                toast.error('Invalid JSON in Custom Headers');
+                                                return;
+                                            }
+                                        } else {
+                                            payload.headers = undefined;
+                                        }
+                                        updateMut.mutate(payload);
+                                    }}
+                                    disabled={updateMut.isPending}
+                                >
                                     Save
                                 </Button>
                             </DialogFooter>
@@ -437,13 +471,15 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         warmup_enabled: true,
         code: null,
     });
+    const [headersStr, setHeadersStr] = useState('');
     const qc = useQueryClient();
     const mut = useMutation({
         mutationFn: nodesApi.create,
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null, headers: undefined });
+            setHeadersStr('');
             toast.success('Node created');
             onSuccess();
         },
@@ -497,6 +533,18 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                                 {showAddApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                             </Button>
                         </div>
+                    </div>
+                    <div>
+                        <Label>Custom Headers (optional)</Label>
+                        <textarea
+                            className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            placeholder='{"X-Custom-Header": "value"}'
+                            value={headersStr}
+                            onChange={(e) => setHeadersStr(e.target.value)}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                            JSON object with custom HTTP headers sent with every request to this node.
+                        </p>
                     </div>
                     <div>
                         <Label>Code</Label>
@@ -563,7 +611,23 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                     <Button variant="ghost" onClick={() => setOpen(false)}>
                         Cancel
                     </Button>
-                    <Button onClick={() => mut.mutate(form)} disabled={!form.name || !form.base_url || mut.isPending}>
+                    <Button
+                        onClick={() => {
+                            const payload = { ...form };
+                            if (headersStr.trim()) {
+                                try {
+                                    payload.headers = JSON.parse(headersStr);
+                                } catch {
+                                    toast.error('Invalid JSON in Custom Headers');
+                                    return;
+                                }
+                            } else {
+                                payload.headers = undefined;
+                            }
+                            mut.mutate(payload);
+                        }}
+                        disabled={!form.name || !form.base_url || mut.isPending}
+                    >
                         Create
                     </Button>
                 </DialogFooter>

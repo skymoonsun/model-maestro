@@ -467,6 +467,7 @@ class OllamaNodeCreate(BaseModel):
     warmup_enabled: Optional[bool] = True
     health_check_url: Optional[str] = None
     code: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
 
 
 class OllamaNodeUpdate(BaseModel):
@@ -481,6 +482,7 @@ class OllamaNodeUpdate(BaseModel):
     warmup_enabled: Optional[bool] = None
     health_check_url: Optional[str] = None
     code: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
 
 
 class OllamaNodeResponse(BaseModel):
@@ -500,6 +502,7 @@ class OllamaNodeResponse(BaseModel):
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
 
 
 class NodeModelInfo(BaseModel):
@@ -527,6 +530,7 @@ class OllamaNodeDetailResponse(BaseModel):
     last_health_check: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
     model_count: int = 0
     models: List[NodeModelInfo] = []
 
