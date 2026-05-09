@@ -574,7 +574,7 @@ Add to `~/.openclaw/openclaw.json`:
 }
 ```
 
-Use the [patcher script](docs/OPENCLAW_BRAVE_SEARCH.md#3-brave-url-patcher-scripti) to automatically redirect OpenClaw's Brave URL to your Maestro instance.
+Use the [patcher script](docs/OPENCLAW_BRAVE_SEARCH.md#3-brave-url-patcher-script) to automatically redirect OpenClaw's Brave URL to your Maestro instance.
 
 For the complete setup guide (including cron configuration, manual testing, and backend proxy options), see [`docs/OPENCLAW_BRAVE_SEARCH.md`](docs/OPENCLAW_BRAVE_SEARCH.md).
 
