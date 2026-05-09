@@ -36,6 +36,15 @@ interface NavItem {
 
 const navigation: NavItem[] = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
+    { label: 'Users', href: '/users', icon: Users },
+    {
+        label: 'Nodes',
+        href: '/nodes',
+        icon: Server,
+        children: [
+            { label: 'All Nodes', href: '/nodes', icon: Network },
+        ],
+    },
     {
         label: 'AI Models',
         href: '/models',
@@ -45,15 +54,6 @@ const navigation: NavItem[] = [
             { label: 'Mappings', href: '/models/mappings', icon: Layers },
             { label: 'Groups', href: '/models/groups', icon: Group },
             { label: 'Config', href: '/models/config', icon: Settings },
-        ],
-    },
-    { label: 'Users', href: '/users', icon: Users },
-    {
-        label: 'Nodes',
-        href: '/nodes',
-        icon: Server,
-        children: [
-            { label: 'All Nodes', href: '/nodes', icon: Network },
         ],
     },
     {
