@@ -1042,26 +1042,22 @@ async def health_check_antigravity(
     except Exception as e:
         return False, f"Token refresh failed: {e}"
 
-    # Try a lightweight call: fetchAvailableModels with short timeout
+    # Verify token works with a lightweight Google API call
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=5.0),
             http2=True,
         ) as client:
-            headers = build_v1internal_headers(access_token)
-            url = f"{V1_INTERNAL_BASE_URLS[0]}:fetchAvailableModels"
-
-            response = await client.post(
-                url,
-                headers=headers,
-                json={},
+            response = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
                 timeout=timeout,
             )
 
             if response.status_code == 200:
                 return True, None
             else:
-                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return False, f"Token validation failed: HTTP {response.status_code}"
 
     except httpx.TimeoutException:
         return False, "Request timeout"

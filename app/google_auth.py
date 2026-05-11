@@ -360,7 +360,7 @@ def is_token_expired(oauth_tokens: Dict[str, Any]) -> bool:
         return True
 
 
-async def ensure_fresh_token(oauth_tokens: Dict[str, Any], client_id: str, client_secret: str) -> str:
+async def ensure_fresh_token(oauth_tokens: Dict[str, Any], client_id: str = "", client_secret: str = "") -> str:
     """
     Ensure access token is valid. Refresh if needed.
     Returns the valid access_token string.
@@ -371,6 +371,16 @@ async def ensure_fresh_token(oauth_tokens: Dict[str, Any], client_id: str, clien
     refresh_token = oauth_tokens.get("refresh_token")
     if not refresh_token:
         raise Exception("Token expired and no refresh_token available")
+
+    # Use global manager credentials if not provided explicitly
+    if not client_id or not client_secret:
+        global_mgr = get_google_oauth_manager()
+        if global_mgr:
+            client_id = global_mgr.client_id
+            client_secret = global_mgr.client_secret
+
+    if not client_id or not client_secret:
+        raise Exception("Google OAuth client_id/client_secret not configured for token refresh")
 
     manager = GoogleOAuthManager(client_id, client_secret, "")
     new_tokens = await manager.refresh_access_token(refresh_token)
