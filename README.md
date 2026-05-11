@@ -97,7 +97,6 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **Node-Scoped Model Mappings** — Bind a mapping to a specific node so the same display name can resolve to different real names on different backends.
 - **Node-Scoped Routing via Model Prefix** — Force a request to a specific node by prefixing the model name: `node:trmix:kimi-k2.6:latest` routes directly to the node with code `trmix`.
 - **Multi-Node Load Balancing** — Round-robin, weighted and priority-based strategies across Ollama and vLLM nodes.
-- **Antigravity (Google v1internal) Support** — Google AI Companion proxy via OAuth 2.0. Access Gemini models (gemini-3-flash, gemini-3.1-pro, claude-opus, etc.) through Google's internal v1internal API with full SSE streaming, tool calls, image support and automatic token refresh.
 - **vLLM Support** — Native vLLM (OpenAI-compatible) node type with automatic health checks, model discovery and `Authorization: Bearer` header forwarding.
 - **Model Groups** — Group models into logical units with fallback chains. Requests dynamically resolve to the best member based on capability tags (vision, tools) and strategy.
 - **Node Health Management** — Automatic health checks, model discovery and availability tracking for both Ollama and vLLM nodes.
@@ -226,156 +225,7 @@ ADMIN_PASSWORD=admin
 # Swagger / ReDoc Basic Auth
 DOCS_USERNAME=admin
 DOCS_PASSWORD=admin
-
-# Google OAuth (required for Antigravity nodes)
-GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GOOGLE_REDIRECT_URI=http://localhost:3000/admin/oauth/callback
 ```
-
----
-
-## Antigravity (Google v1internal API Proxy)
-
-Model Maestro can act as a proxy to Google's internal v1internal API (used by the Antigravity Manager), giving you access to Gemini and Claude models through Google's infrastructure — **as a first-class provider alongside Ollama and vLLM**.
-
-### What is Antigravity?
-
-Antigravity is a local proxy that connects to Google's internal v1internal API endpoints (`cloudcode-pa.googleapis.com`) via OAuth 2.0. Model Maestro implements the same protocol, letting you use Gemini models (e.g. `gemini-3-flash`, `gemini-3.1-pro`, `claude-opus-4`) through a standard OpenAI-compatible interface.
-
-### Why use it as a provider?
-
-By adding Antigravity as a **node type** in Model Maestro, you can:
-- **Mix and match providers** — Route some requests to Ollama, some to vLLM, and some to Google's models from a single API.
-- **Use node prefix routing** — Force a specific request to Google: `node:antigravity:gemini-3-flash`.
-- **Apply the same access controls** — JWT auth, rate limits, model allowlists work identically.
-- **Get unified logging** — All requests (Ollama, vLLM, Antigravity) appear in the same request logs.
-- **Fallback between providers** — Put Google models in a model group with Ollama/vLLM fallbacks.
-
-### Setup
-
-1. **Get Google OAuth credentials** (choose one):
-   - **Option A (recommended):** Use the official Antigravity Manager credentials from [lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager) (`src-tauri/src/modules/oauth.rs`).
-   - **Option B:** Create your own OAuth 2.0 client at [Google Cloud Console](https://console.cloud.google.com/apis/credentials) with redirect URI `http://localhost:3000/admin/oauth/callback` and enable the **Cloud Code Private API**.
-
-2. **Add to `.env`:**
-
-   ```env
-   GOOGLE_CLIENT_ID=1071006060591-xxxxxxxx.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
-   GOOGLE_REDIRECT_URI=http://localhost:3000/admin/oauth/callback
-   ```
-
-3. **Restart the container:**
-
-   ```bash
-   docker compose restart maestro
-   ```
-
-4. **Create an Antigravity node** in the admin panel:
-   - Go to **Nodes** → **Add Node**
-   - Set **Node Type** to `antigravity`
-   - Give it a **Code** (e.g. `antigravity`) for prefix routing
-   - Leave **Base URL** empty (v1internal endpoints are built-in)
-
-5. **Connect Google Account:**
-   - Open the node detail page
-   - Click **Google Auth**
-   - Sign in with your Google account and grant permissions
-   - The OAuth flow completes automatically and stores the access/refresh tokens
-
-6. **Sync Models:**
-   - Click **Sync Models** on the node detail page
-   - Available models (Gemini, Claude, etc.) are fetched from `fetchAvailableModels`
-
-### Usage
-
-Once connected, use Google models exactly like any other provider:
-
-**Via node prefix (forces Antigravity):**
-
-```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "node:antigravity:gemini-3-flash",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-**Via model mapping (transparent):**
-
-Create a mapping `gpt-4o → gemini-3.1-pro` in **AI Models > Mappings**, then:
-
-```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-The proxy transparently routes to Antigravity if the resolved model belongs to the Antigravity node.
-
-### Supported Features
-
-| Feature | Status | Notes |
-|---|---|---|
-| **Chat Completions** | Full | OpenAI-compatible `/v1/chat/completions` |
-| **Streaming** | Full | SSE with `alt=sse` |
-| **Thinking / Extended Thinking** | Full | `gemini-3-pro`, `claude-opus-4-6-thinking` |
-| **Tool Calls** | Full | Function calling with schema cleaning |
-| **Image Input** | Full | Inline data and URL images |
-| **System Prompts** | Full | Converted to `systemInstruction` |
-| **Multi-turn** | Full | Alternating user/model roles |
-| **Health Checks** | Full | Token validity + lightweight Google API check |
-| **Token Refresh** | Automatic | Background refresh before expiry |
-| **Model Discovery** | Full | Fetches from `fetchAvailableModels` |
-| **Fallback** | Full | Sandbox → Daily → Prod endpoint fallback |
-
-### Architecture
-
-```
-Client Request
-      │
-      ▼
-┌─────────────────┐
-│  Load Balancer  │── Antigravity node selected
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────┐
-│  Model Maestro Antigravity  │
-│  Proxy (google_proxy.py)  │
-│                             │
-│  OpenAI format ──▶ Google   │
-│  v1internal format          │
-│                             │
-│  • OAuth token refresh      │
-│  • Endpoint fallback        │
-│  • SSE streaming            │
-│  • Tool call transform      │
-└────────┬────────────────────┘
-         │
-         ▼
-┌─────────────────────────────┐
-│  Google v1internal API      │
-│  (cloudcode-pa.googleapis)  │
-└─────────────────────────────┘
-```
-
-### Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `SERVICE_DISABLED` / 403 | Cloud Code Private API not enabled for your Google project | Use the official Antigravity Manager credentials (Option A) or enable the API in your Google Cloud Console |
-| `Could not determine client ID` | `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` missing in `.env` | Add them and restart the container |
-| Token refresh fails every hour | Refresh token revoked or expired | Re-authenticate via the node's **Google Auth** button |
-| Models show `Available: No` | Discovery failed (token invalid) | Click **Sync Models** again or re-authenticate |
-| 400 `max_tokens must be greater than thinking.budget_tokens` | Thinking model with low `max_tokens` | Model Maestro auto-adjusts `maxOutputTokens` for thinking models |
 
 ---
 
@@ -387,7 +237,7 @@ The Next.js dashboard (`http://localhost:3000`) provides a visual interface for 
 |---|---|
 | **Dashboard** | Node health, model counts, user statistics |
 | **Users** | Create users, manage tokens, assign models, set limits |
-| **Nodes** | Add/edit Ollama, vLLM and Antigravity nodes, set codes, view health, trigger discovery, drag-and-drop priority |
+| **Nodes** | Add/edit Ollama and vLLM nodes, set codes, view health, trigger discovery, drag-and-drop priority |
 | **AI Models > Models** | Tabbed view for Ollama and vLLM models with sync buttons, capabilities and context length |
 | **AI Models > Mappings** | Display↔Real name mappings with provider badge (Ollama/vLLM), node-scoped overrides, context length, capabilities, sync caps |
 | **AI Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
@@ -556,24 +406,6 @@ curl -X PATCH http://localhost:8000/admin/nodes/batch/priority \
   -d '{"priorities": [{"id": 1, "priority": 200}, {"id": 2, "priority": 100}]}'
 ```
 
-**Antigravity (Google OAuth)**
-
-```bash
-# Get OAuth authorization URL
-curl http://localhost:8000/admin/nodes/1/google-auth-url \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-
-# Handle OAuth callback (POST from frontend)
-curl -X POST http://localhost:8000/admin/nodes/1/google-auth-callback \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"code": "4/abc...", "state": "1:xyz..."}'
-
-# Refresh OAuth token manually
-curl -X POST http://localhost:8000/admin/nodes/1/google-refresh-token \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
 **Model Groups**
 
 ```bash
@@ -628,8 +460,8 @@ curl http://localhost:8000/grafana/assistant/discovery \
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | Chat completions (OpenAI format) — supports Ollama, vLLM, Antigravity |
-| `POST` | `/v1/completions` | Text completions (OpenAI format) — supports Ollama, vLLM, Antigravity |
+| `POST` | `/v1/chat/completions` | Chat completions (OpenAI format) |
+| `POST` | `/v1/completions` | Text completions (OpenAI format) |
 | `POST` | `/v1/embeddings` | Embeddings (OpenAI format) |
 | `GET`  | `/v1/models` | Model list (OpenAI format) |
 
@@ -676,16 +508,6 @@ Gateway parses:     code = "trmix", model = "kimi-k2.6:latest"
 Node lookup:        trmix → node #3
 Model mapping:      kimi-k2.6:latest → kimi-k2.6:latest-cloud
 Node #3 receives:   kimi-k2.6:latest-cloud
-```
-
-**Antigravity routing example:**
-
-```
-Client sends:       node:antigravity:gemini-3-flash
-Gateway parses:     code = "antigravity", model = "gemini-3-flash"
-Node lookup:        antigravity → node #5
-Proxy transforms:   OpenAI format → Google v1internal format
-Google receives:      model=gemini-3-flash, project=your-project-id
 ```
 
 - Syntax: `node:{code}:{model_name}`
