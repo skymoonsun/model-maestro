@@ -97,6 +97,7 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **Node-Scoped Model Mappings** — Bind a mapping to a specific node so the same display name can resolve to different real names on different backends.
 - **Node-Scoped Routing via Model Prefix** — Force a request to a specific node by prefixing the model name: `node:trmix:kimi-k2.6:latest` routes directly to the node with code `trmix`.
 - **Multi-Node Load Balancing** — Round-robin, weighted and priority-based strategies across Ollama and vLLM nodes.
+- **Antigravity Support** — Google v1internal API proxy via OAuth 2.0. Access Gemini and Claude models through Google's infrastructure as a first-class provider alongside Ollama and vLLM.
 - **vLLM Support** — Native vLLM (OpenAI-compatible) node type with automatic health checks, model discovery and `Authorization: Bearer` header forwarding.
 - **Model Groups** — Group models into logical units with fallback chains. Requests dynamically resolve to the best member based on capability tags (vision, tools) and strategy.
 - **Node Health Management** — Automatic health checks, model discovery and availability tracking for both Ollama and vLLM nodes.
@@ -225,7 +226,49 @@ ADMIN_PASSWORD=admin
 # Swagger / ReDoc Basic Auth
 DOCS_USERNAME=admin
 DOCS_PASSWORD=admin
+
+# Google OAuth (for Antigravity nodes)
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:3000/admin/oauth/callback
 ```
+
+---
+
+## Antigravity (Google v1internal)
+
+Model Maestro supports Google's v1internal API as a first-class provider alongside Ollama and vLLM. This gives you access to Gemini and Claude models through Google's infrastructure via OAuth 2.0.
+
+### Setup
+
+1. Add the official Antigravity OAuth credentials to `.env`:
+   ```env
+   GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=your-google-client-secret
+   GOOGLE_REDIRECT_URI=http://localhost:3000/admin/oauth/callback
+   ```
+2. Restart the container: `docker compose restart maestro`
+3. In the admin panel, create a node with **Node Type** = `antigravity`
+4. Click **Google Auth** on the node detail page and sign in
+5. Click **Sync Models** to fetch available models
+
+### Usage
+
+Force routing to Antigravity via node prefix:
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"model": "node:antigravity:gemini-3-flash", "messages": [{"role":"user","content":"Hello"}]}'
+```
+
+Or use model mappings to route transparently.
+
+### Supported Features
+
+- Chat completions, streaming, tool calls, image input
+- Thinking models (gemini-3-pro, claude-opus-4-6-thinking)
+- Automatic OAuth token refresh
+- Endpoint fallback (Sandbox → Daily → Prod)
 
 ---
 
@@ -237,9 +280,9 @@ The Next.js dashboard (`http://localhost:3000`) provides a visual interface for 
 |---|---|
 | **Dashboard** | Node health, model counts, user statistics |
 | **Users** | Create users, manage tokens, assign models, set limits |
-| **Nodes** | Add/edit Ollama and vLLM nodes, set codes, view health, trigger discovery, drag-and-drop priority |
-| **AI Models > Models** | Tabbed view for Ollama and vLLM models with sync buttons, capabilities and context length |
-| **AI Models > Mappings** | Display↔Real name mappings with provider badge (Ollama/vLLM), node-scoped overrides, context length, capabilities, sync caps |
+| **Nodes** | Add/edit Ollama, vLLM and Antigravity nodes, set codes, view health, trigger discovery, drag-and-drop priority |
+| **AI Models > Models** | Tabbed view for Ollama, vLLM and Antigravity models with sync buttons, capabilities and context length |
+| **AI Models > Mappings** | Display↔Real name mappings with provider badge (Ollama/vLLM/Antigravity), node-scoped overrides, context length, capabilities, sync caps |
 | **AI Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
 | **AI Models > Config** | Per-model tool restrictions and settings |
 | **Tool Sets** | Create tool groups and assign to models |
