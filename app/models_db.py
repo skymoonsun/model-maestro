@@ -238,6 +238,8 @@ class OllamaNode(Base):
     code = Column(String(30), unique=True, nullable=True, index=True)  # Short routing code e.g. "trmix", "us-east-1"
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     headers = Column(JSONB, nullable=True)  # Custom HTTP headers as {"X-Custom": "value"}
+    oauth_tokens = Column(JSONB, nullable=True)  # Google OAuth tokens {"access_token": "...", "refresh_token": "...", "expires_in": 3600}
+    project_id = Column(String(100), nullable=True)  # Google cloudaicompanionProject ID
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'
     created_at = Column(DateTime(timezone=True), server_default=func.now())

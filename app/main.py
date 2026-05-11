@@ -178,6 +178,18 @@ async def startup_event():
     await config_manager.ensure_defaults()
     logger.info("Default configuration keys ensured")
     
+    # Initialize Google OAuth manager if credentials are available
+    from app.config import get_settings
+    settings = get_settings()
+    if settings.google_client_id and settings.google_client_secret:
+        from app.google_auth import init_google_oauth
+        init_google_oauth(
+            settings.google_client_id,
+            settings.google_client_secret,
+            settings.google_redirect_uri,
+        )
+        logger.info("Google OAuth manager initialized")
+
     # Start background tasks
     from app.background_tasks import start_background_tasks
     await start_background_tasks()

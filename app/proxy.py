@@ -36,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from app.config import get_settings, model_mapper, model_group_manager, get_context_length_for_model
 from app.user_manager import user_manager
 from app.auth import get_current_user
+from app.google_proxy import proxy_antigravity_request
 
 logger = logging.getLogger(__name__)
 
@@ -1917,6 +1918,49 @@ class OllamaProxy:
         # Step 2: Map model names (display_name -> real_name)
         if data:
             data = self._map_model_to_ollama(data)
+
+        # ============================================================
+        # ANTIGRAVITY (Google v1internal) ROUTING
+        # ============================================================
+        if node_type == 'antigravity' and isinstance(data, dict):
+            # Antigravity only supports OpenAI-compatible chat completions
+            if endpoint in ('/v1/chat/completions', '/cursor/chat/completions', '/v1/completions'):
+                logger.info(f"[Antigravity] Routing request to Google v1internal for model={model_name}")
+                # Retrieve node info including oauth_tokens and project_id
+                node_info = None
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeRepository
+                    async with async_session_maker() as session:
+                        node_repo = NodeRepository(session)
+                        # Find the node by base_url
+                        nodes = await node_repo.list_active()
+                        for n in nodes:
+                            if n.base_url == base_url and n.node_type == 'antigravity':
+                                node_info = n
+                                break
+                except Exception as e:
+                    logger.warning(f"[Antigravity] Failed to look up node info: {e}")
+
+                if not node_info or not node_info.oauth_tokens:
+                    raise HTTPException(status_code=500, detail="Antigravity node missing OAuth tokens")
+
+                return await proxy_antigravity_request(
+                    data=data,
+                    stream=stream,
+                    endpoint=endpoint,
+                    base_url=base_url,
+                    oauth_tokens=node_info.oauth_tokens,
+                    project_id=node_info.project_id,
+                    node_headers=node_headers,
+                    model_name=model_name or data.get('model', 'unknown'),
+                    username=username,
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Antigravity nodes do not support endpoint: {endpoint}"
+                )
 
         # vLLM nodes don't support Ollama-specific parameters
         if node_type == 'vllm' and isinstance(data, dict):

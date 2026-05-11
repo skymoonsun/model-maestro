@@ -457,6 +457,16 @@ class SyncVllmMetaResponse(BaseModel):
 # LOAD BALANCING - NODE MANAGEMENT
 # =============================================================================
 
+class OAuthTokens(BaseModel):
+    """Google OAuth tokens for antigravity node"""
+    access_token: str
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
+    token_type: Optional[str] = "Bearer"
+    scope: Optional[str] = None
+    obtained_at: Optional[str] = None
+
+
 class OllamaNodeCreate(BaseModel):
     """Create a new Ollama node"""
     name: str
@@ -470,6 +480,8 @@ class OllamaNodeCreate(BaseModel):
     health_check_url: Optional[str] = None
     code: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
+    oauth_tokens: Optional[OAuthTokens] = None
+    project_id: Optional[str] = None
 
 
 class OllamaNodeUpdate(BaseModel):
@@ -485,6 +497,8 @@ class OllamaNodeUpdate(BaseModel):
     health_check_url: Optional[str] = None
     code: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
+    oauth_tokens: Optional[OAuthTokens] = None
+    project_id: Optional[str] = None
 
 
 class OllamaNodeResponse(BaseModel):
@@ -505,6 +519,8 @@ class OllamaNodeResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
+    oauth_tokens: Optional[OAuthTokens] = None
+    project_id: Optional[str] = None
 
 
 class NodeModelInfo(BaseModel):
@@ -533,6 +549,8 @@ class OllamaNodeDetailResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
+    oauth_tokens: Optional[Dict[str, Any]] = None
+    project_id: Optional[str] = None
     model_count: int = 0
     models: List[NodeModelInfo] = []
 

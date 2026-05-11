@@ -56,7 +56,9 @@ class NodeManager:
         api_key: Optional[str] = None,
         timeout: float = 5.0,
         node_type: str = 'ollama',
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        oauth_tokens: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         Check if a node is healthy.
@@ -65,12 +67,21 @@ class NodeManager:
             base_url: Node base URL
             api_key: Optional API key
             timeout: Request timeout
-            node_type: 'ollama' or 'vllm'
+            node_type: 'ollama', 'vllm', or 'antigravity'
             headers: Optional custom headers
+            oauth_tokens: Google OAuth tokens (for antigravity)
+            project_id: Google project ID (for antigravity)
 
         Returns:
             Tuple of (is_healthy, error_message)
         """
+        # Antigravity nodes use Google v1internal health check
+        if node_type == 'antigravity':
+            if not oauth_tokens:
+                return False, "Missing OAuth tokens for antigravity node"
+            from app.google_proxy import health_check_antigravity
+            return await health_check_antigravity(oauth_tokens, timeout=timeout)
+
         try:
             client = await self.get_client()
             request_headers = {}
@@ -110,7 +121,9 @@ class NodeManager:
         api_key: Optional[str] = None,
         timeout: float = 30.0,
         node_type: str = 'ollama',
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        oauth_tokens: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
     ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
         """
         Discover models from a node.
@@ -119,12 +132,21 @@ class NodeManager:
             base_url: Node base URL
             api_key: Optional API key
             timeout: Request timeout
-            node_type: 'ollama' or 'vllm'
+            node_type: 'ollama', 'vllm', or 'antigravity'
             headers: Optional custom headers
+            oauth_tokens: Google OAuth tokens (for antigravity)
+            project_id: Google project ID (for antigravity)
 
         Returns:
             Tuple of (success, models_list, error_message)
         """
+        # Antigravity nodes use Google v1internal model discovery
+        if node_type == 'antigravity':
+            if not oauth_tokens:
+                return False, [], "Missing OAuth tokens for antigravity node"
+            from app.google_proxy import discover_antigravity_models
+            return await discover_antigravity_models(oauth_tokens, project_id)
+
         try:
             client = await self.get_client()
             request_headers = {}
@@ -216,7 +238,9 @@ class NodeManager:
             node.base_url,
             node.api_key,
             node_type=getattr(node, 'node_type', 'ollama'),
-            headers=getattr(node, 'headers', None)
+            headers=getattr(node, 'headers', None),
+            oauth_tokens=getattr(node, 'oauth_tokens', None),
+            project_id=getattr(node, 'project_id', None)
         )
         
         if not success:

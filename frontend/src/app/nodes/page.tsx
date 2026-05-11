@@ -212,10 +212,12 @@ function NodeCard({
                                     ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
                                     : node.node_type === 'ollama'
                                     ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                                    : node.node_type === 'antigravity'
+                                    ? 'bg-green-500/10 text-green-400 border-green-500/30'
                                     : ''
                             }`}
                         >
-                            {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type}
+                            {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type === 'antigravity' ? 'Antigravity' : node.node_type}
                         </Badge>
                         {node.code && (
                             <Badge variant="outline" className="text-xs font-mono text-cyan-400 border-cyan-400/30 bg-cyan-400/10">
@@ -358,6 +360,7 @@ function NodeCard({
                                         <SelectContent>
                                             <SelectItem value="ollama">Ollama</SelectItem>
                                             <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
+                                            <SelectItem value="antigravity">Antigravity (Google v1internal)</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -589,6 +592,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             <SelectContent>
                                 <SelectItem value="ollama">Ollama</SelectItem>
                                 <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
+                                <SelectItem value="antigravity">Antigravity (Google v1internal)</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -626,7 +630,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             }
                             mut.mutate(payload);
                         }}
-                        disabled={!form.name || !form.base_url || mut.isPending}
+                        disabled={!form.name || (form.node_type !== 'antigravity' && !form.base_url) || mut.isPending}
                     >
                         Create
                     </Button>

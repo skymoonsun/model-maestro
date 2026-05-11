@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from typing import List, Optional
 import logging
 import re
+from pydantic import BaseModel
 
 from app.database import async_session_maker
 from app.models import (
@@ -80,7 +81,9 @@ async def create_node(
             warmup_enabled=request.warmup_enabled if request.warmup_enabled is not None else True,
             health_check_url=request.health_check_url,
             code=request.code,
-            headers=request.headers
+            headers=request.headers,
+            oauth_tokens=request.oauth_tokens.model_dump() if request.oauth_tokens else None,
+            project_id=request.project_id
         )
 
         # Audit log
@@ -109,7 +112,9 @@ async def create_node(
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
             updated_at=node.updated_at.isoformat() if node.updated_at else None,
-            headers=node.headers
+            headers=node.headers,
+            oauth_tokens=node.oauth_tokens,
+            project_id=node.project_id
         )
 
 
@@ -165,6 +170,9 @@ async def get_node(
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
             updated_at=node.updated_at.isoformat() if node.updated_at else None,
+            headers=node.headers,
+            oauth_tokens=node.oauth_tokens,
+            project_id=node.project_id,
             model_count=len(models),
             models=[
                 {
@@ -238,6 +246,12 @@ async def update_node(
 
         if request.headers is not None:
             update_data["headers"] = request.headers if request.headers else None
+
+        if request.oauth_tokens is not None:
+            update_data["oauth_tokens"] = request.oauth_tokens.model_dump() if request.oauth_tokens else None
+
+        if request.project_id is not None:
+            update_data["project_id"] = request.project_id
 
         node = await repo.update(node_id, **update_data)
 
@@ -335,7 +349,9 @@ async def check_node_health(
             node.base_url,
             node.api_key,
             node_type=getattr(node, 'node_type', 'ollama'),
-            headers=getattr(node, 'headers', None)
+            headers=getattr(node, 'headers', None),
+            oauth_tokens=getattr(node, 'oauth_tokens', None),
+            project_id=getattr(node, 'project_id', None)
         )
         
         # Update node status
@@ -578,3 +594,211 @@ async def update_node_priorities(
             updated=len(updated_nodes),
             nodes=updated_nodes
         )
+
+
+# ==================== GOOGLE OAUTH (Antigravity) ====================
+
+@router.get("/{node_id}/google-auth-url")
+async def get_google_auth_url(
+    node_id: int,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Generate Google OAuth consent screen URL for an antigravity node.
+    """
+    async with async_session_maker() as session:
+        repo = NodeRepository(session)
+        node = await repo.get_by_id(node_id)
+
+        if not node:
+            raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+        from app.config import get_settings
+        settings = get_settings()
+
+        client_id = settings.google_client_id
+        client_secret = settings.google_client_secret
+        redirect_uri = settings.google_redirect_uri
+
+        if not client_id or not client_secret:
+            raise HTTPException(
+                status_code=500,
+                detail="Google OAuth credentials not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in environment."
+            )
+
+        from app.google_auth import GoogleOAuthManager
+        manager = GoogleOAuthManager(client_id, client_secret, redirect_uri)
+
+        # Generate a state token that encodes the node_id
+        import secrets
+        state = f"{node_id}:{secrets.token_urlsafe(16)}"
+
+        auth_url = manager.get_auth_url(state=state)
+
+        return {
+            "auth_url": auth_url,
+            "state": state,
+            "node_id": node_id,
+            "node_name": node.name,
+        }
+
+
+class GoogleOAuthCallbackRequest(BaseModel):
+    code: str
+    state: str
+
+
+async def _process_google_oauth_callback(node_id: int, code: str, state: str) -> dict:
+    """Shared logic for processing Google OAuth callback."""
+    async with async_session_maker() as session:
+        repo = NodeRepository(session)
+        node = await repo.get_by_id(node_id)
+
+        if not node:
+            raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+        from app.config import get_settings
+        settings = get_settings()
+
+        client_id = settings.google_client_id
+        client_secret = settings.google_client_secret
+        redirect_uri = settings.google_redirect_uri
+
+        if not client_id or not client_secret:
+            raise HTTPException(
+                status_code=500,
+                detail="Google OAuth credentials not configured."
+            )
+
+        from app.google_auth import GoogleOAuthManager, load_code_assist
+
+        manager = GoogleOAuthManager(client_id, client_secret, redirect_uri)
+
+        # Exchange code for tokens
+        try:
+            tokens = await manager.exchange_code(code)
+        except Exception as e:
+            logger.error(f"Token exchange failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Token exchange failed: {e}")
+
+        # Get user info
+        try:
+            user_info = await manager.get_user_info(tokens["access_token"])
+            user_email = user_info.get("email", "unknown")
+        except Exception as e:
+            logger.warning(f"User info fetch failed: {e}")
+            user_email = "unknown"
+
+        # Call loadCodeAssist to get project_id (optional — may fail for accounts
+        # without Cloud Code Private API access; proxy works without it)
+        project_id = None
+        try:
+            project_id = await load_code_assist(tokens["access_token"])
+            logger.info(f"loadCodeAssist returned project_id: {project_id}")
+        except Exception as e:
+            logger.warning(f"loadCodeAssist failed (account may lack Cloud Code API access): {e}")
+
+        # Update node with OAuth tokens and project_id (if any)
+        update_data: dict = {
+            "oauth_tokens": tokens,
+        }
+        if project_id:
+            update_data["project_id"] = project_id
+
+        updated_node = await repo.update(node_id, **update_data)
+
+        if not updated_node:
+            raise HTTPException(status_code=500, detail="Failed to update node with OAuth tokens")
+
+        # Audit log
+        audit_repo = AuditLogRepository(session)
+        await audit_repo.create(
+            action="google_oauth_connected",
+            entity_type="node",
+            entity_id=str(node_id),
+            details={"email": user_email, "project_id": project_id},
+            admin_ip=None
+        )
+
+        return {
+            "success": True,
+            "node_id": node_id,
+            "node_name": node.name,
+            "email": user_email,
+            "project_id": project_id,
+            "token_type": tokens.get("token_type", "Bearer"),
+            "expires_in": tokens.get("expires_in"),
+        }
+
+
+@router.post("/{node_id}/google-auth-callback")
+async def google_auth_callback_post(
+    node_id: int,
+    request: GoogleOAuthCallbackRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Handle Google OAuth callback manually (POST from admin panel).
+
+    Exchanges the authorization code for tokens, fetches user info,
+    calls loadCodeAssist to get project_id, and updates the node.
+    """
+    return await _process_google_oauth_callback(node_id, request.code, request.state)
+
+
+@router.post("/{node_id}/google-refresh-token")
+async def google_refresh_token(
+    node_id: int,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Manually refresh Google OAuth access token for an antigravity node.
+    """
+    async with async_session_maker() as session:
+        repo = NodeRepository(session)
+        node = await repo.get_by_id(node_id)
+
+        if not node:
+            raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+        if not node.oauth_tokens or not node.oauth_tokens.get("refresh_token"):
+            raise HTTPException(status_code=400, detail="Node has no refresh_token")
+
+        from app.config import get_settings
+        settings = get_settings()
+
+        client_id = settings.google_client_id
+        client_secret = settings.google_client_secret
+
+        if not client_id or not client_secret:
+            raise HTTPException(
+                status_code=500,
+                detail="Google OAuth credentials not configured."
+            )
+
+        from app.google_auth import GoogleOAuthManager
+
+        manager = GoogleOAuthManager(client_id, client_secret, "")
+
+        try:
+            new_tokens = await manager.refresh_access_token(node.oauth_tokens["refresh_token"])
+        except Exception as e:
+            logger.error(f"Token refresh failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Token refresh failed: {e}")
+
+        # Merge new tokens into existing token dict
+        updated_tokens = dict(node.oauth_tokens)
+        updated_tokens["access_token"] = new_tokens["access_token"]
+        updated_tokens["expires_in"] = new_tokens["expires_in"]
+        updated_tokens["obtained_at"] = new_tokens["obtained_at"]
+        if new_tokens.get("scope"):
+            updated_tokens["scope"] = new_tokens["scope"]
+
+        await repo.update(node_id, oauth_tokens=updated_tokens)
+
+        return {
+            "success": True,
+            "node_id": node_id,
+            "node_name": node.name,
+            "expires_in": new_tokens.get("expires_in"),
+        }
