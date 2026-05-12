@@ -178,6 +178,18 @@ async def startup_event():
     await config_manager.ensure_defaults()
     logger.info("Default configuration keys ensured")
     
+    # Initialize Google OAuth manager if credentials are available
+    from app.config import get_settings
+    settings = get_settings()
+    if settings.google_client_id and settings.google_client_secret:
+        from app.google_auth import init_google_oauth
+        init_google_oauth(
+            settings.google_client_id,
+            settings.google_client_secret,
+            settings.google_redirect_uri,
+        )
+        logger.info("Google OAuth manager initialized")
+
     # Start background tasks
     from app.background_tasks import start_background_tasks
     await start_background_tasks()
@@ -884,13 +896,20 @@ async def openai_chat_completions(
     # Ollama varsayılan keep_alive=5dk; -1 ile server restart'a kadar yüklü kalır.
     if 'keep_alive' not in data:
         data['keep_alive'] = -1
-    
+
+    # Forward client headers (Cookie, x-*, etc.) to upstream
+    # Cookie is excluded — the client cookie belongs to model-maestro, not upstream.
+    # accept and content-type are excluded — httpx sends them automatically.
+    skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
+    client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
+
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=data,
         stream=stream,
-        username=username
+        username=username,
+        client_headers=client_headers
     )
 
 

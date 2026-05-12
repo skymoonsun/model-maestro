@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'next/navigation';
-import { usersApi, modelMappingsApi } from '@/lib/api';
+import { usersApi, modelMappingsApi, nodesApi } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { useState, useEffect } from 'react';
-import { Copy, Save, X, ArrowLeft } from 'lucide-react';
+import { Copy, Save, X, ArrowLeft, Trash2, Plus } from 'lucide-react';
 import Link from 'next/link';
 
 function formatNumber(value: number): string {
@@ -91,10 +91,28 @@ export default function UserDetailPage() {
         queryFn: () => usersApi.getModelUsage(username),
     });
 
+    const { data: allNodes } = useQuery({
+        queryKey: ['nodes'],
+        queryFn: () => nodesApi.list(true),
+    });
+
+    const { data: userNodes } = useQuery({
+        queryKey: ['users', username, 'nodes'],
+        queryFn: () => usersApi.getNodes(username),
+    });
+
+    const { data: userNodeModels } = useQuery({
+        queryKey: ['users', username, 'node-models'],
+        queryFn: () => usersApi.getNodeModels(username),
+    });
+
     const [reqLimit, setReqLimit] = useState('');
     const [tokenLimit, setTokenLimit] = useState('');
     const [hasAllModels, setHasAllModels] = useState(false);
     const [selectedModels, setSelectedModels] = useState<string[]>([]);
+    const [selectedNodes, setSelectedNodes] = useState<number[]>([]);
+    const [selectedNodeForModels, setSelectedNodeForModels] = useState<number | null>(null);
+    const [selectedNodeModel, setSelectedNodeModel] = useState('');
 
     useEffect(() => {
         if (limits) {
@@ -113,6 +131,13 @@ export default function UserDetailPage() {
             setSelectedModels(userModels.models);
         }
     }, [userModels]);
+
+    useEffect(() => {
+        if (userNodes) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setSelectedNodes(userNodes.nodes.map((n) => n.node_id));
+        }
+    }, [userNodes]);
 
     const modelsMutation = useMutation({
         mutationFn: () =>
@@ -150,6 +175,63 @@ export default function UserDetailPage() {
         onError: (err) => toast.error(err.message),
     });
 
+    const grantNodeMutation = useMutation({
+        mutationFn: (node_id: number) => usersApi.grantNode(username, node_id),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'nodes'] });
+            toast.success('Node access granted');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const revokeNodeMutation = useMutation({
+        mutationFn: (node_id: number) => usersApi.revokeNode(username, node_id),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'nodes'] });
+            toast.success('Node access revoked');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const grantAllNodesMutation = useMutation({
+        mutationFn: () => usersApi.grantAllNodes(username),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'nodes'] });
+            toast.success('All nodes granted');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const grantNodeModelMutation = useMutation({
+        mutationFn: ({ node_id, model_name }: { node_id: number; model_name: string }) =>
+            usersApi.grantNodeModel(username, node_id, model_name),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'node-models'] });
+            setSelectedNodeModel('');
+            toast.success('Node-model access granted');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const revokeNodeModelMutation = useMutation({
+        mutationFn: ({ node_id, model_name }: { node_id: number; model_name: string }) =>
+            usersApi.revokeNodeModel(username, node_id, model_name),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'node-models'] });
+            toast.success('Node-model access revoked');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const grantAllNodeModelsMutation = useMutation({
+        mutationFn: () => usersApi.grantAllNodeModels(username),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'node-models'] });
+            toast.success('All node-models granted');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
     if (isLoading || !user) {
         return <Skeleton className="h-96 w-full" />;
     }
@@ -157,6 +239,12 @@ export default function UserDetailPage() {
     const toggleModel = (model: string) => {
         setSelectedModels((prev) =>
             prev.includes(model) ? prev.filter((m) => m !== model) : [...prev, model]
+        );
+    };
+
+    const toggleNode = (nodeId: number) => {
+        setSelectedNodes((prev) =>
+            prev.includes(nodeId) ? prev.filter((id) => id !== nodeId) : [...prev, nodeId]
         );
     };
 
@@ -222,6 +310,8 @@ export default function UserDetailPage() {
             <Tabs defaultValue="models">
                 <TabsList>
                     <TabsTrigger value="models">Models</TabsTrigger>
+                    <TabsTrigger value="nodes">Nodes</TabsTrigger>
+                    <TabsTrigger value="node-models">Node-Models</TabsTrigger>
                     <TabsTrigger value="limits">Limits</TabsTrigger>
                     <TabsTrigger value="activity">Activity</TabsTrigger>
                 </TabsList>
@@ -255,6 +345,129 @@ export default function UserDetailPage() {
                                         </label>
                                     ))}
                                 </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
+                <TabsContent value="nodes" className="mt-4">
+                    <Card>
+                        <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between">
+                                <CardTitle className="text-sm">Node Access</CardTitle>
+                                <Button variant="ghost" size="sm" onClick={() => grantAllNodesMutation.mutate()}>
+                                    <X className="h-4 w-4 mr-1" /> Grant All
+                                </Button>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            {userNodes && !userNodes.has_restriction && (
+                                <p className="text-sm text-muted-foreground">User has access to all nodes (no restrictions).</p>
+                            )}
+                            {allNodes && allNodes.length > 0 && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                    {allNodes.map((n) => {
+                                        const hasAccess = selectedNodes.includes(n.id);
+                                        return (
+                                            <label key={n.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-accent cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={hasAccess}
+                                                    onChange={() => {
+                                                        if (hasAccess) revokeNodeMutation.mutate(n.id);
+                                                        else grantNodeMutation.mutate(n.id);
+                                                    }}
+                                                    className="rounded border-border"
+                                                />
+                                                <span className="text-sm">{n.name} <Badge variant="outline" className="text-xs ml-1">{n.node_type}</Badge></span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
+                <TabsContent value="node-models" className="mt-4">
+                    <Card>
+                        <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between">
+                                <CardTitle className="text-sm">Node-Model Access</CardTitle>
+                                <Button variant="ghost" size="sm" onClick={() => grantAllNodeModelsMutation.mutate()}>
+                                    <X className="h-4 w-4 mr-1" /> Grant All
+                                </Button>
+                            </div>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            {userNodeModels && !userNodeModels.has_restriction && (
+                                <p className="text-sm text-muted-foreground">User has access to all node-model combinations (no restrictions).</p>
+                            )}
+                            <div className="flex gap-2">
+                                <select
+                                    className="border rounded px-2 py-1 text-sm bg-background"
+                                    value={selectedNodeForModels ?? ''}
+                                    onChange={(e) => setSelectedNodeForModels(Number(e.target.value) || null)}
+                                >
+                                    <option value="">Select node...</option>
+                                    {allNodes?.map((n) => (
+                                        <option key={n.id} value={n.id}>{n.name} ({n.node_type})</option>
+                                    ))}
+                                </select>
+                                <select
+                                    className="border rounded px-2 py-1 text-sm bg-background"
+                                    value={selectedNodeModel}
+                                    onChange={(e) => setSelectedNodeModel(e.target.value)}
+                                >
+                                    <option value="">Select model...</option>
+                                    {allNodes?.find((n) => n.id === selectedNodeForModels)?.models?.map((m: any) => (
+                                        <option key={m.model_name} value={m.model_name}>{m.model_name}</option>
+                                    ))}
+                                </select>
+                                <Button
+                                    size="sm"
+                                    disabled={!selectedNodeForModels || !selectedNodeModel || grantNodeModelMutation.isPending}
+                                    onClick={() =>
+                                        selectedNodeForModels && selectedNodeModel &&
+                                        grantNodeModelMutation.mutate({ node_id: selectedNodeForModels, model_name: selectedNodeModel })
+                                    }
+                                >
+                                    <Plus className="h-4 w-4 mr-1" /> Add
+                                </Button>
+                            </div>
+
+                            {userNodeModels && userNodeModels.node_models.length > 0 && (
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Node</TableHead>
+                                            <TableHead>Model</TableHead>
+                                            <TableHead className="text-right">Action</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {userNodeModels.node_models.map((nm: any) => (
+                                            <TableRow key={`${nm.node_id}-${nm.model_name}`}>
+                                                <TableCell className="text-sm">{nm.node_name} <Badge variant="outline" className="text-xs">{nm.node_type}</Badge></TableCell>
+                                                <TableCell className="font-mono text-xs">{nm.model_name}</TableCell>
+                                                <TableCell className="text-right">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-7 w-7 text-destructive"
+                                                        onClick={() => revokeNodeModelMutation.mutate({ node_id: nm.node_id, model_name: nm.model_name })}
+                                                        disabled={revokeNodeModelMutation.isPending}
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            )}
+                            {userNodeModels && userNodeModels.node_models.length === 0 && userNodeModels.has_restriction && (
+                                <p className="text-sm text-muted-foreground">No node-model restrictions set.</p>
                             )}
                         </CardContent>
                     </Card>

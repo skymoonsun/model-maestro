@@ -144,6 +144,10 @@ function NodeCard({
         warmup_enabled: node.warmup_enabled,
         code: node.code,
         headers: node.headers ?? undefined,
+        aws_secret_key: node.aws_secret_key ?? undefined,
+        aws_region: node.aws_region ?? undefined,
+        aws_session_token: node.aws_session_token ?? undefined,
+        scoped_models: node.scoped_models,
     });
     const [headersStr, setHeadersStr] = useState<string>(
         node.headers ? JSON.stringify(node.headers, null, 2) : ''
@@ -181,10 +185,14 @@ function NodeCard({
                 warmup_enabled: node.warmup_enabled,
                 code: node.code,
                 headers: node.headers ?? undefined,
+                aws_secret_key: node.aws_secret_key ?? undefined,
+                aws_region: node.aws_region ?? undefined,
+                aws_session_token: node.aws_session_token ?? undefined,
+                scoped_models: node.scoped_models,
             });
             setHeadersStr(node.headers ? JSON.stringify(node.headers, null, 2) : '');
         }
-    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code, node.headers]);
+    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.scoped_models]);
 
     const isInactive = !node.is_active;
 
@@ -212,10 +220,14 @@ function NodeCard({
                                     ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
                                     : node.node_type === 'ollama'
                                     ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                                    : node.node_type === 'antigravity'
+                                    ? 'bg-green-500/10 text-green-400 border-green-500/30'
+                                    : node.node_type === 'bedrock'
+                                    ? 'bg-orange-500/10 text-orange-400 border-orange-500/30'
                                     : ''
                             }`}
                         >
-                            {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type}
+                            {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type === 'antigravity' ? 'Antigravity' : node.node_type === 'bedrock' ? 'Bedrock' : node.node_type}
                         </Badge>
                         {node.code && (
                             <Badge variant="outline" className="text-xs font-mono text-cyan-400 border-cyan-400/30 bg-cyan-400/10">
@@ -225,6 +237,11 @@ function NodeCard({
                         {!node.warmup_enabled && (
                             <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10">
                                 Warmup Off
+                            </Badge>
+                        )}
+                        {node.scoped_models && (
+                            <Badge variant="outline" className="text-xs text-pink-400 border-pink-400/30 bg-pink-400/10">
+                                Scoped
                             </Badge>
                         )}
                         {isInactive && (
@@ -358,9 +375,51 @@ function NodeCard({
                                         <SelectContent>
                                             <SelectItem value="ollama">Ollama</SelectItem>
                                             <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
+                                            <SelectItem value="antigravity">Antigravity (Google v1internal)</SelectItem>
+                                            <SelectItem value="bedrock">AWS Bedrock</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
+                                {form.node_type === 'bedrock' && (
+                                    <>
+                                        <div>
+                                            <Label>AWS Access Key ID</Label>
+                                            <Input
+                                                placeholder="AKIA..."
+                                                value={form.api_key || ''}
+                                                onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label>AWS Secret Access Key</Label>
+                                            <Input
+                                                type="password"
+                                                placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+                                                value={form.aws_secret_key || ''}
+                                                onChange={(e) => setForm((f) => ({ ...f, aws_secret_key: e.target.value || undefined }))}
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label>AWS Region</Label>
+                                            <Input
+                                                placeholder="us-east-1"
+                                                value={form.aws_region || ''}
+                                                onChange={(e) => setForm((f) => ({ ...f, aws_region: e.target.value || undefined }))}
+                                            />
+                                            <p className="text-xs text-muted-foreground mt-1">
+                                                {`Base URL will be auto-generated as https://bedrock-runtime.${'{region}'}.amazonaws.com if left empty.`}
+                                            </p>
+                                        </div>
+                                        <div>
+                                            <Label>AWS Session Token (optional)</Label>
+                                            <Input
+                                                placeholder="FwoGZXIvYXdzEBYaDK..."
+                                                value={form.aws_session_token || ''}
+                                                onChange={(e) => setForm((f) => ({ ...f, aws_session_token: e.target.value || undefined }))}
+                                            />
+                                        </div>
+                                    </>
+                                )}
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
                                         <Label>Priority</Label>
@@ -396,6 +455,16 @@ function NodeCard({
                                         onCheckedChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
                                     />
                                     <Label>Active</Label>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Switch
+                                        checked={form.scoped_models}
+                                        onCheckedChange={(v) => setForm((f) => ({ ...f, scoped_models: v }))}
+                                    />
+                                    <Label>Scoped Models</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        When enabled, models on this node are only accessible via node:code:model prefix.
+                                    </p>
                                 </div>
                             </div>
                             <DialogFooter>
@@ -470,6 +539,10 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         node_type: 'ollama',
         warmup_enabled: true,
         code: null,
+        aws_secret_key: undefined,
+        aws_region: undefined,
+        aws_session_token: undefined,
+        scoped_models: false,
     });
     const [headersStr, setHeadersStr] = useState('');
     const qc = useQueryClient();
@@ -478,7 +551,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null, headers: undefined });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null, headers: undefined, aws_secret_key: undefined, aws_region: undefined, aws_session_token: undefined, scoped_models: false });
             setHeadersStr('');
             toast.success('Node created');
             onSuccess();
@@ -589,9 +662,51 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             <SelectContent>
                                 <SelectItem value="ollama">Ollama</SelectItem>
                                 <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
+                                <SelectItem value="antigravity">Antigravity (Google v1internal)</SelectItem>
+                                <SelectItem value="bedrock">AWS Bedrock</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
+                    {form.node_type === 'bedrock' && (
+                        <>
+                            <div>
+                                <Label>AWS Access Key ID</Label>
+                                <Input
+                                    placeholder="AKIA..."
+                                    value={form.api_key || ''}
+                                    onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
+                                />
+                            </div>
+                            <div>
+                                <Label>AWS Secret Access Key</Label>
+                                <Input
+                                    type="password"
+                                    placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+                                    value={form.aws_secret_key || ''}
+                                    onChange={(e) => setForm((f) => ({ ...f, aws_secret_key: e.target.value || undefined }))}
+                                />
+                            </div>
+                            <div>
+                                <Label>AWS Region</Label>
+                                <Input
+                                    placeholder="us-east-1"
+                                    value={form.aws_region || ''}
+                                    onChange={(e) => setForm((f) => ({ ...f, aws_region: e.target.value || undefined }))}
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    {`Base URL will be auto-generated as https://bedrock-runtime.${'{region}'}.amazonaws.com if left empty.`}
+                                </p>
+                            </div>
+                            <div>
+                                <Label>AWS Session Token (optional)</Label>
+                                <Input
+                                    placeholder="FwoGZXIvYXdzEBYaDK..."
+                                    value={form.aws_session_token || ''}
+                                    onChange={(e) => setForm((f) => ({ ...f, aws_session_token: e.target.value || undefined }))}
+                                />
+                            </div>
+                        </>
+                    )}
                     <div className="flex items-center gap-2">
                         <Switch
                             checked={form.warmup_enabled}
@@ -605,6 +720,16 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             onCheckedChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
                         />
                         <Label>Active</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            checked={form.scoped_models}
+                            onCheckedChange={(v) => setForm((f) => ({ ...f, scoped_models: v }))}
+                        />
+                        <Label>Scoped Models</Label>
+                        <p className="text-xs text-muted-foreground">
+                            When enabled, models on this node are only accessible via node:code:model prefix.
+                        </p>
                     </div>
                 </div>
                 <DialogFooter>
@@ -626,7 +751,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             }
                             mut.mutate(payload);
                         }}
-                        disabled={!form.name || !form.base_url || mut.isPending}
+                        disabled={!form.name || (form.node_type !== 'antigravity' && form.node_type !== 'bedrock' && !form.base_url) || (form.node_type === 'bedrock' && !form.aws_region && !form.base_url) || mut.isPending}
                     >
                         Create
                     </Button>

@@ -36,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from app.config import get_settings, model_mapper, model_group_manager, get_context_length_for_model
 from app.user_manager import user_manager
 from app.auth import get_current_user
+from app.google_proxy import proxy_antigravity_request
 
 logger = logging.getLogger(__name__)
 
@@ -995,7 +996,39 @@ class OllamaProxy:
     # (model might be available on a different node)
     NODE_RETRYABLE_STATUS_CODES = {404, 423, 429, 500, 502, 503, 504}
 
-    async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
+    async def _resolve_node_id_by_url(self, base_url: str) -> Optional[int]:
+        """Look up node_id from base_url using an in-memory cache."""
+        if not base_url:
+            return None
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                for n in nodes:
+                    if n.base_url == base_url:
+                        return n.id
+        except Exception:
+            pass
+        return None
+
+    async def _check_user_node_access(self, username: Optional[str], base_url: str) -> bool:
+        """Check if user has access to the node identified by base_url."""
+        if not username:
+            return True
+        node_id = await self._resolve_node_id_by_url(base_url)
+        if not node_id:
+            return True
+        from app.auth import check_node_access
+        return await check_node_access(username, node_id)
+
+    async def _select_node_url(
+        self,
+        model_name: str,
+        exclude_nodes: Optional[List[str]] = None,
+        exclude_scoped: bool = False
+    ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
         """
         Select the best node URL for a model using load balancing.
         Uses Redis cache first (zero DB hits per request).
@@ -1003,6 +1036,7 @@ class OllamaProxy:
         Args:
             model_name: The model name to route
             exclude_nodes: List of base_url strings to exclude (already tried nodes)
+            exclude_scoped: If True, skip nodes with scoped_models=True (normal load balancing)
 
         Returns:
             Tuple of (base_url, api_key, node_type, headers). Falls back to self.base_url if load balancing is not configured or no nodes available.
@@ -1027,6 +1061,21 @@ class OllamaProxy:
                     logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
                     return "", None, 'ollama', None
                 logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
+                return self.base_url, None, 'ollama', None
+
+            # Filter out scoped nodes when doing normal load balancing
+            if exclude_scoped:
+                before_count = len(nodes)
+                nodes = [n for n in nodes if not n.get('scoped_models')]
+                filtered_count = before_count - len(nodes)
+                if filtered_count:
+                    logger.info(f"[LB] Filtered out {filtered_count} scoped nodes for model {model_name}")
+
+            if not nodes:
+                if exclude_nodes and self.base_url in exclude_nodes:
+                    logger.info(f"[LB] No non-scoped nodes found for model {model_name} and default URL excluded")
+                    return "", None, 'ollama', None
+                logger.info(f"[LB] All nodes for model {model_name} are scoped, using default URL")
                 return self.base_url, None, 'ollama', None
 
             # Filter out excluded nodes
@@ -1790,7 +1839,8 @@ class OllamaProxy:
         endpoint: str,
         data: Optional[Dict[str, Any]] = None,
         stream: bool = False,
-        username: Optional[str] = None
+        username: Optional[str] = None,
+        client_headers: Optional[Dict[str, str]] = None
     ):
         """
         Proxy request to Ollama with automatic failover.
@@ -1833,6 +1883,11 @@ class OllamaProxy:
         tried_models: set = set()
         tried_nodes: set = set()  # Track node base_urls already tried
 
+        # Determine if this request came through a model group.
+        # Group requests bypass node and node-model access controls because
+        # the group is an abstraction layer — the user does not target a specific node.
+        is_group_request: bool = False
+
         # Step 1: Resolve model groups (if model name is a group, pick appropriate member)
         if data:
             # Store original model name before resolution
@@ -1842,6 +1897,8 @@ class OllamaProxy:
             # Check if original model was a group (for failover)
             if original_model:
                 original_group = self._find_group_for_model(original_model)
+                if original_group:
+                    is_group_request = True
 
         # Extract model name for node selection and logging
         model_name = None
@@ -1851,6 +1908,7 @@ class OllamaProxy:
                 tried_models.add(model_name)
 
         # Node-scoped routing via model name prefix (node:code:model)
+        node_scoped_model: Optional[str] = None
         if model_name and isinstance(model_name, str):
             node_code, actual_model = self._parse_node_prefix(model_name)
             if node_code:
@@ -1872,6 +1930,7 @@ class OllamaProxy:
                         elif 'name' in data:
                             data['name'] = actual_model
                         model_name = actual_model
+                        node_scoped_model = actual_model
                         tried_models.discard(f"node:{node_code}:{actual_model}")
                         tried_models.add(actual_model)
                         logger.info(f"[LB] Node-scoped routing: code='{node_code}' -> node='{node.name}', model='{actual_model}'")
@@ -1880,6 +1939,9 @@ class OllamaProxy:
                 except Exception as e:
                     logger.warning(f"[LB] Error looking up node by code '{node_code}': {e}")
                     raise HTTPException(status_code=500, detail=f"Error resolving node code '{node_code}'")
+
+        # Determine if request is node-scoped for scoped model filtering
+        is_node_scoped = bool(node_code)
 
         # Check for preferred node from model group member resolution
         preferred_node_id = data.pop('_preferred_node_id', None) if isinstance(data, dict) else None
@@ -1908,15 +1970,149 @@ class OllamaProxy:
 
         if not base_url:
             # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
-            base_url, api_key, node_type, node_headers = await self._select_node_url(model_name or '')
+            # Exclude scoped nodes unless user explicitly requested node-scoped routing
+            # or the request came through a model group (group abstraction bypasses scoped restriction)
+            base_url, api_key, node_type, node_headers = await self._select_node_url(
+                model_name or '', exclude_scoped=not is_node_scoped and not is_group_request and not is_group_request
+            )
 
         url = f"{base_url}{endpoint}"
         if base_url:
             tried_nodes.add(base_url)
 
+        # Resolve node_id for access control
+        selected_node_id = preferred_node_id
+        if not selected_node_id and base_url:
+            try:
+                from app.database import async_session_maker
+                from app.repositories.node_repository import NodeRepository
+                async with async_session_maker() as session:
+                    node_repo = NodeRepository(session)
+                    nodes = await node_repo.list_active()
+                    for n in nodes:
+                        if n.base_url == base_url:
+                            selected_node_id = n.id
+                            break
+            except Exception as e:
+                logger.warning(f"[Access] Error looking up node by base_url for access control: {e}")
+
+        # ============================================================
+        # NODE ACCESS CONTROL
+        # ============================================================
+        # Group requests bypass node-level access control because the user
+        # does not target a specific node — the system picks one via the group.
+        if not is_group_request and username and selected_node_id:
+            from app.auth import check_node_access
+            if not await check_node_access(username, selected_node_id):
+                logger.warning(f"[Access] User '{username}' denied access to node {selected_node_id}")
+                raise HTTPException(status_code=403, detail="Access denied to this node")
+
         # Step 2: Map model names (display_name -> real_name)
+        mapped_model_name = None
         if data:
             data = self._map_model_to_ollama(data)
+            # Restore node-scoped model name to avoid mapping it to a different real name
+            if node_scoped_model and isinstance(data, dict):
+                if 'model' in data:
+                    data['model'] = node_scoped_model
+                elif 'name' in data:
+                    data['name'] = node_scoped_model
+            mapped_model_name = data.get('model') or data.get('name')
+
+        # Node-model access check
+        # Group requests also bypass node-model access control for the same reason.
+        if not is_group_request and username and selected_node_id and mapped_model_name:
+            from app.auth import check_node_model_access
+            if not await check_node_model_access(username, selected_node_id, mapped_model_name):
+                logger.warning(f"[Access] User '{username}' denied access to model '{mapped_model_name}' on node {selected_node_id}")
+                raise HTTPException(status_code=403, detail="Access denied to this model on this node")
+
+        # ============================================================
+        # ANTIGRAVITY (Google v1internal) ROUTING
+        # ============================================================
+        if node_type == 'antigravity' and isinstance(data, dict):
+            # Antigravity only supports OpenAI-compatible chat completions
+            if endpoint in ('/v1/chat/completions', '/cursor/chat/completions', '/v1/completions'):
+                logger.info(f"[Antigravity] Routing request to Google v1internal for model={model_name}")
+                # Retrieve node info including oauth_tokens and project_id
+                node_info = None
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeRepository
+                    async with async_session_maker() as session:
+                        node_repo = NodeRepository(session)
+                        # Find the node by base_url
+                        nodes = await node_repo.list_active()
+                        for n in nodes:
+                            if n.base_url == base_url and n.node_type == 'antigravity':
+                                node_info = n
+                                break
+                except Exception as e:
+                    logger.warning(f"[Antigravity] Failed to look up node info: {e}")
+
+                if not node_info or not node_info.oauth_tokens:
+                    raise HTTPException(status_code=500, detail="Antigravity node missing OAuth tokens")
+
+                return await proxy_antigravity_request(
+                    data=data,
+                    stream=stream,
+                    endpoint=endpoint,
+                    base_url=base_url,
+                    oauth_tokens=node_info.oauth_tokens,
+                    project_id=node_info.project_id,
+                    node_headers=node_headers,
+                    model_name=model_name or data.get('model', 'unknown'),
+                    username=username,
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Antigravity nodes do not support endpoint: {endpoint}"
+                )
+
+        # ============================================================
+        # BEDROCK ROUTING
+        # ============================================================
+        if node_type == 'bedrock' and isinstance(data, dict):
+            if endpoint in ('/v1/chat/completions', '/cursor/chat/completions'):
+                logger.info(f"[Bedrock] Routing request to AWS Bedrock for model={model_name}")
+                # Retrieve node info including AWS credentials
+                node_info = None
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeRepository
+                    async with async_session_maker() as session:
+                        node_repo = NodeRepository(session)
+                        nodes = await node_repo.list_active()
+                        for n in nodes:
+                            if n.base_url == base_url and n.node_type == 'bedrock':
+                                node_info = n
+                                break
+                except Exception as e:
+                    logger.warning(f"[Bedrock] Failed to look up node info: {e}")
+
+                if not node_info or not node_info.api_key or not node_info.aws_secret_key or not node_info.aws_region:
+                    raise HTTPException(status_code=500, detail="Bedrock node missing AWS credentials or region")
+
+                from app.bedrock_proxy import proxy_bedrock_request
+                return await proxy_bedrock_request(
+                    data=data,
+                    stream=stream,
+                    endpoint=endpoint,
+                    base_url=base_url,
+                    access_key=node_info.api_key,
+                    secret_key=node_info.aws_secret_key,
+                    region=node_info.aws_region,
+                    session_token=node_info.aws_session_token,
+                    model_name=mapped_model_name or data.get('model', 'unknown'),
+                    username=username,
+                    node_headers=node_headers,
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Bedrock nodes only support chat completions endpoint, got: {endpoint}"
+                )
 
         # vLLM nodes don't support Ollama-specific parameters
         if node_type == 'vllm' and isinstance(data, dict):
@@ -1949,7 +2145,14 @@ class OllamaProxy:
             # If not provided, default to a reasonable value.
             # Skip for NVIDIA NIM endpoints — known to crash with certain models (e.g. Kimi K2.6)
             # when max_tokens is injected. See: CherryHQ/cherry-studio#14868
-            if not is_nvidia and 'max_tokens' not in data and 'max_completion_tokens' not in data:
+            # Also skip when node headers contain x-skip-max-tokens-injection (for endpoints
+            # like Agent Router that reject injected max_tokens).
+            skip_max_tokens = (
+                is_nvidia or
+                (node_headers and str(node_headers.get('x-skip-max-tokens-injection', '')).lower() in ('true', '1', 'yes'))
+            )
+            # Agent Router specifically rejects injected max_tokens with content-blocked error.
+            if not skip_max_tokens and base_url and 'agentrouter' not in base_url and 'max_tokens' not in data and 'max_completion_tokens' not in data:
                 data['max_tokens'] = 4096
                 logger.info(f"[vLLM] Default max_tokens=4096 injected for model {model_name}")
 
@@ -1992,7 +2195,10 @@ class OllamaProxy:
                     api_key=api_key,
                     start_time=start_time,
                     node_type=node_type,
-                    node_headers=node_headers
+                    node_headers=node_headers,
+                    exclude_scoped=not is_node_scoped and not is_group_request,
+                    bypass_node_access=is_group_request,
+                    client_headers=client_headers
                 )
 
             # Non-streaming requests with failover support
@@ -2010,7 +2216,10 @@ class OllamaProxy:
                 api_key=api_key,
                 start_time=start_time,
                 node_type=node_type,
-                node_headers=node_headers
+                node_headers=node_headers,
+                exclude_scoped=not is_node_scoped and not is_group_request,
+                bypass_node_access=is_group_request,
+                client_headers=client_headers
             )
 
         except HTTPException:
@@ -2041,7 +2250,10 @@ class OllamaProxy:
         api_key: Optional[str],
         start_time: float,
         node_type: str = 'ollama',
-        node_headers: Optional[Dict[str, Any]] = None
+        node_headers: Optional[Dict[str, Any]] = None,
+        exclude_scoped: bool = False,
+        bypass_node_access: bool = False,
+        client_headers: Optional[Dict[str, str]] = None
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2095,8 +2307,16 @@ class OllamaProxy:
                         logger.info(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in current_data.get('tools', [])]}")
 
                     request_headers = {}
+                    if client_headers:
+                        # Filter out auth/user-agent duplicates — node headers/api_key override them.
+                        # Upstream ALBs reject duplicate Authorization headers.
+                        # Cookie is excluded — belongs to model-maestro, not upstream.
+                        blocked = {'authorization', 'user-agent', 'postman-token', 'cookie', 'accept', 'content-type'}
+                        request_headers.update({k: v for k, v in client_headers.items() if k.lower() not in blocked})
                     if current_headers:
-                        request_headers.update(current_headers)
+                        # Filter out internal proxy directives (not for upstream)
+                        upstream_headers = {k: v for k, v in current_headers.items() if k.lower() != 'x-skip-max-tokens-injection'}
+                        request_headers.update(upstream_headers)
                     if current_api_key:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
 
@@ -2139,9 +2359,15 @@ class OllamaProxy:
                                 tried_nodes.add(current_base_url)
 
                                 new_base_url, new_api_key, _, new_headers = await self._select_node_url(
-                                    current_model, exclude_nodes=list(tried_nodes)
+                                    current_model, exclude_nodes=list(tried_nodes),
+                                    exclude_scoped=exclude_scoped
                                 )
                                 if new_base_url:
+                                    # Check node access for failover node
+                                    if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
+                                        logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                        tried_nodes.add(new_base_url)
+                                        continue
                                     logger.warning(
                                         f"[NODE RETRY] Stream error {resp.status_code} from {current_base_url}, "
                                         f"trying node {new_base_url} for model {current_model}"
@@ -2179,8 +2405,12 @@ class OllamaProxy:
                                         current_data = self._strip_images_from_messages(current_data, fallback_mapped)
 
                                     # Select new node URL for fallback (reset tried_nodes for new model)
-                                    new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model)
-                                    current_url = f"{new_base_url}{endpoint}"
+                                    new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                                    if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                                        logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                                        tried_nodes.add(new_base_url)
+                                        new_base_url = None
+                                    current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                                     if new_base_url:
                                         tried_nodes.add(new_base_url)
                                         current_api_key = new_api_key
@@ -2776,9 +3006,14 @@ class OllamaProxy:
                         tried_nodes.add(current_base_url)
 
                         new_base_url, new_api_key, _, _ = await self._select_node_url(
-                            current_model, exclude_nodes=list(tried_nodes)
+                            current_model, exclude_nodes=list(tried_nodes),
+                            exclude_scoped=exclude_scoped
                         )
                         if new_base_url:
+                            if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                continue
                             logger.warning(
                                 f"[NODE RETRY] Connection error from {current_base_url}, "
                                 f"trying node {new_base_url} for model {current_model}"
@@ -2806,8 +3041,12 @@ class OllamaProxy:
                             if fb_mapped:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
-                            new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model)
-                            current_url = f"{new_base_url}{endpoint}"
+                            new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                            if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                new_base_url = None
+                            current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
@@ -2874,7 +3113,10 @@ class OllamaProxy:
         api_key: Optional[str],
         start_time: float,
         node_type: str = 'ollama',
-        node_headers: Optional[Dict[str, Any]] = None
+        node_headers: Optional[Dict[str, Any]] = None,
+        exclude_scoped: bool = False,
+        bypass_node_access: bool = False,
+        client_headers: Optional[Dict[str, str]] = None
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -2912,8 +3154,16 @@ class OllamaProxy:
                 logger.info(f"Sending request to Ollama: {current_url} (attempt {attempt + 1})")
 
                 request_headers = {}
+                if client_headers:
+                    # Filter out auth/user-agent duplicates — node headers/api_key override them.
+                    # Upstream ALBs reject duplicate Authorization headers.
+                    # Cookie is excluded — belongs to model-maestro, not upstream.
+                    blocked = {'authorization', 'user-agent', 'postman-token', 'cookie', 'accept', 'content-type'}
+                    request_headers.update({k: v for k, v in client_headers.items() if k.lower() not in blocked})
                 if current_headers:
-                    request_headers.update(current_headers)
+                    # Filter out internal proxy directives (not for upstream)
+                    upstream_headers = {k: v for k, v in current_headers.items() if k.lower() != 'x-skip-max-tokens-injection'}
+                    request_headers.update(upstream_headers)
                 if current_api_key:
                     request_headers["Authorization"] = f"Bearer {current_api_key}"
 
@@ -2948,9 +3198,14 @@ class OllamaProxy:
                         tried_nodes.add(current_base_url)
 
                         new_base_url, new_api_key, _, new_headers = await self._select_node_url(
-                            current_model, exclude_nodes=list(tried_nodes)
+                            current_model, exclude_nodes=list(tried_nodes),
+                            exclude_scoped=exclude_scoped
                         )
                         if new_base_url:
+                            if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                continue
                             logger.warning(
                                 f"[NODE RETRY] Error {response.status_code} from {current_base_url}, "
                                 f"trying node {new_base_url} for model {current_model}"
@@ -2991,8 +3246,12 @@ class OllamaProxy:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             # Select new node URL for fallback
-                            new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model)
-                            current_url = f"{new_base_url}{endpoint}"
+                            new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                            if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                new_base_url = None
+                            current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
@@ -3084,9 +3343,14 @@ class OllamaProxy:
                     tried_nodes.add(current_base_url)
 
                     new_base_url, new_api_key, _, _ = await self._select_node_url(
-                        current_model, exclude_nodes=list(tried_nodes)
+                        current_model, exclude_nodes=list(tried_nodes),
+                        exclude_scoped=exclude_scoped
                     )
                     if new_base_url:
+                        if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
+                            logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                            tried_nodes.add(new_base_url)
+                            continue
                         logger.warning(
                             f"[NODE RETRY] Connection error from {current_base_url}, "
                             f"trying node {new_base_url} for model {current_model}"
@@ -3117,8 +3381,12 @@ class OllamaProxy:
                         if fb_mapped:
                             current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
-                        new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model)
-                        current_url = f"{new_base_url}{endpoint}"
+                        new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                        if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                            logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                            tried_nodes.add(new_base_url)
+                            new_base_url = None
+                        current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                         if new_base_url:
                             tried_nodes.add(new_base_url)
                             current_api_key = new_api_key
@@ -3170,7 +3438,7 @@ class OllamaProxy:
         """Public helper: get the best node URL for a given model (using load balancer)."""
         await self._ensure_mappings_loaded()
         try:
-            base_url, _, _, _ = await self._select_node_url(model_name)
+            base_url, _, _, _ = await self._select_node_url(model_name, exclude_scoped=True)
             return base_url
         except Exception:
             return self.base_url

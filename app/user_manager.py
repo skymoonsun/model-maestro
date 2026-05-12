@@ -9,7 +9,7 @@ import jwt
 
 from app.config import get_settings
 from app.database import async_session_maker
-from app.repositories import UserRepository, UserModelRepository, UserActivityRepository, UserLimitRepository
+from app.repositories import UserRepository, UserModelRepository, UserActivityRepository, UserLimitRepository, UserNodeRepository, UserNodeModelRepository
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,8 @@ class UserManager:
                 await redis_manager.delete(f"token:{user.token}")
             await redis_manager.delete(CACHE_KEYS["USER_ACCESS"].format(username=username))
             await redis_manager.delete(CACHE_KEYS["USER_LIMIT"].format(username=username))
+            await redis_manager.delete(f"user_node_access:{username}")
+            await redis_manager.delete(f"user_node_model_access:{username}")
             
             # Hard delete all user_models entries
             await user_model_repo.delete_all_for_user(user.id)
@@ -491,26 +493,219 @@ class UserManager:
     async def get_user_model_access(self, username: str) -> dict:
         """
         Get user's model access information (for caching)
-        
+
         Returns:
             Dict with "has_all" boolean and "models" list
         """
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             user_model_repo = UserModelRepository(session)
-            
+
             user = await user_repo.get_by_username(username)
             if not user:
                 return {"has_all": False, "models": []}
-            
+
             has_all = await user_model_repo.has_all_models(user.id)
             if has_all:
                 return {"has_all": True, "models": []}
-            
+
             user_models = await user_model_repo.get_user_models(user.id)
             return {
                 "has_all": False,
                 "models": [um.model_name for um in user_models]
+            }
+
+    # ========================================================================
+    # Node Access Control
+    # ========================================================================
+
+    async def check_node_access(self, username: str, node_id: int) -> bool:
+        """Check if user has access to specific node"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                return False
+
+            user_node_repo = UserNodeRepository(session)
+            return await user_node_repo.has_node_access(user.id, node_id)
+
+    async def check_node_model_access(self, username: str, node_id: int, model_name: str) -> bool:
+        """Check if user has access to specific node+model combination"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                return False
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            return await user_node_model_repo.has_node_model_access(user.id, node_id, model_name)
+
+    async def get_user_node_access(self, username: str) -> dict:
+        """
+        Get user's node access information (for caching)
+
+        Returns:
+            Dict with "has_all" boolean and "nodes" list
+        """
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user_node_repo = UserNodeRepository(session)
+
+            user = await user_repo.get_by_username(username)
+            if not user:
+                return {"has_all": False, "nodes": []}
+
+            has_restriction = await user_node_repo.has_any_node_restriction(user.id)
+            if not has_restriction:
+                return {"has_all": True, "nodes": []}
+
+            node_ids = await user_node_repo.get_user_nodes(user.id)
+            return {"has_all": False, "nodes": node_ids}
+
+    async def get_user_node_model_access(self, username: str) -> dict:
+        """
+        Get user's node-model access information (for caching)
+
+        Returns:
+            Dict with "has_all" boolean and "node_models" list of dicts
+        """
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user_node_model_repo = UserNodeModelRepository(session)
+
+            user = await user_repo.get_by_username(username)
+            if not user:
+                return {"has_all": False, "node_models": []}
+
+            has_restriction = await user_node_model_repo.has_any_node_model_restriction(user.id)
+            if not has_restriction:
+                return {"has_all": True, "node_models": []}
+
+            node_models = await user_node_model_repo.get_user_node_models(user.id)
+            return {
+                "has_all": False,
+                "node_models": [{"node_id": nid, "model_name": mn} for nid, mn in node_models]
+            }
+
+    async def grant_node(self, username: str, node_id: int) -> bool:
+        """Grant user access to specific node"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_repo = UserNodeRepository(session)
+            await user_node_repo.assign_node(user.id, node_id)
+            return True
+
+    async def revoke_node(self, username: str, node_id: int) -> bool:
+        """Revoke user access to specific node"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_repo = UserNodeRepository(session)
+            result = await user_node_repo.revoke_node(user.id, node_id)
+            if not result:
+                raise ValueError(f"Node erişimi bulunamadı veya zaten yetkilendirilmemiş: {node_id}")
+            return result
+
+    async def grant_all_nodes(self, username: str) -> bool:
+        """Grant user access to all nodes (clear restrictions)"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_repo = UserNodeRepository(session)
+            return await user_node_repo.revoke_all_nodes(user.id)
+
+    async def get_user_nodes(self, username: str) -> Optional[dict]:
+        """Get user's allowed nodes with details"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                return None
+
+            user_node_repo = UserNodeRepository(session)
+            has_restriction = await user_node_repo.has_any_node_restriction(user.id)
+            nodes = await user_node_repo.get_user_nodes_with_details(user.id)
+
+            return {
+                "username": username,
+                "has_restriction": has_restriction,
+                "nodes": nodes
+            }
+
+    async def grant_node_model(self, username: str, node_id: int, model_name: str) -> bool:
+        """Grant user access to specific node+model combination"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            await user_node_model_repo.assign_node_model(user.id, node_id, model_name)
+            return True
+
+    async def revoke_node_model(self, username: str, node_id: int, model_name: str) -> bool:
+        """Revoke user access to specific node+model combination"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            result = await user_node_model_repo.revoke_node_model(user.id, node_id, model_name)
+            if not result:
+                raise ValueError(f"Node-model erişimi bulunamadı veya zaten yetkilendirilmemiş: {node_id}/{model_name}")
+            return result
+
+    async def grant_all_node_models(self, username: str) -> bool:
+        """Grant user access to all node-model combinations (clear restrictions)"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            return await user_node_model_repo.revoke_all_node_models(user.id)
+
+    async def get_user_node_models(self, username: str) -> Optional[dict]:
+        """Get user's allowed node-model combinations with details"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                return None
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            has_restriction = await user_node_model_repo.has_any_node_model_restriction(user.id)
+            node_models = await user_node_model_repo.get_user_node_models_with_details(user.id)
+
+            return {
+                "username": username,
+                "has_restriction": has_restriction,
+                "node_models": node_models
             }
 
 

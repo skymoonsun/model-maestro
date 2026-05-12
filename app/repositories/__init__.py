@@ -11,6 +11,8 @@ from app.repositories.tool_set_repository import ToolSetRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.node_repository import NodeRepository, NodeModelRepository, NodeLoadMetricRepository
 from app.repositories.model_group_repository import ModelGroupRepository
+from app.repositories.user_node_repository import UserNodeRepository
+from app.repositories.user_node_model_repository import UserNodeModelRepository
 
 __all__ = [
     "UserRepository",
@@ -26,4 +28,6 @@ __all__ = [
     "NodeModelRepository",
     "NodeLoadMetricRepository",
     "ModelGroupRepository",
+    "UserNodeRepository",
+    "UserNodeModelRepository",
 ]

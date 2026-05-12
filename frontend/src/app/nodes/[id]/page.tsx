@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { nodesApi } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ import {
     DialogTrigger,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
     ArrowLeft,
     Server,
@@ -35,6 +35,9 @@ import {
     Download,
     Activity,
     HardDrive,
+    Key,
+    Shield,
+    ExternalLink,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -76,6 +79,24 @@ export default function NodeDetailPage() {
     const [pulling, setPulling] = useState(false);
     const [progress, setProgress] = useState(0);
     const [status, setStatus] = useState('');
+    const [googleAuthing, setGoogleAuthing] = useState(false);
+    const [googleRefreshing, setGoogleRefreshing] = useState(false);
+
+    // Handle OAuth redirect query params
+    const searchParams = useSearchParams();
+    useEffect(() => {
+        const oauth = searchParams.get('oauth');
+        const msg = searchParams.get('msg');
+        if (oauth === 'success') {
+            toast.success('Google OAuth connected successfully');
+            qc.invalidateQueries({ queryKey: ['nodes', nodeId] });
+            // Clean up URL
+            window.history.replaceState({}, '', `/nodes/${nodeId}`);
+        } else if (oauth === 'error') {
+            toast.error(msg ? decodeURIComponent(msg) : 'Google OAuth failed');
+            window.history.replaceState({}, '', `/nodes/${nodeId}`);
+        }
+    }, [searchParams, nodeId, qc]);
 
     const { data: node, isLoading } = useQuery({
         queryKey: ['nodes', nodeId],
@@ -167,8 +188,18 @@ export default function NodeDetailPage() {
                         <Server className="h-6 w-6" />
                         {node.name}
                     </h1>
-                    <p className="text-sm text-muted-foreground font-mono">{node.base_url}</p>
+                    <p className="text-sm text-muted-foreground font-mono">
+                        {node.node_type === 'antigravity' ? 'Google v1internal API' : node.base_url}
+                    </p>
                 </div>
+                {node.node_type === 'antigravity' && (
+                    <Badge
+                        variant="outline"
+                        className="bg-green-500/10 text-green-400 border-green-500/30"
+                    >
+                        Antigravity
+                    </Badge>
+                )}
                 <HealthBadge status={node.health_status} />
                 {!node.is_active && (
                     <Badge variant="outline" className="text-muted-foreground">
@@ -222,6 +253,93 @@ export default function NodeDetailPage() {
                 </Card>
             </div>
 
+            {/* Antigravity OAuth Status Card */}
+            {node.node_type === 'antigravity' && (
+                <Card>
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            <Shield className="h-4 w-4" />
+                            Google OAuth Status
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        <div className="flex items-center gap-2">
+                            <Key className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">
+                                Status: {' '}
+                                {node.oauth_tokens?.access_token ? (
+                                    <span className="text-green-400 font-medium">Connected</span>
+                                ) : (
+                                    <span className="text-amber-400 font-medium">Not Connected</span>
+                                )}
+                            </span>
+                        </div>
+                        {node.project_id && (
+                            <div className="flex items-center gap-2">
+                                <Server className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm text-muted-foreground">Project: {node.project_id}</span>
+                            </div>
+                        )}
+                        {node.oauth_tokens?.obtained_at && (
+                            <div className="text-xs text-muted-foreground">
+                                Token obtained: {new Date(node.oauth_tokens.obtained_at).toLocaleString()}
+                            </div>
+                        )}
+                        <div className="flex gap-2 pt-1">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={googleAuthing}
+                                onClick={async () => {
+                                    setGoogleAuthing(true);
+                                    try {
+                                        const r = await nodesApi.googleAuthUrl(nodeId);
+                                        window.open(r.auth_url, '_blank');
+                                    } catch (e) {
+                                        toast.error(e instanceof Error ? e.message : 'Failed to get auth URL');
+                                    } finally {
+                                        setGoogleAuthing(false);
+                                    }
+                                }}
+                            >
+                                {googleAuthing ? (
+                                    <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                ) : (
+                                    <ExternalLink className="h-4 w-4 mr-2" />
+                                )}
+                                Google Auth
+                            </Button>
+                            {node.oauth_tokens?.access_token && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={googleRefreshing}
+                                    onClick={async () => {
+                                        setGoogleRefreshing(true);
+                                        try {
+                                            const r = await nodesApi.googleRefreshToken(nodeId);
+                                            toast.success(`Token refreshed, expires in ${r.expires_in}s`);
+                                            qc.invalidateQueries({ queryKey: ['nodes', nodeId] });
+                                        } catch (e) {
+                                            toast.error(e instanceof Error ? e.message : 'Refresh failed');
+                                        } finally {
+                                            setGoogleRefreshing(false);
+                                        }
+                                    }}
+                                >
+                                    {googleRefreshing ? (
+                                        <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                    ) : (
+                                        <RefreshCw className="h-4 w-4 mr-2" />
+                                    )}
+                                    Refresh Token
+                                </Button>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
             <div className="flex gap-2">
                 <Button variant="outline" onClick={handleHealthCheck} disabled={healthChecking}>
                     {healthChecking ? (
@@ -241,33 +359,35 @@ export default function NodeDetailPage() {
                 </Button>
             </div>
 
-            <Card>
-                <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <Download className="h-4 w-4" /> Pull Model to this Node
-                    </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                    <div className="flex gap-2">
-                        <Input
-                            placeholder="Model name (e.g., llama3.3:70b)"
-                            value={pullModel}
-                            onChange={(e) => setPullModel(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && !pulling && handlePull()}
-                            disabled={pulling}
-                        />
-                        <Button onClick={handlePull} disabled={!pullModel.trim() || pulling}>
-                            {pulling ? 'Pulling...' : 'Pull'}
-                        </Button>
-                    </div>
-                    {pulling && (
-                        <div className="space-y-2">
-                            <Progress value={progress} className="h-2" />
-                            <p className="text-xs text-muted-foreground">{status} — %{progress.toFixed(0)}</p>
+            {node.node_type !== 'antigravity' && (
+                <Card>
+                    <CardHeader className="pb-3">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            <Download className="h-4 w-4" /> Pull Model to this Node
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        <div className="flex gap-2">
+                            <Input
+                                placeholder="Model name (e.g., llama3.3:70b)"
+                                value={pullModel}
+                                onChange={(e) => setPullModel(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && !pulling && handlePull()}
+                                disabled={pulling}
+                            />
+                            <Button onClick={handlePull} disabled={!pullModel.trim() || pulling}>
+                                {pulling ? 'Pulling...' : 'Pull'}
+                            </Button>
                         </div>
-                    )}
-                </CardContent>
-            </Card>
+                        {pulling && (
+                            <div className="space-y-2">
+                                <Progress value={progress} className="h-2" />
+                                <p className="text-xs text-muted-foreground">{status} — %{progress.toFixed(0)}</p>
+                            </div>
+                        )}
+                    </CardContent>
+                </Card>
+            )}
 
             <Card>
                 <CardHeader>

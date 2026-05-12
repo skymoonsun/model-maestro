@@ -191,6 +191,30 @@ export const usersApi = {
     adminFetch<TokenUsage[]>(`/admin/users/${username}/token-usage?period=${period}`),
   getModelUsage: (username: string, period = '7d') =>
     adminFetch<ModelUsage[]>(`/admin/users/${username}/model-usage?period=${period}`),
+  // Node Access
+  getNodes: (username: string) =>
+    adminFetch<UserNodes>(`/admin/users/${username}/nodes`),
+  grantNode: (username: string, node_id: number) =>
+    adminFetch<UserNodes>(`/admin/users/${username}/nodes`, {
+      method: 'POST', body: JSON.stringify({ node_id }),
+    }),
+  revokeNode: (username: string, node_id: number) =>
+    adminFetch<void>(`/admin/users/${username}/nodes/${node_id}`, { method: 'DELETE' }),
+  grantAllNodes: (username: string) =>
+    adminFetch<UserNodes>(`/admin/users/${username}/nodes/all`, { method: 'POST' }),
+  // Node-Model Access
+  getNodeModels: (username: string) =>
+    adminFetch<UserNodeModels>(`/admin/users/${username}/node-models`),
+  grantNodeModel: (username: string, node_id: number, model_name: string) =>
+    adminFetch<UserNodeModels>(`/admin/users/${username}/node-models`, {
+      method: 'POST', body: JSON.stringify({ node_id, model_name }),
+    }),
+  revokeNodeModel: (username: string, node_id: number, model_name: string) =>
+    adminFetch<void>(`/admin/users/${username}/node-models`, {
+      method: 'DELETE', body: JSON.stringify({ node_id, model_name }),
+    }),
+  grantAllNodeModels: (username: string) =>
+    adminFetch<UserNodeModels>(`/admin/users/${username}/node-models/all`, { method: 'POST' }),
 };
 
 // ==================== Model Mappings ====================
@@ -332,6 +356,18 @@ export const nodesApi = {
       method: 'PATCH',
       body: JSON.stringify({ priorities }),
     }),
+  // Google OAuth for Antigravity nodes
+  googleAuthUrl: (nodeId: number) =>
+    adminFetch<{ auth_url: string; state: string; node_id: number; node_name: string }>(`/admin/nodes/${nodeId}/google-auth-url`),
+  googleAuthCallback: (nodeId: number, code: string, state: string) =>
+    adminFetch<{ success: boolean; node_id: number; email: string; project_id: string }>(`/admin/nodes/${nodeId}/google-auth-callback`, {
+      method: 'POST',
+      body: JSON.stringify({ code, state }),
+    }),
+  googleRefreshToken: (nodeId: number) =>
+    adminFetch<{ success: boolean; expires_in: number }>(`/admin/nodes/${nodeId}/google-refresh-token`, {
+      method: 'POST',
+    }),
 };
 
 // ==================== Model Groups ====================
@@ -468,6 +504,34 @@ export interface UserLimits {
   request_limit: number | null;
   token_limit: number | null;
   created_at: string;
+}
+
+export interface UserNode {
+  node_id: number;
+  node_name: string;
+  node_type: string;
+  base_url?: string;
+  created_at: string;
+}
+
+export interface UserNodes {
+  username: string;
+  has_restriction: boolean;
+  nodes: UserNode[];
+}
+
+export interface UserNodeModel {
+  node_id: number;
+  node_name: string;
+  node_type: string;
+  model_name: string;
+  created_at: string;
+}
+
+export interface UserNodeModels {
+  username: string;
+  has_restriction: boolean;
+  node_models: UserNodeModel[];
 }
 
 export interface ActivityLog {
@@ -670,6 +734,15 @@ export interface AuditLog {
 }
 
 // Node / Load Balancing types
+export interface OAuthTokens {
+  access_token: string;
+  refresh_token?: string | null;
+  expires_in?: number;
+  token_type?: string;
+  scope?: string;
+  obtained_at?: string;
+}
+
 export interface OllamaNodeResponse {
   id: number;
   name: string;
@@ -687,6 +760,12 @@ export interface OllamaNodeResponse {
   created_at: string | null;
   updated_at: string | null;
   headers?: Record<string, string> | null;
+  oauth_tokens?: OAuthTokens | null;
+  project_id?: string | null;
+  aws_secret_key?: string | null;
+  aws_region?: string | null;
+  aws_session_token?: string | null;
+  scoped_models?: boolean;
 }
 
 export interface NodeModel {
@@ -715,6 +794,12 @@ export interface CreateNode {
   health_check_url?: string | null;
   code?: string | null;
   headers?: Record<string, string> | null;
+  oauth_tokens?: OAuthTokens | null;
+  project_id?: string | null;
+  aws_secret_key?: string | null;
+  aws_region?: string | null;
+  aws_session_token?: string | null;
+  scoped_models?: boolean;
 }
 
 export interface HealthCheckResult {

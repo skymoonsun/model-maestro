@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     # Ollama Official Web Search API
     ollama_web_search_url: str = "https://ollama.com/api/web_search"
     ollama_api_key: Optional[str] = None
-    
+
+    # Google OAuth for Antigravity nodes
+    google_client_id: Optional[str] = None
+    google_client_secret: Optional[str] = None
+    google_redirect_uri: str = "http://localhost:3000/admin/oauth/callback"
+
     class Config:
         env_file = ".env"
         case_sensitive = False
