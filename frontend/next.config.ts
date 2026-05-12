@@ -2,9 +2,6 @@ import type { NextConfig } from "next";
 
 const nextConfig = {
   reactCompiler: false,
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   typescript: {
     ignoreBuildErrors: true,
   },

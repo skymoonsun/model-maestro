@@ -1,9 +1,20 @@
 'use client';
 
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
-export default function GoogleOAuthCallbackPage() {
+function OAuthCallbackLoading() {
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-background">
+      <div className="text-center space-y-4">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto" />
+        <p className="text-muted-foreground">Completing Google OAuth...</p>
+      </div>
+    </div>
+  );
+}
+
+function GoogleOAuthCallbackContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -31,7 +42,7 @@ export default function GoogleOAuthCallbackPage() {
     fetch(`/api/proxy/admin/nodes/${nodeId}/google-auth-callback`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ code, state }),
@@ -49,12 +60,13 @@ export default function GoogleOAuthCallbackPage() {
       });
   }, [searchParams, router]);
 
+  return <OAuthCallbackLoading />;
+}
+
+export default function GoogleOAuthCallbackPage() {
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background">
-      <div className="text-center space-y-4">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto" />
-        <p className="text-muted-foreground">Completing Google OAuth...</p>
-      </div>
-    </div>
+    <Suspense fallback={<OAuthCallbackLoading />}>
+      <GoogleOAuthCallbackContent />
+    </Suspense>
   );
 }
