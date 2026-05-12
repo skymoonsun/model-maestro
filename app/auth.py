@@ -157,3 +157,72 @@ async def check_model_access(username: str, model_name: str) -> bool:
         return True
     return model_name in access_data.get("models", [])
 
+
+async def check_node_access(username: str, node_id: int) -> bool:
+    """
+    Check if user has access to specific node.
+
+    Uses Redis cache to avoid DB lookups on every request.
+
+    Args:
+        username: Username
+        node_id: Node ID
+
+    Returns:
+        True if user has access, False otherwise
+    """
+    from app.redis import redis_manager
+
+    cache_key = f"user_node_access:{username}"
+    if redis_manager:
+        cached = await redis_manager.get(cache_key)
+        if cached is not None:
+            if cached.get("has_all"):
+                return True
+            return node_id in cached.get("nodes", [])
+
+    access_data = await user_manager.get_user_node_access(username)
+
+    if redis_manager:
+        await redis_manager.set(cache_key, access_data, expire=CACHE_TTL["USER_ACCESS"])
+
+    if access_data.get("has_all"):
+        return True
+    return node_id in access_data.get("nodes", [])
+
+
+async def check_node_model_access(username: str, node_id: int, model_name: str) -> bool:
+    """
+    Check if user has access to specific node+model combination.
+
+    Uses Redis cache to avoid DB lookups on every request.
+
+    Args:
+        username: Username
+        node_id: Node ID
+        model_name: Model name (real name)
+
+    Returns:
+        True if user has access, False otherwise
+    """
+    from app.redis import redis_manager
+
+    cache_key = f"user_node_model_access:{username}"
+    if redis_manager:
+        cached = await redis_manager.get(cache_key)
+        if cached is not None:
+            if cached.get("has_all"):
+                return True
+            node_models = cached.get("node_models", [])
+            return any(nm.get("node_id") == node_id and nm.get("model_name") == model_name for nm in node_models)
+
+    access_data = await user_manager.get_user_node_model_access(username)
+
+    if redis_manager:
+        await redis_manager.set(cache_key, access_data, expire=CACHE_TTL["USER_ACCESS"])
+
+    if access_data.get("has_all"):
+        return True
+    node_models = access_data.get("node_models", [])
+    return any(nm.get("node_id") == node_id and nm.get("model_name") == model_name for nm in node_models)
+

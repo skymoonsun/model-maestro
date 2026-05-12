@@ -68,6 +68,49 @@ class UserModel(Base):
     def __repr__(self):
         return f"<UserModel(user_id={self.user_id}, model='{self.model_display_name}', all={self.has_all_models})>"
 
+class UserNode(Base):
+    """User-Node relationship for node-level access control"""
+    __tablename__ = "user_nodes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    node_id = Column(Integer, ForeignKey("ollama_nodes.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User")
+    node = relationship("OllamaNode")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'node_id', name='uq_user_node'),
+    )
+
+    def __repr__(self):
+        return f"<UserNode(user_id={self.user_id}, node_id={self.node_id})>"
+
+
+class UserNodeModel(Base):
+    """User-Node-Model relationship for fine-grained access control"""
+    __tablename__ = "user_node_models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    node_id = Column(Integer, ForeignKey("ollama_nodes.id", ondelete="CASCADE"), nullable=False)
+    model_name = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User")
+    node = relationship("OllamaNode")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'node_id', 'model_name', name='uq_user_node_model'),
+    )
+
+    def __repr__(self):
+        return f"<UserNodeModel(user_id={self.user_id}, node_id={self.node_id}, model='{self.model_name}')>"
+
+
 class UserActivityLog(Base):
     """User activity log for tracking token usage and model access"""
     __tablename__ = "user_activity_logs"

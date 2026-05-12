@@ -14,7 +14,11 @@ from app.models import (
     UserModelsResponse,
     ModelMappingResponse,
     SetUserLimitRequest,
-    UserLimitResponse
+    UserLimitResponse,
+    AssignNodeRequest,
+    AssignNodeModelRequest,
+    UserNodesResponse,
+    UserNodeModelsResponse,
 )
 from app.auth import verify_admin
 from app.user_manager import user_manager
@@ -680,3 +684,167 @@ async def get_user_model_usage(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# Node Access Control Endpoints
+# ============================================================================
+
+@router.post("/users/{username}/nodes", response_model=UserNodesResponse, tags=["Admin - Node Access"])
+async def grant_node_access(
+    username: str,
+    request: AssignNodeRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Grant user access to a specific node (Admin only).
+    """
+    try:
+        await user_manager.grant_node(username, request.node_id)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
+
+        return await user_manager.get_user_nodes(username)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/users/{username}/nodes/{node_id}", status_code=204, tags=["Admin - Node Access"])
+async def revoke_node_access(
+    username: str,
+    node_id: int,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Revoke user access to a specific node (Admin only).
+    """
+    try:
+        await user_manager.revoke_node(username, node_id)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
+
+        return None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/users/{username}/nodes", response_model=UserNodesResponse, tags=["Admin - Node Access"])
+async def get_user_nodes_admin(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get user's allowed nodes (Admin only).
+    """
+    result = await user_manager.get_user_nodes(username)
+    if not result:
+        raise HTTPException(status_code=404, detail="User not found")
+    return result
+
+
+@router.post("/users/{username}/nodes/all", response_model=UserNodesResponse, tags=["Admin - Node Access"])
+async def grant_all_nodes(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Grant user access to all nodes by clearing restrictions (Admin only).
+    """
+    try:
+        await user_manager.grant_all_nodes(username)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
+
+        return await user_manager.get_user_nodes(username)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# Node-Model Access Control Endpoints
+# ============================================================================
+
+@router.post("/users/{username}/node-models", response_model=UserNodeModelsResponse, tags=["Admin - Node-Model Access"])
+async def grant_node_model_access(
+    username: str,
+    request: AssignNodeModelRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Grant user access to a specific node+model combination (Admin only).
+    """
+    try:
+        await user_manager.grant_node_model(username, request.node_id, request.model_name)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
+
+        return await user_manager.get_user_node_models(username)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/users/{username}/node-models", status_code=204, tags=["Admin - Node-Model Access"])
+async def revoke_node_model_access(
+    username: str,
+    request: AssignNodeModelRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Revoke user access to a specific node+model combination (Admin only).
+    """
+    try:
+        await user_manager.revoke_node_model(username, request.node_id, request.model_name)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
+
+        return None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/users/{username}/node-models", response_model=UserNodeModelsResponse, tags=["Admin - Node-Model Access"])
+async def get_user_node_models_admin(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Get user's allowed node-model combinations (Admin only).
+    """
+    result = await user_manager.get_user_node_models(username)
+    if not result:
+        raise HTTPException(status_code=404, detail="User not found")
+    return result
+
+
+@router.post("/users/{username}/node-models/all", response_model=UserNodeModelsResponse, tags=["Admin - Node-Model Access"])
+async def grant_all_node_models(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Grant user access to all node-model combinations by clearing restrictions (Admin only).
+    """
+    try:
+        await user_manager.grant_all_node_models(username)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
+
+        return await user_manager.get_user_node_models(username)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

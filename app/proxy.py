@@ -996,6 +996,33 @@ class OllamaProxy:
     # (model might be available on a different node)
     NODE_RETRYABLE_STATUS_CODES = {404, 423, 429, 500, 502, 503, 504}
 
+    async def _resolve_node_id_by_url(self, base_url: str) -> Optional[int]:
+        """Look up node_id from base_url using an in-memory cache."""
+        if not base_url:
+            return None
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                for n in nodes:
+                    if n.base_url == base_url:
+                        return n.id
+        except Exception:
+            pass
+        return None
+
+    async def _check_user_node_access(self, username: Optional[str], base_url: str) -> bool:
+        """Check if user has access to the node identified by base_url."""
+        if not username:
+            return True
+        node_id = await self._resolve_node_id_by_url(base_url)
+        if not node_id:
+            return True
+        from app.auth import check_node_access
+        return await check_node_access(username, node_id)
+
     async def _select_node_url(self, model_name: str, exclude_nodes: Optional[List[str]] = None) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
         """
         Select the best node URL for a model using load balancing.
@@ -1915,9 +1942,43 @@ class OllamaProxy:
         if base_url:
             tried_nodes.add(base_url)
 
+        # Resolve node_id for access control
+        selected_node_id = preferred_node_id
+        if not selected_node_id and base_url:
+            try:
+                from app.database import async_session_maker
+                from app.repositories.node_repository import NodeRepository
+                async with async_session_maker() as session:
+                    node_repo = NodeRepository(session)
+                    nodes = await node_repo.list_active()
+                    for n in nodes:
+                        if n.base_url == base_url:
+                            selected_node_id = n.id
+                            break
+            except Exception as e:
+                logger.warning(f"[Access] Error looking up node by base_url for access control: {e}")
+
+        # ============================================================
+        # NODE ACCESS CONTROL
+        # ============================================================
+        if username and selected_node_id:
+            from app.auth import check_node_access
+            if not await check_node_access(username, selected_node_id):
+                logger.warning(f"[Access] User '{username}' denied access to node {selected_node_id}")
+                raise HTTPException(status_code=403, detail="Access denied to this node")
+
         # Step 2: Map model names (display_name -> real_name)
+        mapped_model_name = None
         if data:
             data = self._map_model_to_ollama(data)
+            mapped_model_name = data.get('model') or data.get('name')
+
+        # Node-model access check
+        if username and selected_node_id and mapped_model_name:
+            from app.auth import check_node_model_access
+            if not await check_node_model_access(username, selected_node_id, mapped_model_name):
+                logger.warning(f"[Access] User '{username}' denied access to model '{mapped_model_name}' on node {selected_node_id}")
+                raise HTTPException(status_code=403, detail="Access denied to this model on this node")
 
         # ============================================================
         # ANTIGRAVITY (Google v1internal) ROUTING
@@ -2186,6 +2247,11 @@ class OllamaProxy:
                                     current_model, exclude_nodes=list(tried_nodes)
                                 )
                                 if new_base_url:
+                                    # Check node access for failover node
+                                    if username and not await self._check_user_node_access(username, new_base_url):
+                                        logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                        tried_nodes.add(new_base_url)
+                                        continue
                                     logger.warning(
                                         f"[NODE RETRY] Stream error {resp.status_code} from {current_base_url}, "
                                         f"trying node {new_base_url} for model {current_model}"
@@ -2224,7 +2290,11 @@ class OllamaProxy:
 
                                     # Select new node URL for fallback (reset tried_nodes for new model)
                                     new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model)
-                                    current_url = f"{new_base_url}{endpoint}"
+                                    if new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                                        logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                                        tried_nodes.add(new_base_url)
+                                        new_base_url = None
+                                    current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                                     if new_base_url:
                                         tried_nodes.add(new_base_url)
                                         current_api_key = new_api_key
@@ -2823,6 +2893,10 @@ class OllamaProxy:
                             current_model, exclude_nodes=list(tried_nodes)
                         )
                         if new_base_url:
+                            if username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                continue
                             logger.warning(
                                 f"[NODE RETRY] Connection error from {current_base_url}, "
                                 f"trying node {new_base_url} for model {current_model}"
@@ -2851,7 +2925,11 @@ class OllamaProxy:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                             new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model)
-                            current_url = f"{new_base_url}{endpoint}"
+                            if new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                new_base_url = None
+                            current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
@@ -2995,6 +3073,10 @@ class OllamaProxy:
                             current_model, exclude_nodes=list(tried_nodes)
                         )
                         if new_base_url:
+                            if username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                continue
                             logger.warning(
                                 f"[NODE RETRY] Error {response.status_code} from {current_base_url}, "
                                 f"trying node {new_base_url} for model {current_model}"
@@ -3036,7 +3118,11 @@ class OllamaProxy:
 
                             # Select new node URL for fallback
                             new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model)
-                            current_url = f"{new_base_url}{endpoint}"
+                            if new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                                logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                                tried_nodes.add(new_base_url)
+                                new_base_url = None
+                            current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
@@ -3131,6 +3217,10 @@ class OllamaProxy:
                         current_model, exclude_nodes=list(tried_nodes)
                     )
                     if new_base_url:
+                        if username and not await self._check_user_node_access(username, new_base_url):
+                            logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                            tried_nodes.add(new_base_url)
+                            continue
                         logger.warning(
                             f"[NODE RETRY] Connection error from {current_base_url}, "
                             f"trying node {new_base_url} for model {current_model}"
@@ -3162,7 +3252,11 @@ class OllamaProxy:
                             current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
                         new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model)
-                        current_url = f"{new_base_url}{endpoint}"
+                        if new_base_url and username and not await self._check_user_node_access(username, new_base_url):
+                            logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
+                            tried_nodes.add(new_base_url)
+                            new_base_url = None
+                        current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
                         if new_base_url:
                             tried_nodes.add(new_base_url)
                             current_api_key = new_api_key

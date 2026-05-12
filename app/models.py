@@ -197,6 +197,31 @@ class UserModelsResponse(BaseModel):
     models: List[str]
 
 
+class AssignNodeRequest(BaseModel):
+    """Assign node to user request"""
+    node_id: int
+
+
+class AssignNodeModelRequest(BaseModel):
+    """Assign node-model to user request"""
+    node_id: int
+    model_name: str
+
+
+class UserNodesResponse(BaseModel):
+    """User nodes response"""
+    username: str
+    has_restriction: bool
+    nodes: List[dict]
+
+
+class UserNodeModelsResponse(BaseModel):
+    """User node-models response"""
+    username: str
+    has_restriction: bool
+    node_models: List[dict]
+
+
 class ModelMappingResponse(BaseModel):
     """Model mapping response"""
     display_name: str
