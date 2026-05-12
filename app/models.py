@@ -507,6 +507,10 @@ class OllamaNodeCreate(BaseModel):
     headers: Optional[Dict[str, str]] = None
     oauth_tokens: Optional[OAuthTokens] = None
     project_id: Optional[str] = None
+    aws_secret_key: Optional[str] = None
+    aws_region: Optional[str] = None
+    aws_session_token: Optional[str] = None
+    scoped_models: Optional[bool] = False
 
 
 class OllamaNodeUpdate(BaseModel):
@@ -524,6 +528,10 @@ class OllamaNodeUpdate(BaseModel):
     headers: Optional[Dict[str, str]] = None
     oauth_tokens: Optional[OAuthTokens] = None
     project_id: Optional[str] = None
+    aws_secret_key: Optional[str] = None
+    aws_region: Optional[str] = None
+    aws_session_token: Optional[str] = None
+    scoped_models: Optional[bool] = False
 
 
 class OllamaNodeResponse(BaseModel):
@@ -546,6 +554,10 @@ class OllamaNodeResponse(BaseModel):
     headers: Optional[Dict[str, str]] = None
     oauth_tokens: Optional[OAuthTokens] = None
     project_id: Optional[str] = None
+    aws_secret_key: Optional[str] = None
+    aws_region: Optional[str] = None
+    aws_session_token: Optional[str] = None
+    scoped_models: bool = False
 
 
 class NodeModelInfo(BaseModel):
@@ -576,6 +588,10 @@ class OllamaNodeDetailResponse(BaseModel):
     headers: Optional[Dict[str, str]] = None
     oauth_tokens: Optional[Dict[str, Any]] = None
     project_id: Optional[str] = None
+    aws_secret_key: Optional[str] = None
+    aws_region: Optional[str] = None
+    aws_session_token: Optional[str] = None
+    scoped_models: bool = False
     model_count: int = 0
     models: List[NodeModelInfo] = []
 

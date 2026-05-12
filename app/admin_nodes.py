@@ -69,10 +69,16 @@ async def create_node(
             if existing_code:
                 raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
 
+        # Auto-generate base_url for Bedrock if not provided
+        base_url = request.base_url
+        if request.node_type == 'bedrock' and (not base_url or not base_url.strip()):
+            region = request.aws_region or 'us-east-1'
+            base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
         # Create node
         node = await repo.create(
             name=request.name,
-            base_url=request.base_url,
+            base_url=base_url,
             api_key=request.api_key,
             priority=request.priority or 0,
             weight=request.weight or 100,
@@ -83,7 +89,11 @@ async def create_node(
             code=request.code,
             headers=request.headers,
             oauth_tokens=request.oauth_tokens.model_dump() if request.oauth_tokens else None,
-            project_id=request.project_id
+            project_id=request.project_id,
+            aws_secret_key=request.aws_secret_key,
+            aws_region=request.aws_region,
+            aws_session_token=request.aws_session_token,
+            scoped_models=request.scoped_models if request.scoped_models is not None else False
         )
 
         # Audit log
@@ -114,7 +124,11 @@ async def create_node(
             updated_at=node.updated_at.isoformat() if node.updated_at else None,
             headers=node.headers,
             oauth_tokens=node.oauth_tokens,
-            project_id=node.project_id
+            project_id=node.project_id,
+            aws_secret_key=node.aws_secret_key,
+            aws_region=node.aws_region,
+            aws_session_token=node.aws_session_token,
+            scoped_models=node.scoped_models if node.scoped_models is not None else False
         )
 
 
@@ -173,6 +187,9 @@ async def get_node(
             headers=node.headers,
             oauth_tokens=node.oauth_tokens,
             project_id=node.project_id,
+            aws_secret_key=node.aws_secret_key,
+            aws_region=node.aws_region,
+            aws_session_token=node.aws_session_token,
             model_count=len(models),
             models=[
                 {
@@ -253,6 +270,18 @@ async def update_node(
         if request.project_id is not None:
             update_data["project_id"] = request.project_id
 
+        if request.aws_secret_key is not None:
+            update_data["aws_secret_key"] = request.aws_secret_key
+
+        if request.aws_region is not None:
+            update_data["aws_region"] = request.aws_region
+
+        if request.aws_session_token is not None:
+            update_data["aws_session_token"] = request.aws_session_token
+
+        if request.scoped_models is not None:
+            update_data["scoped_models"] = request.scoped_models
+
         node = await repo.update(node_id, **update_data)
 
         if not node:
@@ -287,7 +316,13 @@ async def update_node(
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
             created_at=node.created_at.isoformat() if node.created_at else None,
             updated_at=node.updated_at.isoformat() if node.updated_at else None,
-            headers=node.headers
+            headers=node.headers,
+            oauth_tokens=node.oauth_tokens,
+            project_id=node.project_id,
+            aws_secret_key=node.aws_secret_key,
+            aws_region=node.aws_region,
+            aws_session_token=node.aws_session_token,
+            scoped_models=node.scoped_models if node.scoped_models is not None else False
         )
 
 
@@ -351,7 +386,10 @@ async def check_node_health(
             node_type=getattr(node, 'node_type', 'ollama'),
             headers=getattr(node, 'headers', None),
             oauth_tokens=getattr(node, 'oauth_tokens', None),
-            project_id=getattr(node, 'project_id', None)
+            project_id=getattr(node, 'project_id', None),
+            aws_secret_key=getattr(node, 'aws_secret_key', None),
+            aws_region=getattr(node, 'aws_region', None),
+            aws_session_token=getattr(node, 'aws_session_token', None)
         )
         
         # Update node status

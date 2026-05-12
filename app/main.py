@@ -896,13 +896,20 @@ async def openai_chat_completions(
     # Ollama varsayılan keep_alive=5dk; -1 ile server restart'a kadar yüklü kalır.
     if 'keep_alive' not in data:
         data['keep_alive'] = -1
-    
+
+    # Forward client headers (Cookie, x-*, etc.) to upstream
+    # Cookie is excluded — the client cookie belongs to model-maestro, not upstream.
+    # accept and content-type are excluded — httpx sends them automatically.
+    skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
+    client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
+
     return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=data,
         stream=stream,
-        username=username
+        username=username,
+        client_headers=client_headers
     )
 
 

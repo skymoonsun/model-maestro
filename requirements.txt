@@ -9,3 +9,4 @@ sqlalchemy[asyncio]==2.0.25
 alembic==1.13.1
 redis==5.0.1
 orjson==3.11.8
+boto3==1.34.0

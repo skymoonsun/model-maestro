@@ -762,6 +762,10 @@ export interface OllamaNodeResponse {
   headers?: Record<string, string> | null;
   oauth_tokens?: OAuthTokens | null;
   project_id?: string | null;
+  aws_secret_key?: string | null;
+  aws_region?: string | null;
+  aws_session_token?: string | null;
+  scoped_models?: boolean;
 }
 
 export interface NodeModel {
@@ -792,6 +796,10 @@ export interface CreateNode {
   headers?: Record<string, string> | null;
   oauth_tokens?: OAuthTokens | null;
   project_id?: string | null;
+  aws_secret_key?: string | null;
+  aws_region?: string | null;
+  aws_session_token?: string | null;
+  scoped_models?: boolean;
 }
 
 export interface HealthCheckResult {

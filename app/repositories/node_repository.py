@@ -29,7 +29,11 @@ class NodeRepository:
         code: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None,
         oauth_tokens: Optional[Dict[str, Any]] = None,
-        project_id: Optional[str] = None
+        project_id: Optional[str] = None,
+        aws_secret_key: Optional[str] = None,
+        aws_region: Optional[str] = None,
+        aws_session_token: Optional[str] = None,
+        scoped_models: bool = False
     ) -> OllamaNode:
         """Create a new Ollama node"""
         node = OllamaNode(
@@ -46,6 +50,10 @@ class NodeRepository:
             headers=headers,
             oauth_tokens=oauth_tokens,
             project_id=project_id,
+            aws_secret_key=aws_secret_key,
+            aws_region=aws_region,
+            aws_session_token=aws_session_token,
+            scoped_models=scoped_models,
             health_status='unknown'
         )
         self.session.add(node)
@@ -152,6 +160,10 @@ class NodeRepository:
                 "headers": node.headers,
                 "oauth_tokens": node.oauth_tokens,
                 "project_id": node.project_id,
+                "aws_secret_key": node.aws_secret_key,
+                "aws_region": node.aws_region,
+                "aws_session_token": node.aws_session_token,
+                "scoped_models": node.scoped_models,
                 "health_status": node.health_status,
                 "last_health_check": node.last_health_check.isoformat() if node.last_health_check else None,
                 "created_at": node.created_at.isoformat() if node.created_at else None,
@@ -301,7 +313,8 @@ class NodeModelRepository:
                 "health_status": node.health_status,
                 "headers": node.headers,
                 "oauth_tokens": node.oauth_tokens,
-                "project_id": node.project_id
+                "project_id": node.project_id,
+                "scoped_models": node.scoped_models
             }
             for model, node in result.all()
         ]

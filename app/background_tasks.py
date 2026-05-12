@@ -307,7 +307,10 @@ async def node_health_check_task():
                         node_type=getattr(node, 'node_type', 'ollama'),
                         headers=getattr(node, 'headers', None),
                         oauth_tokens=getattr(node, 'oauth_tokens', None),
-                        project_id=getattr(node, 'project_id', None)
+                        project_id=getattr(node, 'project_id', None),
+                        aws_secret_key=getattr(node, 'aws_secret_key', None),
+                        aws_region=getattr(node, 'aws_region', None),
+                        aws_session_token=getattr(node, 'aws_session_token', None)
                     )
                     return node, is_healthy, error
 

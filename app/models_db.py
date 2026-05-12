@@ -276,13 +276,17 @@ class OllamaNode(Base):
     priority = Column(Integer, default=0)  # Higher = preferred (fallback order)
     weight = Column(Integer, default=100)  # Load balancing weight
     is_active = Column(Boolean, default=True, nullable=False)
-    node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama' or 'vllm'
+    node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama', 'vllm', 'antigravity', 'bedrock'
     warmup_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Enable model warmup for this node
     code = Column(String(30), unique=True, nullable=True, index=True)  # Short routing code e.g. "trmix", "us-east-1"
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     headers = Column(JSONB, nullable=True)  # Custom HTTP headers as {"X-Custom": "value"}
     oauth_tokens = Column(JSONB, nullable=True)  # Google OAuth tokens {"access_token": "...", "refresh_token": "...", "expires_in": 3600}
     project_id = Column(String(100), nullable=True)  # Google cloudaicompanionProject ID
+    aws_secret_key = Column(String(2000), nullable=True)  # AWS Secret Access Key for Bedrock
+    aws_region = Column(String(50), nullable=True)  # AWS Region for Bedrock (e.g. us-east-1)
+    aws_session_token = Column(String(4000), nullable=True)  # AWS Session Token (optional, for STS temp creds)
+    scoped_models = Column(Boolean, default=False, nullable=True, server_default='false')  # If True, models only accessible via node:code:model prefix
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'
     created_at = Column(DateTime(timezone=True), server_default=func.now())
