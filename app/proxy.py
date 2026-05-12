@@ -1879,6 +1879,7 @@ class OllamaProxy:
                 tried_models.add(model_name)
 
         # Node-scoped routing via model name prefix (node:code:model)
+        node_scoped_model: Optional[str] = None
         if model_name and isinstance(model_name, str):
             node_code, actual_model = self._parse_node_prefix(model_name)
             if node_code:
@@ -1900,6 +1901,7 @@ class OllamaProxy:
                         elif 'name' in data:
                             data['name'] = actual_model
                         model_name = actual_model
+                        node_scoped_model = actual_model
                         tried_models.discard(f"node:{node_code}:{actual_model}")
                         tried_models.add(actual_model)
                         logger.info(f"[LB] Node-scoped routing: code='{node_code}' -> node='{node.name}', model='{actual_model}'")
@@ -1971,6 +1973,12 @@ class OllamaProxy:
         mapped_model_name = None
         if data:
             data = self._map_model_to_ollama(data)
+            # Restore node-scoped model name to avoid mapping it to a different real name
+            if node_scoped_model and isinstance(data, dict):
+                if 'model' in data:
+                    data['model'] = node_scoped_model
+                elif 'name' in data:
+                    data['name'] = node_scoped_model
             mapped_model_name = data.get('model') or data.get('name')
 
         # Node-model access check
