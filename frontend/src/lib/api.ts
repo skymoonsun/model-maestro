@@ -160,6 +160,8 @@ export const usersApi = {
   get: (username: string) => adminFetch<User>(`/admin/users/${username}`),
   create: (username: string) =>
     adminFetch<User>('/admin/users', { method: 'POST', body: JSON.stringify({ username }) }),
+  update: (username: string, data: { is_active: boolean }) =>
+    adminFetch<User>(`/admin/users/${username}?is_active=${data.is_active}`, { method: 'PATCH' }),
   delete: (username: string) =>
     adminFetch<void>(`/admin/users/${username}`, { method: 'DELETE' }),
   regenerateToken: (username: string) =>
@@ -215,6 +217,8 @@ export const usersApi = {
     }),
   grantAllNodeModels: (username: string) =>
     adminFetch<UserNodeModels>(`/admin/users/${username}/node-models/all`, { method: 'POST' }),
+  revokeAllNodeModels: (username: string) =>
+    adminFetch<void>(`/admin/users/${username}/node-models/all`, { method: 'DELETE' }),
 };
 
 // ==================== Model Mappings ====================

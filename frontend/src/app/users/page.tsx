@@ -15,7 +15,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { useState } from 'react';
-import { Plus, Copy, Trash2, RefreshCw, Search, UserPlus } from 'lucide-react';
+import { Plus, Copy, Trash2, RefreshCw, Search, UserPlus, Pencil } from 'lucide-react';
 import Link from 'next/link';
 
 function CreateUserDialog() {
@@ -174,6 +174,14 @@ export default function UsersPage() {
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <div className="flex items-center justify-end gap-1">
+                                            <Link href={`/users/${user.username}`}>
+                                                <Button
+                                                    variant="ghost" size="icon" className="h-8 w-8"
+                                                    title="Edit User"
+                                                >
+                                                    <Pencil className="h-4 w-4" />
+                                                </Button>
+                                            </Link>
                                             <Button
                                                 variant="ghost" size="icon" className="h-8 w-8"
                                                 onClick={() => tokenMutation.mutate(user.username)}

@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { useState, useEffect } from 'react';
-import { Copy, Save, X, ArrowLeft, Trash2, Plus } from 'lucide-react';
+import { Copy, Save, X, ArrowLeft, Trash2, Plus, Unlock, Lock } from 'lucide-react';
 import Link from 'next/link';
 
 function formatNumber(value: number): string {
@@ -232,6 +232,25 @@ export default function UserDetailPage() {
         onError: (err) => toast.error(err.message),
     });
 
+    const revokeAllNodeModelsMutation = useMutation({
+        mutationFn: () => usersApi.revokeAllNodeModels(username),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username, 'node-models'] });
+            toast.success('All node-models revoked');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
+    const updateMut = useMutation({
+        mutationFn: (is_active: boolean) => usersApi.update(username, { is_active }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['users', username] });
+            queryClient.invalidateQueries({ queryKey: ['users'] });
+            toast.success('User updated');
+        },
+        onError: (err) => toast.error(err.message),
+    });
+
     if (isLoading || !user) {
         return <Skeleton className="h-96 w-full" />;
     }
@@ -283,9 +302,16 @@ export default function UserDetailPage() {
                         Created: {new Date(user.created_at).toLocaleDateString('en-US')}
                     </p>
                 </div>
-                <Badge className="ml-2" variant={user.is_active ? 'default' : 'secondary'}>
-                    {user.is_active ? 'Active' : 'Inactive'}
-                </Badge>
+                <div className="flex items-center gap-2 ml-auto">
+                    <Switch
+                        checked={user.is_active}
+                        onCheckedChange={(v) => updateMut.mutate(v)}
+                        disabled={updateMut.isPending}
+                    />
+                    <Badge variant={user.is_active ? 'default' : 'secondary'}>
+                        {user.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
+                </div>
             </div>
 
             <Card>
@@ -355,8 +381,13 @@ export default function UserDetailPage() {
                         <CardHeader className="pb-3">
                             <div className="flex items-center justify-between">
                                 <CardTitle className="text-sm">Node Access</CardTitle>
-                                <Button variant="ghost" size="sm" onClick={() => grantAllNodesMutation.mutate()}>
-                                    <X className="h-4 w-4 mr-1" /> Grant All
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={grantAllNodesMutation.isPending}
+                                    onClick={() => grantAllNodesMutation.mutate()}
+                                >
+                                    <Unlock className="h-4 w-4 mr-1" /> Grant All
                                 </Button>
                             </div>
                         </CardHeader>
@@ -394,9 +425,24 @@ export default function UserDetailPage() {
                         <CardHeader className="pb-3">
                             <div className="flex items-center justify-between">
                                 <CardTitle className="text-sm">Node-Model Access</CardTitle>
-                                <Button variant="ghost" size="sm" onClick={() => grantAllNodeModelsMutation.mutate()}>
-                                    <X className="h-4 w-4 mr-1" /> Grant All
-                                </Button>
+                                <div className="flex gap-2">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        disabled={grantAllNodeModelsMutation.isPending || revokeAllNodeModelsMutation.isPending}
+                                        onClick={() => grantAllNodeModelsMutation.mutate()}
+                                    >
+                                        <Unlock className="h-4 w-4 mr-1" /> Grant All
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        disabled={grantAllNodeModelsMutation.isPending || revokeAllNodeModelsMutation.isPending}
+                                        onClick={() => revokeAllNodeModelsMutation.mutate()}
+                                    >
+                                        <Lock className="h-4 w-4 mr-1" /> Revoke All
+                                    </Button>
+                                </div>
                             </div>
                         </CardHeader>
                         <CardContent className="space-y-4">

@@ -179,7 +179,7 @@ class UserManager:
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             users = await user_repo.list_all()
-            
+
             return [
                 {
                     "username": user.username,
@@ -190,7 +190,24 @@ class UserManager:
                 }
                 for user in users
             ]
-    
+
+    async def set_user_active(self, username: str, is_active: bool) -> bool:
+        """Set user active status"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            result = await user_repo.set_active(username, is_active)
+
+            if result:
+                # Invalidate Redis caches
+                from app.redis import redis_manager, CACHE_KEYS
+                if redis_manager:
+                    await redis_manager.delete(CACHE_KEYS["USER_ACCESS"].format(username=username))
+                    await redis_manager.delete(CACHE_KEYS["USER_LIMIT"].format(username=username))
+                    await redis_manager.delete(f"user_node_access:{username}")
+                    await redis_manager.delete(f"user_node_model_access:{username}")
+
+            return result
+
     async def verify_token(self, token: str) -> Optional[str]:
         """Verify JWT token and return username"""
         try:
@@ -679,6 +696,18 @@ class UserManager:
 
     async def grant_all_node_models(self, username: str) -> bool:
         """Grant user access to all node-model combinations (clear restrictions)"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            return await user_node_model_repo.revoke_all_node_models(user.id)
+
+    async def revoke_all_node_models(self, username: str) -> bool:
+        """Revoke all node-model restrictions for user"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
             user = await user_repo.get_by_username(username)

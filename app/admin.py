@@ -94,6 +94,31 @@ async def refresh_user_token_admin(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.patch("/users/{username}", response_model=UserResponse, tags=["Admin - User Management"])
+async def update_user_admin(
+    username: str,
+    is_active: bool,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Update user (toggle is_active) (Admin only).
+    """
+    try:
+        result = await user_manager.set_user_active(username, is_active)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"User not found: {username}")
+        user_data = await user_manager.get_user(username)
+        return UserResponse(
+            username=user_data["username"],
+            token=user_data["token"],
+            created_at=user_data.get("created_at"),
+            updated_at=user_data.get("updated_at"),
+            is_active=user_data.get("is_active", True)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/users/{username}", response_model=UserWithModelsResponse, tags=["Admin - User Management"])
 async def get_user_admin(
     username: str,
@@ -846,5 +871,24 @@ async def grant_all_node_models(
         await redis_manager.delete(f"user_node_model_access:{username}")
 
         return await user_manager.get_user_node_models(username)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/users/{username}/node-models/all", status_code=204, tags=["Admin - Node-Model Access"])
+async def revoke_all_node_models_admin(
+    username: str,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Revoke all node-model restrictions for user (Admin only).
+    """
+    try:
+        await user_manager.revoke_all_node_models(username)
+
+        # Invalidate caches
+        from app.redis import redis_manager
+        await redis_manager.delete(f"user_node_access:{username}")
+        await redis_manager.delete(f"user_node_model_access:{username}")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
