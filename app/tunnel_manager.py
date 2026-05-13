@@ -2,14 +2,70 @@
 
 import asyncio
 import logging
+import os
 import re
+import stat
 import shutil
 from typing import Optional, Dict, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+CLOUDFLARED_BIN = "/app/cache/cloudflared"
+
+
+def _ensure_cloudflared() -> str:
+    """Return path to cloudflared binary, downloading if necessary."""
+    # Check PATH first
+    path = shutil.which("cloudflared")
+    if path:
+        return path
+
+    # Check local cache
+    if os.path.exists(CLOUDFLARED_BIN) and os.access(CLOUDFLARED_BIN, os.X_OK):
+        return CLOUDFLARED_BIN
+
+    # Download from GitHub
+    logger.info("Downloading cloudflared binary...")
+    import urllib.request
+    import tarfile
+    import platform
+
+    arch = platform.machine().lower()
+    system = platform.system().lower()
+
+    # Map arch names
+    if arch in ("amd64", "x86_64"):
+        arch = "amd64"
+    elif arch in ("arm64", "aarch64"):
+        arch = "arm64"
+    elif arch.startswith("arm"):
+        arch = "arm"
+    else:
+        arch = "amd64"
+
+    if system == "darwin":
+        system = "darwin"
+    elif system == "linux":
+        system = "linux"
+    else:
+        system = "linux"
+
+    url = f"https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-{system}-{arch}"
+    if system == "linux":
+        # For linux, try the deb binary first (standalone)
+        url = f"https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-{system}-{arch}"
+
+    try:
+        urllib.request.urlretrieve(url, CLOUDFLARED_BIN)
+        os.chmod(CLOUDFLARED_BIN, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        logger.info("cloudflared downloaded to %s", CLOUDFLARED_BIN)
+        return CLOUDFLARED_BIN
+    except Exception as e:
+        logger.error("Failed to download cloudflared: %s", e)
+        raise RuntimeError(f"cloudflared not found and download failed: {e}")
 
 
 @dataclass
@@ -43,6 +99,8 @@ class CloudflareTunnelClient:
                 json=json_data,
                 timeout=30.0,
             )
+            if resp.status_code == 204:
+                return {}
             data = resp.json()
             if not data.get("success"):
                 errors = data.get("errors", [])
@@ -81,6 +139,18 @@ class CloudflareTunnelClient:
                 "name": hostname,
                 "content": f"{tunnel_id}.cfargotunnel.com",
             },
+        )
+
+    async def list_tunnels(self) -> list:
+        return await self._request(
+            "GET",
+            f"/accounts/{self.account_id}/cfd_tunnel",
+        )
+
+    async def delete_tunnel(self, tunnel_id: str) -> dict:
+        return await self._request(
+            "DELETE",
+            f"/accounts/{self.account_id}/cfd_tunnel/{tunnel_id}",
         )
 
     async def get_tunnel(self, tunnel_id: str) -> dict:
@@ -129,28 +199,34 @@ class TunnelManager:
 
     async def _start_cloudflare(self, local_port: int, api_token: str,
                                  account_id: str, zone_id: str, hostname: str) -> Dict[str, Any]:
-        if not api_token or not account_id:
-            self._status.error = "Cloudflare API token and account ID are required"
-            return await self.get_status()
+        """Start Cloudflare tunnel — quick mode if no hostname, named mode otherwise."""
+        if not hostname:
+            return await self._start_cloudflare_quick(local_port)
 
-        if not shutil.which("cloudflared"):
-            self._status.error = (
-                "cloudflared not found in PATH. Install it first:\n"
-                "  Ubuntu/Debian: wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && dpkg -i cloudflared-linux-amd64.deb\n"
-                "  Or run: docker exec -it <container> bash  && install cloudflared inside the container"
-            )
+        if not api_token or not account_id:
+            self._status.error = "Cloudflare API token and account ID are required for custom domain tunnels"
             return await self.get_status()
 
         try:
             cf = CloudflareTunnelClient(api_token, account_id)
+            tunnel_name = "model-maestro-tunnel"
 
-            # Create tunnel
-            tunnel = await cf.create_tunnel("model-maestro-tunnel")
+            # Delete existing tunnel with same name to avoid conflict
+            try:
+                existing = await cf.list_tunnels()
+                for t in existing if isinstance(existing, list) else []:
+                    if t.get("name") == tunnel_name:
+                        logger.info("Deleting existing tunnel '%s' (%s)", tunnel_name, t.get("id"))
+                        await cf.delete_tunnel(t["id"])
+            except Exception as e:
+                logger.warning("Failed to cleanup existing tunnel: %s", e)
+
+            # Create tunnel via API
+            tunnel = await cf.create_tunnel(tunnel_name)
             tunnel_id = tunnel["id"]
             tunnel_token = tunnel.get("token", "")
             credentials = tunnel.get("credentials_file", {})
             if credentials and not tunnel_token:
-                # Build token from credentials
                 import base64
                 import json as _json
                 token_payload = {
@@ -165,34 +241,49 @@ class TunnelManager:
             self._status.tunnel_id = tunnel_id
             self._status.tunnel_token = tunnel_token
 
-            # Configure ingress
-            if hostname:
-                service = f"http://localhost:{local_port}"
+            public_url = ""
+            config_error = ""
+            service = f"http://localhost:{local_port}"
+            try:
                 await cf.configure_tunnel(tunnel_id, hostname, service)
+            except Exception as e:
+                config_error = f"Ingress config failed: {e}"
 
-                # Create DNS record if zone_id provided
-                if zone_id:
+            if not config_error:
+                public_url = f"https://{hostname}"
+
+            if zone_id and not config_error:
+                try:
                     await cf.create_dns_record(zone_id, hostname, tunnel_id)
+                except Exception as e:
+                    config_error = f"DNS record failed: {e}"
 
-                self._status.public_url = f"https://{hostname}"
-            else:
-                self._status.public_url = ""
+            self._status.public_url = public_url
 
-            # Run cloudflared with token
+            try:
+                cf_binary = await asyncio.get_event_loop().run_in_executor(None, _ensure_cloudflared)
+            except RuntimeError as e:
+                self._status.error = str(e)
+                return await self.get_status()
+
             self._status = TunnelStatus(
                 running=True, provider="cloudflare",
-                public_url=self._status.public_url,
+                public_url=public_url,
                 tunnel_id=tunnel_id, tunnel_token=tunnel_token,
             )
 
             self._process = await asyncio.create_subprocess_exec(
-                "cloudflared", "tunnel", "run", "--token", tunnel_token,
+                cf_binary, "tunnel", "run", "--token", tunnel_token,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
             self._status.pid = self._process.pid
 
-            self._monitor_task = asyncio.create_task(self._monitor_cloudflare(cf, tunnel_id))
+            self._monitor_task = asyncio.create_task(self._monitor_cloudflare())
+
+            if config_error:
+                self._status.error = config_error + "\nTunnel is running. Configure DNS manually if needed."
+
             return await self.get_status()
 
         except Exception as e:
@@ -200,7 +291,30 @@ class TunnelManager:
             self._status.error = str(e)
             return await self.get_status()
 
-    async def _monitor_cloudflare(self, cf: CloudflareTunnelClient, tunnel_id: str):
+    async def _start_cloudflare_quick(self, local_port: int) -> Dict[str, Any]:
+        """Start a Cloudflare quick tunnel — random *.trycloudflare.com URL, no account needed."""
+        try:
+            cf_binary = await asyncio.get_event_loop().run_in_executor(None, _ensure_cloudflared)
+        except RuntimeError as e:
+            self._status.error = str(e)
+            return await self.get_status()
+
+        self._status = TunnelStatus(
+            running=True, provider="cloudflare",
+            public_url="", tunnel_id="", tunnel_token="",
+        )
+
+        self._process = await asyncio.create_subprocess_exec(
+            cf_binary, "tunnel", "--url", f"http://localhost:{local_port}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        self._status.pid = self._process.pid
+
+        self._monitor_task = asyncio.create_task(self._monitor_cloudflare_quick())
+        return await self.get_status()
+
+    async def _monitor_cloudflare(self):
         if self._process is None or self._process.stdout is None:
             return
         try:
@@ -210,6 +324,30 @@ class TunnelManager:
                     break
                 text = line.decode("utf-8", errors="replace")
                 logger.info("cloudflared: %s", text.strip())
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error("cloudflared monitor error: %s", e)
+        finally:
+            self._status.running = False
+            self._status.pid = None
+
+    async def _monitor_cloudflare_quick(self):
+        if self._process is None or self._process.stdout is None:
+            return
+        try:
+            while True:
+                line = await self._process.stdout.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace")
+                logger.info("cloudflared: %s", text.strip())
+                match = re.search(
+                    r"(https://[a-zA-Z0-9-]+\.trycloudflare\.com)",
+                    text,
+                )
+                if match:
+                    self._status.public_url = match.group(1)
         except asyncio.CancelledError:
             pass
         except Exception as e:
