@@ -31,7 +31,22 @@ from app.user_manager import user_manager
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+# ISO 8601 timestamp for model listings (static so IDs remain stable across calls)
+_MODEL_LIST_TIMESTAMP = "2024-01-01T00:00:00Z"
+
 router = APIRouter(prefix="/claude", tags=["Claude API"])
+
+
+# =============================================================================
+# HEAD /claude/ — Connectivity check for Claude Code extension
+# =============================================================================
+
+@router.head("/")
+async def claude_root_head():
+    """Return 200 OK for Claude Code extension connectivity check."""
+    from fastapi import Response
+    return Response(status_code=200)
 
 
 # =============================================================================
@@ -83,11 +98,15 @@ async def get_claude_user(request: Request) -> str:
 # =============================================================================
 
 @router.get("/v1/models")
-async def claude_list_models(username: str = Depends(get_claude_user)):
+async def claude_list_models(
+    username: str = Depends(get_claude_user),
+    limit: int = 1000,
+):
     """
     List available models in Anthropic format.
+    Claude Code extension expects integer timestamps, max_tokens and provider fields.
     """
-    logger.info(f"[Claude] User {username} requesting model list")
+    logger.info(f"[Claude] User {username} requesting model list (limit={limit})")
 
     # Get all models from Ollama
     all_models_response = await ollama_proxy.proxy_request(
@@ -102,6 +121,7 @@ async def claude_list_models(username: str = Depends(get_claude_user)):
         return {"data": [], "has_more": False, "first_id": None, "last_id": None}
 
     # Build Anthropic-format model list
+    # Claude Code extension only accepts model IDs starting with "claude" or "anthropic"
     models_list = []
 
     await model_mapper.ensure_loaded()
@@ -112,29 +132,43 @@ async def claude_list_models(username: str = Depends(get_claude_user)):
             if model_id:
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
                 for display_name in display_names:
+                    ctx_len = get_context_length_for_model(display_name) or 131072
                     models_list.append({
                         "type": "model",
-                        "id": display_name,
+                        "id": f"claude-{display_name}",
                         "display_name": display_name,
-                        "created_at": str(int(time.time())),
+                        "created_at": _MODEL_LIST_TIMESTAMP,
+                        "max_input_tokens": ctx_len,
+                        "max_tokens": 8192,
+                        "capabilities": {
+                            "batch": {"supported": False},
+                            "citations": {"supported": False},
+                            "code_execution": {"supported": False},
+                            "context_management": {"supported": False},
+                            "effort": {"supported": False},
+                            "image_input": {"supported": False},
+                            "pdf_input": {"supported": False},
+                            "structured_outputs": {"supported": True},
+                            "thinking": {"supported": False},
+                        },
                     })
 
-    # Filter by user access
-    if user_models_data["has_all_models"]:
-        return {
-            "data": models_list,
-            "has_more": False,
-            "first_id": None,
-            "last_id": None,
-        }
+    # Filter by user access (strip claude- prefix for comparison)
+    if not user_models_data["has_all_models"]:
+        allowed = set(user_models_data["models"])
+        models_list = [
+            m for m in models_list
+            if m["id"].removeprefix("claude-") in allowed
+        ]
 
-    allowed = set(user_models_data["models"])
-    filtered = [m for m in models_list if m["id"] in allowed]
+    first_id = models_list[0]["id"] if models_list else None
+    last_id = models_list[-1]["id"] if models_list else None
+
     return {
-        "data": filtered,
+        "data": models_list,
         "has_more": False,
-        "first_id": None,
-        "last_id": None,
+        "first_id": first_id,
+        "last_id": last_id,
     }
 
 
@@ -153,6 +187,9 @@ async def claude_messages(
     """
     body = await request.json()
     model_name = body.get("model", "")
+    # Strip claude- prefix added by the model list for Claude Code compatibility
+    if model_name.startswith("claude-"):
+        model_name = model_name[7:]
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")
@@ -195,6 +232,9 @@ async def claude_messages(
         "keep_alive": -1,
     }
 
+    # Normalize Anthropic messages -> OpenAI/Ollama format
+    normalized_messages = _normalize_anthropic_messages(messages)
+
     # System prompt mapping: Anthropic system -> Ollama system message
     if system:
         if isinstance(system, str):
@@ -215,10 +255,10 @@ async def claude_messages(
         if system_text:
             ollama_body["messages"] = [
                 {"role": "system", "content": system_text},
-                *messages,
+                *normalized_messages,
             ]
     else:
-        ollama_body["messages"] = messages
+        ollama_body["messages"] = normalized_messages
 
     # Thinking / reasoning mapping: Anthropic -> Ollama
     thinking = body.get("thinking")
@@ -271,6 +311,79 @@ async def claude_messages(
         return await _handle_claude_non_streaming(
             ollama_body, model_name, username
         )
+
+
+def _normalize_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert Anthropic message format to OpenAI/Ollama message format."""
+    normalized: List[Dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content")
+
+        if isinstance(content, str):
+            normalized.append({"role": role, "content": content})
+            continue
+
+        if not isinstance(content, list):
+            normalized.append({"role": role, "content": str(content) if content is not None else ""})
+            continue
+
+        text_parts: List[str] = []
+        tool_uses: List[Dict[str, Any]] = []
+        tool_results: List[Dict[str, Any]] = []
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+            if block_type == "text":
+                text_parts.append(block.get("text", ""))
+            elif block_type == "tool_use":
+                tool_uses.append(block)
+            elif block_type == "tool_result":
+                tool_results.append(block)
+            # Skip image, thinking, etc.
+
+        if role == "assistant" and tool_uses:
+            openai_tool_calls = []
+            for tu in tool_uses:
+                openai_tool_calls.append({
+                    "id": tu.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": tu.get("name", ""),
+                        "arguments": json.dumps(tu.get("input", {})),
+                    },
+                })
+            normalized.append({
+                "role": "assistant",
+                "content": "\n".join(text_parts) if text_parts else "",
+                "tool_calls": openai_tool_calls,
+            })
+        elif role == "user" and tool_results:
+            if text_parts:
+                normalized.append({"role": "user", "content": "\n".join(text_parts)})
+            for tr in tool_results:
+                tr_content = tr.get("content", "")
+                if isinstance(tr_content, list):
+                    tr_texts = [
+                        b.get("text", "")
+                        for b in tr_content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ]
+                    tr_content = "\n".join(tr_texts) if tr_texts else ""
+                normalized.append({
+                    "role": "tool",
+                    "tool_call_id": tr.get("tool_use_id", ""),
+                    "content": tr_content,
+                })
+        else:
+            normalized.append({
+                "role": role,
+                "content": "\n".join(text_parts) if text_parts else "",
+            })
+
+    return normalized
 
 
 # =============================================================================
@@ -350,6 +463,164 @@ async def _handle_claude_non_streaming(
 
 
 # =============================================================================
+# Non-streaming -> Anthropic SSE (for tool_calls)
+# =============================================================================
+
+async def _stream_from_non_streaming(
+    ollama_body: Dict[str, Any],
+    display_model_name: str,
+    username: str,
+) -> StreamingResponse:
+    """Get non-streaming response and emit as Anthropic SSE events."""
+    ns_body = {**ollama_body, "stream": False}
+    response = await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/v1/chat/completions",
+        data=ns_body,
+        stream=False,
+        username=username,
+    )
+    if isinstance(response, dict):
+        response_data = response
+    elif isinstance(response, str):
+        response_data = json.loads(response)
+    else:
+        response_data = {}
+
+    choices = response_data.get("choices", [])
+    choice = choices[0] if choices else {}
+    message = choice.get("message", {})
+    text = message.get("content", "") or ""
+
+    content: List[Dict[str, Any]] = []
+    if text:
+        content.append({"type": "text", "text": text})
+
+    for tc in message.get("tool_calls", []):
+        fn = tc.get("function", {})
+        tool_name = fn.get("name", "")
+        tool_args = fn.get("arguments", "{}")
+        try:
+            tool_input = json.loads(tool_args)
+        except json.JSONDecodeError:
+            tool_input = {}
+        content.append({
+            "type": "tool_use",
+            "id": f"tu_{uuid.uuid4().hex[:20]}",
+            "name": tool_name,
+            "input": tool_input,
+        })
+
+    usage = response_data.get("usage", {})
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+
+    stop_reason = choice.get("finish_reason", "end_turn")
+    if stop_reason == "tool_calls":
+        stop_reason = "tool_use"
+    elif stop_reason not in ("end_turn", "max_tokens", "stop_sequence"):
+        stop_reason = "end_turn"
+
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    anthropic_msg = {
+        "id": msg_id,
+        "type": "message",
+        "role": "assistant",
+        "model": display_model_name,
+        "content": content,
+        "stop_reason": None,
+        "usage": {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
+    }
+
+    async def event_generator():
+        yield (
+            f"event: message_start\ndata: "
+            + json.dumps({"type": "message_start", "message": anthropic_msg})
+            + "\n\n"
+        )
+        for i, block in enumerate(content):
+            if block["type"] == "text":
+                yield (
+                    f"event: content_block_start\ndata: "
+                    + json.dumps({
+                        "type": "content_block_start",
+                        "index": i,
+                        "content_block": {"type": "text", "text": ""},
+                    })
+                    + "\n\n"
+                )
+                txt = block.get("text", "")
+                for j in range(0, len(txt), 50):
+                    yield (
+                        f"event: content_block_delta\ndata: "
+                        + json.dumps({
+                            "type": "content_block_delta",
+                            "index": i,
+                            "delta": {"type": "text_delta", "text": txt[j:j + 50]},
+                        })
+                        + "\n\n"
+                    )
+                yield (
+                    f"event: content_block_stop\ndata: "
+                    + json.dumps({"type": "content_block_stop", "index": i})
+                    + "\n\n"
+                )
+            elif block["type"] == "tool_use":
+                yield (
+                    f"event: content_block_start\ndata: "
+                    + json.dumps({
+                        "type": "content_block_start",
+                        "index": i,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": block["id"],
+                            "name": block["name"],
+                            "input": {},
+                        },
+                    })
+                    + "\n\n"
+                )
+                inp_json = json.dumps(block.get("input", {}))
+                for j in range(0, len(inp_json), 50):
+                    yield (
+                        f"event: content_block_delta\ndata: "
+                        + json.dumps({
+                            "type": "content_block_delta",
+                            "index": i,
+                            "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": inp_json[j:j + 50],
+                            },
+                        })
+                        + "\n\n"
+                    )
+                yield (
+                    f"event: content_block_stop\ndata: "
+                    + json.dumps({"type": "content_block_stop", "index": i})
+                    + "\n\n"
+                )
+        yield (
+            f"event: message_delta\ndata: "
+            + json.dumps({
+                "type": "message_delta",
+                "delta": {"stop_reason": stop_reason},
+                "usage": {"output_tokens": completion_tokens},
+            })
+            + "\n\n"
+        )
+        yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# =============================================================================
 # Streaming handler: Ollama NDJSON -> Anthropic SSE
 # =============================================================================
 
@@ -362,6 +633,13 @@ async def _handle_claude_streaming(
     Handle streaming Claude request.
     Consume Ollama OpenAI-compatible SSE and produce Anthropic SSE.
     """
+    # When tools are present, use non-streaming path and convert to SSE events
+    # because OpenAI streaming tool_calls are complex to map to Anthropic format
+    if ollama_body.get("tools"):
+        return await _stream_from_non_streaming(
+            ollama_body, display_model_name, username
+        )
+
     proxy_response = await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
