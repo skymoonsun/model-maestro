@@ -43,6 +43,36 @@ logger = logging.getLogger(__name__)
 # Maximum retries for failover (will try all fallback members in group)
 MAX_FAILOVER_RETRIES = 5
 
+# Client → proxy headers that must not be forwarded to Ollama/vLLM. Upstream gateways
+# often apply IP allowlists using X-Forwarded-For / CF-Connecting-Ip; forwarding the
+# browser's IP causes 403 "Your IP address is not allowed" even though the TCP connection
+# is from this proxy (same behavior as curl from an allowlisted server without these hops).
+_CLIENT_HEADERS_BLOCKED_FOR_UPSTREAM = frozenset({
+    "authorization",
+    "user-agent",
+    "postman-token",
+    "cookie",
+    "accept",
+    "content-type",
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-real-ip",
+    "forwarded",
+    "cf-connecting-ip",
+    "cf-ray",
+    "cf-visitor",
+    "cf-ipcountry",
+    "cf-worker",
+    "cdn-loop",
+    "true-client-ip",
+    "x-client-ip",
+    "x-cluster-client-ip",
+    "x-original-forwarded-for",
+    "fastly-client-ip",
+})
+
+
 # Streaming activity tracker — background tasks check this to avoid interrupting streams
 import asyncio as _asyncio
 _active_stream_count = 0
@@ -2343,11 +2373,11 @@ class OllamaProxy:
 
                     request_headers = {}
                     if client_headers:
-                        # Filter out auth/user-agent duplicates — node headers/api_key override them.
-                        # Upstream ALBs reject duplicate Authorization headers.
-                        # Cookie is excluded — belongs to model-maestro, not upstream.
-                        blocked = {'authorization', 'user-agent', 'postman-token', 'cookie', 'accept', 'content-type'}
-                        request_headers.update({k: v for k, v in client_headers.items() if k.lower() not in blocked})
+                        # Filter: never forward client IP / CDN hop headers to upstream (see module doc).
+                        request_headers.update({
+                            k: v for k, v in client_headers.items()
+                            if k.lower() not in _CLIENT_HEADERS_BLOCKED_FOR_UPSTREAM
+                        })
                     if current_headers:
                         # Filter out internal proxy directives (not for upstream)
                         upstream_headers = {k: v for k, v in current_headers.items() if k.lower() != 'x-skip-max-tokens-injection'}
@@ -3203,11 +3233,11 @@ class OllamaProxy:
 
                 request_headers = {}
                 if client_headers:
-                    # Filter out auth/user-agent duplicates — node headers/api_key override them.
-                    # Upstream ALBs reject duplicate Authorization headers.
-                    # Cookie is excluded — belongs to model-maestro, not upstream.
-                    blocked = {'authorization', 'user-agent', 'postman-token', 'cookie', 'accept', 'content-type'}
-                    request_headers.update({k: v for k, v in client_headers.items() if k.lower() not in blocked})
+                    # Filter: never forward client IP / CDN hop headers to upstream (see module doc).
+                    request_headers.update({
+                        k: v for k, v in client_headers.items()
+                        if k.lower() not in _CLIENT_HEADERS_BLOCKED_FOR_UPSTREAM
+                    })
                 if current_headers:
                     # Filter out internal proxy directives (not for upstream)
                     upstream_headers = {k: v for k, v in current_headers.items() if k.lower() != 'x-skip-max-tokens-injection'}
