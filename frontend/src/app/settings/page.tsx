@@ -191,7 +191,7 @@ export default function SettingsPage() {
                                 />
                             </div>
                             <div>
-                                <label className="text-xs text-muted-foreground font-mono">hostname</label>
+                                <label className="text-xs text-muted-foreground font-mono">hostname (optional)</label>
                                 <Input
                                     type="text"
                                     placeholder="api.example.com"
@@ -203,6 +203,9 @@ export default function SettingsPage() {
                                     onBlur={() => tunnelConfigMutation.mutate(tunnelConfig as TunnelConfig)}
                                     className="font-mono text-sm"
                                 />
+                                <p className="text-[10px] text-muted-foreground mt-1">
+                                    Your Cloudflare domain/subdomain. Leave empty to create tunnel without DNS config.
+                                </p>
                             </div>
                         </div>
                     )}
@@ -210,14 +213,9 @@ export default function SettingsPage() {
                     {tunnelStatus?.error && (
                         <div className="text-xs text-red-400 whitespace-pre-wrap">{tunnelStatus.error}</div>
                     )}
-                    {tunnelStatus?.tunnel_token && (
-                        <div className="text-xs text-muted-foreground">
-                            <strong>Tunnel token:</strong> {tunnelStatus.tunnel_token.substring(0, 40)}...
-                            <br />
-                            <span className="text-amber-400">If cloudflared is not installed in the container, run this on the host:</span>
-                            <code className="block bg-muted p-2 mt-1 rounded font-mono text-[10px]">
-                                cloudflared tunnel run --token {tunnelStatus.tunnel_token}
-                            </code>
+                    {tunnelStatus?.running && tunnelStatus?.public_url && (
+                        <div className="text-xs text-emerald-400">
+                            Tunnel active: {tunnelStatus.public_url}
                         </div>
                     )}
                     <div className="flex items-center gap-2">

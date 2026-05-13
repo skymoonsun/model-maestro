@@ -1,5 +1,13 @@
 FROM python:3.11-slim
 
+# Install cloudflared binary for tunnel support
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
+    && wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
+    && dpkg -i cloudflared-linux-amd64.deb || apt-get install -f -y \
+    && rm cloudflared-linux-amd64.deb \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 
