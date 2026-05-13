@@ -31,7 +31,22 @@ from app.user_manager import user_manager
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+# ISO 8601 timestamp for model listings (static so IDs remain stable across calls)
+_MODEL_LIST_TIMESTAMP = "2024-01-01T00:00:00Z"
+
 router = APIRouter(prefix="/claude", tags=["Claude API"])
+
+
+# =============================================================================
+# HEAD /claude/ — Connectivity check for Claude Code extension
+# =============================================================================
+
+@router.head("/")
+async def claude_root_head():
+    """Return 200 OK for Claude Code extension connectivity check."""
+    from fastapi import Response
+    return Response(status_code=200)
 
 
 # =============================================================================
@@ -83,11 +98,15 @@ async def get_claude_user(request: Request) -> str:
 # =============================================================================
 
 @router.get("/v1/models")
-async def claude_list_models(username: str = Depends(get_claude_user)):
+async def claude_list_models(
+    username: str = Depends(get_claude_user),
+    limit: int = 1000,
+):
     """
     List available models in Anthropic format.
+    Claude Code extension expects integer timestamps, max_tokens and provider fields.
     """
-    logger.info(f"[Claude] User {username} requesting model list")
+    logger.info(f"[Claude] User {username} requesting model list (limit={limit})")
 
     # Get all models from Ollama
     all_models_response = await ollama_proxy.proxy_request(
@@ -102,6 +121,7 @@ async def claude_list_models(username: str = Depends(get_claude_user)):
         return {"data": [], "has_more": False, "first_id": None, "last_id": None}
 
     # Build Anthropic-format model list
+    # Claude Code extension only accepts model IDs starting with "claude" or "anthropic"
     models_list = []
 
     await model_mapper.ensure_loaded()
@@ -112,29 +132,43 @@ async def claude_list_models(username: str = Depends(get_claude_user)):
             if model_id:
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
                 for display_name in display_names:
+                    ctx_len = get_context_length_for_model(display_name) or 131072
                     models_list.append({
                         "type": "model",
-                        "id": display_name,
+                        "id": f"claude-{display_name}",
                         "display_name": display_name,
-                        "created_at": str(int(time.time())),
+                        "created_at": _MODEL_LIST_TIMESTAMP,
+                        "max_input_tokens": ctx_len,
+                        "max_tokens": 8192,
+                        "capabilities": {
+                            "batch": {"supported": False},
+                            "citations": {"supported": False},
+                            "code_execution": {"supported": False},
+                            "context_management": {"supported": False},
+                            "effort": {"supported": False},
+                            "image_input": {"supported": False},
+                            "pdf_input": {"supported": False},
+                            "structured_outputs": {"supported": True},
+                            "thinking": {"supported": False},
+                        },
                     })
 
-    # Filter by user access
-    if user_models_data["has_all_models"]:
-        return {
-            "data": models_list,
-            "has_more": False,
-            "first_id": None,
-            "last_id": None,
-        }
+    # Filter by user access (strip claude- prefix for comparison)
+    if not user_models_data["has_all_models"]:
+        allowed = set(user_models_data["models"])
+        models_list = [
+            m for m in models_list
+            if m["id"].removeprefix("claude-") in allowed
+        ]
 
-    allowed = set(user_models_data["models"])
-    filtered = [m for m in models_list if m["id"] in allowed]
+    first_id = models_list[0]["id"] if models_list else None
+    last_id = models_list[-1]["id"] if models_list else None
+
     return {
-        "data": filtered,
+        "data": models_list,
         "has_more": False,
-        "first_id": None,
-        "last_id": None,
+        "first_id": first_id,
+        "last_id": last_id,
     }
 
 
@@ -153,6 +187,9 @@ async def claude_messages(
     """
     body = await request.json()
     model_name = body.get("model", "")
+    # Strip claude- prefix added by the model list for Claude Code compatibility
+    if model_name.startswith("claude-"):
+        model_name = model_name[7:]
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")
