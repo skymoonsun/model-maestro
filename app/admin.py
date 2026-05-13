@@ -27,6 +27,37 @@ from app.config import model_mapper, parse_context_length, format_context_length
 router = APIRouter(prefix="/admin")
 
 
+async def _model_mapping_dict_to_response(mapping: dict) -> ModelMappingResponse:
+    """Build API response; resolves node labels for node_ids."""
+    nids = list(mapping.get("node_ids") or [])
+    names: List[str] = []
+    types: List[Optional[str]] = []
+    if nids:
+        from app.repositories.node_repository import NodeRepository
+        from app.database import async_session_maker
+        async with async_session_maker() as session:
+            node_repo = NodeRepository(session)
+            for nid in nids:
+                node = await node_repo.get_by_id(nid)
+                names.append(node.name if node else f"#{nid}")
+                types.append(node.node_type if node else None)
+    ctx_display = format_context_length(mapping.get("context_length")) if mapping.get("context_length") else None
+    return ModelMappingResponse(
+        display_name=mapping["display_name"],
+        real_name=mapping["real_name"],
+        node_ids=nids,
+        node_names=names or None,
+        node_types=types or None,
+        node_id=nids[0] if nids else None,
+        node_name=names[0] if names else None,
+        node_type=types[0] if types else None,
+        context_length=mapping.get("context_length"),
+        context_length_display=ctx_display,
+        capabilities=mapping.get("capabilities"),
+        created_at=mapping.get("created_at"),
+    )
+
+
 # ============================================================================
 # User Management Endpoints
 # ============================================================================
@@ -323,36 +354,10 @@ async def create_or_update_model_mapping(
             request.real_name,
             ctx_length_tokens,
             request.capabilities,
-            request.node_id
+            request.node_ids,
         )
 
-        # Resolve node name and type for response
-        node_name = None
-        node_type = None
-        if mapping.get("node_id"):
-            from app.repositories.node_repository import NodeRepository
-            from app.database import async_session_maker
-            async with async_session_maker() as session:
-                node_repo = NodeRepository(session)
-                node = await node_repo.get_by_id(mapping["node_id"])
-                if node:
-                    node_name = node.name
-                    node_type = node.node_type
-
-        # Format context_length for display
-        ctx_display = format_context_length(mapping.get("context_length")) if mapping.get("context_length") else None
-
-        return ModelMappingResponse(
-            display_name=mapping["display_name"],
-            real_name=mapping["real_name"],
-            node_id=mapping.get("node_id"),
-            node_name=node_name,
-            node_type=node_type,
-            context_length=mapping.get("context_length"),
-            context_length_display=ctx_display,
-            capabilities=mapping.get("capabilities"),
-            created_at=mapping.get("created_at")
-        )
+        return await _model_mapping_dict_to_response(mapping)
     except HTTPException:
         raise
     except ValueError as e:
@@ -364,37 +369,8 @@ async def list_model_mappings(admin: str = Depends(verify_admin)):
     """
     List all model mappings (Admin only).
     """
-    from app.repositories.node_repository import NodeRepository
-    from app.database import async_session_maker
-
     mappings = await model_mapper.list_mappings()
-
-    # Resolve node names and types
-    node_names = {}
-    node_types = {}
-    async with async_session_maker() as session:
-        node_repo = NodeRepository(session)
-        node_ids = {m.get("node_id") for m in mappings if m.get("node_id")}
-        for nid in node_ids:
-            node = await node_repo.get_by_id(nid)
-            if node:
-                node_names[nid] = node.name
-                node_types[nid] = node.node_type
-
-    return [
-        ModelMappingResponse(
-            display_name=m["display_name"],
-            real_name=m["real_name"],
-            node_id=m.get("node_id"),
-            node_name=node_names.get(m.get("node_id")),
-            node_type=node_types.get(m.get("node_id")),
-            context_length=m.get("context_length"),
-            context_length_display=format_context_length(m.get("context_length")) if m.get("context_length") else None,
-            capabilities=m.get("capabilities"),
-            created_at=m.get("created_at")
-        )
-        for m in mappings
-    ]
+    return [await _model_mapping_dict_to_response(m) for m in mappings]
 
 
 @router.put("/model-mappings/{old_display_name}", response_model=ModelMappingResponse, tags=["Admin - Model Mapping"])
@@ -432,34 +408,10 @@ async def update_model_mapping(
             request.real_name,
             ctx_length_tokens,
             request.capabilities,
-            request.node_id
+            request.node_ids,
         )
 
-        node_name = None
-        node_type = None
-        if mapping.get("node_id"):
-            from app.repositories.node_repository import NodeRepository
-            from app.database import async_session_maker
-            async with async_session_maker() as session:
-                node_repo = NodeRepository(session)
-                node = await node_repo.get_by_id(mapping["node_id"])
-                if node:
-                    node_name = node.name
-                    node_type = node.node_type
-
-        ctx_display = format_context_length(mapping.get("context_length")) if mapping.get("context_length") else None
-
-        return ModelMappingResponse(
-            display_name=mapping["display_name"],
-            real_name=mapping["real_name"],
-            node_id=mapping.get("node_id"),
-            node_name=node_name,
-            node_type=node_type,
-            context_length=mapping.get("context_length"),
-            context_length_display=ctx_display,
-            capabilities=mapping.get("capabilities"),
-            created_at=mapping.get("created_at")
-        )
+        return await _model_mapping_dict_to_response(mapping)
     except HTTPException:
         raise
     except ValueError as e:

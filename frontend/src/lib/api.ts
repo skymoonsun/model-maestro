@@ -631,6 +631,9 @@ export interface UserStatsResponse {
 export interface ModelMapping {
   display_name: string;
   real_name: string;
+  node_ids: number[];
+  node_names?: string[] | null;
+  /** @deprecated ilk node; çoklu için node_ids kullanın */
   node_id: number | null;
   node_name: string | null;
   node_type: string | null;
@@ -643,6 +646,9 @@ export interface ModelMapping {
 export interface CreateModelMapping {
   display_name: string;
   real_name: string;
+  /** Boş veya yok = tüm node’larda geçerli */
+  node_ids?: number[] | null;
+  /** @deprecated node_ids kullanın */
   node_id?: number | null;
   context_length: string;
   capabilities?: string[];
@@ -884,7 +890,7 @@ export interface ModelGroupMember {
   weight: number;
   priority: number;
   is_active: boolean;
-  preferred_node_id: number | null;
+  preferred_node_ids: number[];
 }
 
 export interface ModelGroupSummary {
@@ -920,5 +926,7 @@ export type ModelGroupMemberCreate = {
   weight?: number;
   priority?: number;
   is_active?: boolean;
+  preferred_node_ids?: number[] | null;
+  /** @deprecated preferred_node_ids kullanın */
   preferred_node_id?: number | null;
 };

@@ -1023,11 +1023,52 @@ class OllamaProxy:
         from app.auth import check_node_access
         return await check_node_access(username, node_id)
 
+    @staticmethod
+    def _merge_allowed_node_ids(
+        group_prefs: Optional[List[int]],
+        mapping_restrict: Optional[List[int]],
+    ) -> Optional[List[int]]:
+        """
+        Combine group-member preferred nodes with model-mapping node restrictions.
+        None means no constraint from that side.
+        """
+        if not group_prefs and not mapping_restrict:
+            return None
+        if not group_prefs:
+            return list(dict.fromkeys(mapping_restrict or []))
+        if not mapping_restrict:
+            return list(dict.fromkeys(group_prefs))
+        inter = list(set(group_prefs) & set(mapping_restrict))
+        if not inter:
+            logger.warning(
+                "[LB] Group preferred nodes %s and mapping nodes %s do not overlap; using full node pool",
+                group_prefs,
+                mapping_restrict,
+            )
+            return None
+            return inter
+
+    def _prepare_routing_allowed(
+        self,
+        data: Optional[Dict[str, Any]],
+        model_name: Optional[str],
+    ) -> Optional[List[int]]:
+        """Strip internal preferred-node keys from request body and compute LB restriction."""
+        if not isinstance(data, dict):
+            return model_mapper.get_restricted_node_ids(model_name) if model_name else None
+        legacy = data.pop('_preferred_node_id', None)
+        pids = data.pop('_preferred_node_ids', None)
+        if legacy is not None and not pids:
+            pids = [legacy]
+        mmap = model_mapper.get_restricted_node_ids(model_name) if model_name else None
+        return self._merge_allowed_node_ids(pids, mmap)
+
     async def _select_node_url(
         self,
         model_name: str,
         exclude_nodes: Optional[List[str]] = None,
-        exclude_scoped: bool = False
+        exclude_scoped: bool = False,
+        allowed_node_ids: Optional[List[int]] = None,
     ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
         """
         Select the best node URL for a model using load balancing.
@@ -1062,6 +1103,17 @@ class OllamaProxy:
                     return "", None, 'ollama', None
                 logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
                 return self.base_url, None, 'ollama', None
+
+            if allowed_node_ids:
+                allow = set(allowed_node_ids)
+                filtered_allow = [n for n in nodes if n.get('node_id') in allow]
+                if filtered_allow:
+                    nodes = filtered_allow
+                    logger.info(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
+                else:
+                    logger.warning(
+                        f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for {model_name}; using full pool"
+                    )
 
             # Filter out scoped nodes when doing normal load balancing
             if exclude_scoped:
@@ -1184,12 +1236,12 @@ class OllamaProxy:
         # Handle 'model' field - resolve groups first
         if 'model' in data_copy:
             original_model = data_copy['model']
-            resolved_model, preferred_node_id = await model_group_manager.resolve_model_with_metadata(original_model, data_copy)
+            resolved_model, preferred_node_ids = await model_group_manager.resolve_model_with_metadata(original_model, data_copy)
             if resolved_model != original_model:
-                logger.info(f"[ModelGroup] Resolved group '{original_model}' -> '{resolved_model}' (preferred_node={preferred_node_id})")
+                logger.info(f"[ModelGroup] Resolved group '{original_model}' -> '{resolved_model}' (preferred_nodes={preferred_node_ids})")
             data_copy['model'] = resolved_model
-            if preferred_node_id:
-                data_copy['_preferred_node_id'] = preferred_node_id
+            if preferred_node_ids:
+                data_copy['_preferred_node_ids'] = preferred_node_ids
 
         # Handle 'name' field (used in show, delete, pull, push) - resolve groups
         if 'name' in data_copy:
@@ -1924,8 +1976,8 @@ class OllamaProxy:
                                 status_code=404,
                                 detail=f"Node with code '{node_code}' not found"
                             )
-                        # Inject preferred node and replace model name
-                        data['_preferred_node_id'] = node.id
+                        # Inject preferred node(s) and replace model name
+                        data['_preferred_node_ids'] = [node.id]
                         if 'model' in data:
                             data['model'] = actual_model
                         elif 'name' in data:
@@ -1944,46 +1996,26 @@ class OllamaProxy:
         # Determine if request is node-scoped for scoped model filtering
         is_node_scoped = bool(node_code)
 
-        # Check for preferred node from model group member resolution
-        preferred_node_id = data.pop('_preferred_node_id', None) if isinstance(data, dict) else None
+        routing_allowed_node_ids = self._prepare_routing_allowed(data, model_name)
+
         base_url = None
         api_key = None
         node_type = 'ollama'
         node_headers = None
-        if preferred_node_id:
-            try:
-                from app.database import async_session_maker
-                from app.repositories.node_repository import NodeRepository
-                async with async_session_maker() as session:
-                    node_repo = NodeRepository(session)
-                    node = await node_repo.get_by_id(preferred_node_id)
-                    if node and node.is_active and node.health_status in ('healthy', 'unknown'):
-                        base_url = node.base_url
-                        api_key = node.api_key
-                        node_type = getattr(node, 'node_type', 'ollama')
-                        node_headers = getattr(node, 'headers', None)
-                        logger.info(f"[LB] Preferred node '{node.name}' ({node.base_url}) selected for group member '{model_name}'")
-                    else:
-                        reason = 'inactive' if node and not node.is_active else 'unhealthy' if node else 'not found'
-                        logger.warning(f"[LB] Preferred node {preferred_node_id} is {reason}, falling back to load balancing")
-            except Exception as e:
-                logger.warning(f"[LB] Error looking up preferred node {preferred_node_id}: {e}, falling back")
 
-        if not base_url:
-            # Select node URL: use load balancer if nodes exist, else OLLAMA_BASE_URL fallback
-            # Exclude scoped nodes unless user explicitly requested node-scoped routing
-            # or the request came through a model group (group abstraction bypasses scoped restriction)
-            base_url, api_key, node_type, node_headers = await self._select_node_url(
-                model_name or '', exclude_scoped=not is_node_scoped and not is_group_request and not is_group_request
-            )
+        base_url, api_key, node_type, node_headers = await self._select_node_url(
+            model_name or '',
+            exclude_scoped=not is_node_scoped and not is_group_request,
+            allowed_node_ids=routing_allowed_node_ids,
+        )
 
         url = f"{base_url}{endpoint}"
         if base_url:
             tried_nodes.add(base_url)
 
         # Resolve node_id for access control
-        selected_node_id = preferred_node_id
-        if not selected_node_id and base_url:
+        selected_node_id = None
+        if base_url:
             try:
                 from app.database import async_session_maker
                 from app.repositories.node_repository import NodeRepository
@@ -2199,7 +2231,8 @@ class OllamaProxy:
                     node_headers=node_headers,
                     exclude_scoped=not is_node_scoped and not is_group_request,
                     bypass_node_access=is_group_request,
-                    client_headers=client_headers
+                    client_headers=client_headers,
+                    allowed_node_ids=routing_allowed_node_ids,
                 )
 
             # Non-streaming requests with failover support
@@ -2220,7 +2253,8 @@ class OllamaProxy:
                 node_headers=node_headers,
                 exclude_scoped=not is_node_scoped and not is_group_request,
                 bypass_node_access=is_group_request,
-                client_headers=client_headers
+                client_headers=client_headers,
+                allowed_node_ids=routing_allowed_node_ids,
             )
 
         except HTTPException:
@@ -2254,7 +2288,8 @@ class OllamaProxy:
         node_headers: Optional[Dict[str, Any]] = None,
         exclude_scoped: bool = False,
         bypass_node_access: bool = False,
-        client_headers: Optional[Dict[str, str]] = None
+        client_headers: Optional[Dict[str, str]] = None,
+        allowed_node_ids: Optional[List[int]] = None,
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2361,7 +2396,8 @@ class OllamaProxy:
 
                                 new_base_url, new_api_key, _, new_headers = await self._select_node_url(
                                     current_model, exclude_nodes=list(tried_nodes),
-                                    exclude_scoped=exclude_scoped
+                                    exclude_scoped=exclude_scoped,
+                                    allowed_node_ids=allowed_node_ids,
                                 )
                                 if new_base_url:
                                     # Check node access for failover node
@@ -2405,8 +2441,13 @@ class OllamaProxy:
                                     if fallback_mapped:
                                         current_data = self._strip_images_from_messages(current_data, fallback_mapped)
 
+                                    fb_allowed = self._prepare_routing_allowed(current_data, fallback_mapped)
                                     # Select new node URL for fallback (reset tried_nodes for new model)
-                                    new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                                    new_base_url, new_api_key, _, new_headers = await self._select_node_url(
+                                        fallback_model,
+                                        exclude_scoped=exclude_scoped,
+                                        allowed_node_ids=fb_allowed,
+                                    )
                                     if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                         logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
                                         tried_nodes.add(new_base_url)
@@ -3008,7 +3049,8 @@ class OllamaProxy:
 
                         new_base_url, new_api_key, _, _ = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes),
-                            exclude_scoped=exclude_scoped
+                            exclude_scoped=exclude_scoped,
+                            allowed_node_ids=allowed_node_ids,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3042,7 +3084,12 @@ class OllamaProxy:
                             if fb_mapped:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
-                            new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                            fb_allowed = self._prepare_routing_allowed(current_data, fb_mapped)
+                            new_base_url, new_api_key, _, _ = await self._select_node_url(
+                                fallback_model,
+                                exclude_scoped=exclude_scoped,
+                                allowed_node_ids=fb_allowed,
+                            )
                             if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                 logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
                                 tried_nodes.add(new_base_url)
@@ -3117,7 +3164,8 @@ class OllamaProxy:
         node_headers: Optional[Dict[str, Any]] = None,
         exclude_scoped: bool = False,
         bypass_node_access: bool = False,
-        client_headers: Optional[Dict[str, str]] = None
+        client_headers: Optional[Dict[str, str]] = None,
+        allowed_node_ids: Optional[List[int]] = None,
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -3200,7 +3248,8 @@ class OllamaProxy:
 
                         new_base_url, new_api_key, _, new_headers = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes),
-                            exclude_scoped=exclude_scoped
+                            exclude_scoped=exclude_scoped,
+                            allowed_node_ids=allowed_node_ids,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3246,8 +3295,13 @@ class OllamaProxy:
                             if fb_mapped:
                                 current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
+                            fb_allowed = self._prepare_routing_allowed(current_data, fb_mapped)
                             # Select new node URL for fallback
-                            new_base_url, new_api_key, _, new_headers = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                            new_base_url, new_api_key, _, new_headers = await self._select_node_url(
+                                fallback_model,
+                                exclude_scoped=exclude_scoped,
+                                allowed_node_ids=fb_allowed,
+                            )
                             if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                 logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
                                 tried_nodes.add(new_base_url)
@@ -3345,7 +3399,8 @@ class OllamaProxy:
 
                     new_base_url, new_api_key, _, _ = await self._select_node_url(
                         current_model, exclude_nodes=list(tried_nodes),
-                        exclude_scoped=exclude_scoped
+                        exclude_scoped=exclude_scoped,
+                        allowed_node_ids=allowed_node_ids,
                     )
                     if new_base_url:
                         if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3382,7 +3437,12 @@ class OllamaProxy:
                         if fb_mapped:
                             current_data = self._strip_images_from_messages(current_data, fb_mapped)
 
-                        new_base_url, new_api_key, _, _ = await self._select_node_url(fallback_model, exclude_scoped=exclude_scoped)
+                        fb_allowed = self._prepare_routing_allowed(current_data, fb_mapped)
+                        new_base_url, new_api_key, _, _ = await self._select_node_url(
+                            fallback_model,
+                            exclude_scoped=exclude_scoped,
+                            allowed_node_ids=fb_allowed,
+                        )
                         if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                             logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
                             tried_nodes.add(new_base_url)

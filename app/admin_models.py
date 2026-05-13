@@ -612,29 +612,43 @@ async def update_model_capabilities(
     
     async with async_session_maker() as session:
         repo = ModelMappingRepository(session)
-        mapping = await repo.update_capabilities(display_name, capabilities)
-        
+        await repo.update_capabilities(display_name, capabilities)
+        mapping = await repo.get_by_display_name(display_name)
+
         if not mapping:
             raise HTTPException(status_code=404, detail=f"Model mapping bulunamadı: {display_name}")
-    
+
     # Cache'i yenile
     await model_mapper.reload()
 
-    # Resolve node name
+    nids = sorted({n.id for n in (mapping.nodes or [])})
     node_name = None
-    if mapping.node_id:
+    node_type = None
+    names: list[str] = []
+    types: list[str | None] = []
+    if nids:
         from app.repositories.node_repository import NodeRepository
         async with async_session_maker() as session:
             node_repo = NodeRepository(session)
-            node = await node_repo.get_by_id(mapping.node_id)
-            if node:
-                node_name = node.name
+            for nid in nids:
+                node = await node_repo.get_by_id(nid)
+                names.append(node.name if node else f"#{nid}")
+                types.append(node.node_type if node else None)
+            if nids:
+                node = await node_repo.get_by_id(nids[0])
+                if node:
+                    node_name = node.name
+                    node_type = node.node_type
 
     return ModelMappingResponse(
         display_name=mapping.display_name,
         real_name=mapping.real_name,
-        node_id=mapping.node_id,
+        node_ids=nids,
+        node_names=names or None,
+        node_types=types or None,
+        node_id=nids[0] if nids else None,
         node_name=node_name,
+        node_type=node_type,
         context_length=mapping.context_length,
         context_length_display=format_context_length(mapping.context_length) if mapping.context_length else None,
         capabilities=mapping.capabilities,

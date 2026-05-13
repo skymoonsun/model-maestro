@@ -69,9 +69,10 @@ function SortableMemberCard({
                 <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                     <span>Priority: {member.priority}</span>
                     <span>Weight: {member.weight}</span>
-                    {member.preferred_node_id && nodes && (
+                    {((member.preferred_node_ids?.length ?? 0) > 0) && nodes && (
                         <span>
-                            Node: {nodes.find((n) => n.id === member.preferred_node_id)?.name ?? `#${member.preferred_node_id}`}
+                            Nodes:{' '}
+                            {member.preferred_node_ids!.map((id) => nodes.find((n) => n.id === id)?.name ?? `#${id}`).join(', ')}
                         </span>
                     )}
                     {member.capability_tags && member.capability_tags.length > 0 && (
@@ -125,7 +126,7 @@ function GroupDetail({
     const [hasReordered, setHasReordered] = useState(false);
     const [addOpen, setAddOpen] = useState(false);
     const [newMemberName, setNewMemberName] = useState('');
-    const [newMemberNodeId, setNewMemberNodeId] = useState<number | null>(null);
+    const [newMemberNodeIds, setNewMemberNodeIds] = useState<number[]>([]);
 
     const { data: mappingsData } = useQuery({
         queryKey: ['model-mappings'],
@@ -196,7 +197,7 @@ function GroupDetail({
             toast.success('Member added');
             setMembers((m) => [...m, newMember]);
             setNewMemberName('');
-            setNewMemberNodeId(null);
+            setNewMemberNodeIds([]);
             setAddOpen(false);
         },
         onError: (e) => toast.error(e.message),
@@ -361,31 +362,39 @@ function GroupDetail({
                                     </Command>
                                     {nodesData && nodesData.length > 0 && (
                                         <div className="mt-3">
-                                            <Label className="text-sm mb-1.5 block">Preferred Node (optional)</Label>
-                                            <Select
-                                                value={newMemberNodeId?.toString() ?? 'none'}
-                                                onValueChange={(v) => setNewMemberNodeId(v === 'none' ? null : parseInt(v, 10))}
-                                            >
-                                                <SelectTrigger>
-                                                    <SelectValue placeholder="Load balanced (default)" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="none">Load balanced (default)</SelectItem>
-                                                    {nodesData.map((n) => (
-                                                        <SelectItem key={n.id} value={n.id.toString()}>{n.name} — {n.base_url}</SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
+                                            <Label className="text-sm mb-1.5 block">Preferred nodes (optional)</Label>
+                                            <p className="text-xs text-muted-foreground mb-2">İşaretlenirse trafik yalnızca bu node’lar arasında seçilir. Boş bırakırsanız load balancer tüm uygun node’ları kullanır.</p>
+                                            <div className="max-h-36 overflow-y-auto rounded-md border p-2 space-y-2">
+                                                {nodesData.map((n) => {
+                                                    const checked = newMemberNodeIds.includes(n.id);
+                                                    return (
+                                                        <label key={n.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="rounded border-input"
+                                                                checked={checked}
+                                                                onChange={() => {
+                                                                    setNewMemberNodeIds((prev) =>
+                                                                        checked ? prev.filter((id) => id !== n.id) : [...prev, n.id],
+                                                                    );
+                                                                }}
+                                                            />
+                                                            <span>{n.name}</span>
+                                                            <span className="text-xs text-muted-foreground truncate">{n.base_url}</span>
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
                                     )}
                                     <DialogFooter className="mt-4">
-                                        <Button variant="ghost" onClick={() => { setAddOpen(false); setNewMemberNodeId(null); }}>Cancel</Button>
+                                        <Button variant="ghost" onClick={() => { setAddOpen(false); setNewMemberNodeIds([]); }}>Cancel</Button>
                                         <Button
                                             onClick={() => addMut.mutate({
                                                 model_display_name: newMemberName,
                                                 priority: members.length,
                                                 weight: 1,
-                                                preferred_node_id: newMemberNodeId,
+                                                ...(newMemberNodeIds.length > 0 ? { preferred_node_ids: newMemberNodeIds } : {}),
                                             })}
                                             disabled={addMut.isPending || !newMemberName}
                                         >

@@ -1,7 +1,7 @@
 """Pydantic models for the application"""
 
 from typing import Optional, Any, Dict, List
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class User(BaseModel):
@@ -165,9 +165,16 @@ class CreateMappingRequest(BaseModel):
     """Create or update model mapping request"""
     display_name: str
     real_name: str
-    node_id: Optional[int] = None  # NULL = global mapping (all nodes)
+    node_ids: Optional[List[int]] = None  # empty / omitted = global (all nodes)
+    node_id: Optional[int] = None  # deprecated: use node_ids
     context_length: Optional[str] = None  # Human-friendly format: "198K", "128K", "1M", "32768"
     capabilities: Optional[List[str]] = None  # ["completion", "tools", "thinking", "vision"]
+
+    @model_validator(mode="after")
+    def merge_legacy_mapping_node(self) -> "CreateMappingRequest":
+        if self.node_id is not None and not self.node_ids:
+            object.__setattr__(self, "node_ids", [self.node_id])
+        return self
 
 
 class UserResponse(BaseModel):
@@ -226,7 +233,10 @@ class ModelMappingResponse(BaseModel):
     """Model mapping response"""
     display_name: str
     real_name: str
-    node_id: Optional[int] = None
+    node_ids: List[int] = []
+    node_names: Optional[List[str]] = None
+    node_types: Optional[List[str]] = None
+    node_id: Optional[int] = None  # ilk node (geriye dönük uyumluluk)
     node_name: Optional[str] = None
     node_type: Optional[str] = None  # 'ollama' | 'vllm'
     context_length: Optional[int] = None  # Token cinsinden (e.g., 202752)
@@ -801,7 +811,14 @@ class ModelGroupMemberRequest(BaseModel):
     priority: int = 0
     is_fallback: bool = False
     is_active: bool = True
-    preferred_node_id: Optional[int] = None
+    preferred_node_ids: Optional[List[int]] = None
+    preferred_node_id: Optional[int] = None  # deprecated: use preferred_node_ids
+
+    @model_validator(mode="after")
+    def merge_legacy_preferred_node(self) -> "ModelGroupMemberRequest":
+        if self.preferred_node_id is not None and not self.preferred_node_ids:
+            object.__setattr__(self, "preferred_node_ids", [self.preferred_node_id])
+        return self
 
 
 class ModelGroupCreateRequest(BaseModel):
@@ -829,7 +846,7 @@ class ModelGroupMemberResponse(BaseModel):
     priority: int = 0
     is_fallback: bool = False
     is_active: bool = True
-    preferred_node_id: Optional[int] = None
+    preferred_node_ids: List[int] = []
 
 
 class ModelGroupResponse(BaseModel):
