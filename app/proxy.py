@@ -1071,11 +1071,14 @@ class OllamaProxy:
         inter = list(set(group_prefs) & set(mapping_restrict))
         if not inter:
             logger.warning(
-                "[LB] Group preferred nodes %s and mapping nodes %s do not overlap; using full node pool",
+                "[LB] Group preferred nodes %s and model-mapping nodes %s have empty intersection; "
+                "using group preferred nodes only for routing (mapping real_name still applies only on mapping nodes)",
                 group_prefs,
                 mapping_restrict,
             )
-            return None
+            return list(dict.fromkeys(group_prefs))
+
+        return list(dict.fromkeys(inter))
 
     def _prepare_routing_allowed(
         self,
@@ -1093,32 +1096,45 @@ class OllamaProxy:
         return self._merge_allowed_node_ids(pids, mmap)
 
     async def _gather_nodes_for_model_candidates(
-        self, model_name: str
+        self,
+        model_name: str,
+        *,
+        routing_catalog_names: Optional[List[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Nodes that advertise this model under either the mapped real name or the client/display name.
 
         Using only the first successful lookup misses nodes whose catalog uses the other spelling
         (e.g. display ``deepseek-v4-pro`` vs real ``deepseek-v4-pro:cloud``).
+
+        ``routing_catalog_names`` adds extra spellings (e.g. other members of the same model group)
+        so LB can find any node in the group's union pool that lists an alias.
         """
         from app.node_manager import node_manager
 
-        real_model_name = model_mapper.get_real_model_name(model_name)
-        variants: List[str] = []
-        for v in (real_model_name, model_name):
-            if v and v not in variants:
-                variants.append(v)
+        ordered: List[str] = []
+        for raw in [model_name, *(routing_catalog_names or [])]:
+            if raw and raw not in ordered:
+                ordered.append(raw)
 
         merged: Dict[int, Dict[str, Any]] = {}
-        for variant in variants:
-            batch = await node_manager.get_nodes_for_model(variant)
-            for n in batch:
-                nid = n.get("node_id")
-                if nid is None:
-                    continue
-                merged.setdefault(nid, n)
+        seen_strings: set[str] = set()
+        primary_real = model_mapper.get_real_model_name(model_name)
 
-        return list(merged.values()), real_model_name
+        for label in ordered:
+            real_label = model_mapper.get_real_model_name(label)
+            for v in (label, real_label):
+                if not v or v in seen_strings:
+                    continue
+                seen_strings.add(v)
+                batch = await node_manager.get_nodes_for_model(v)
+                for n in batch:
+                    nid = n.get("node_id")
+                    if nid is None:
+                        continue
+                    merged.setdefault(nid, n)
+
+        return list(merged.values()), primary_real
 
     async def _select_node_url(
         self,
@@ -1126,6 +1142,7 @@ class OllamaProxy:
         exclude_nodes: Optional[List[str]] = None,
         exclude_scoped: bool = False,
         allowed_node_ids: Optional[List[int]] = None,
+        routing_catalog_names: Optional[List[str]] = None,
     ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
         """
         Select the best node URL for a model using load balancing.
@@ -1143,7 +1160,10 @@ class OllamaProxy:
             from app.node_manager import node_manager
             from app.load_balancer import load_balancer
 
-            nodes, real_model_name = await self._gather_nodes_for_model_candidates(model_name)
+            nodes, real_model_name = await self._gather_nodes_for_model_candidates(
+                model_name,
+                routing_catalog_names=routing_catalog_names,
+            )
 
             if not nodes:
                 # No nodes have this model - use default (if not excluded)
@@ -2111,6 +2131,13 @@ class OllamaProxy:
         # Determine if request is node-scoped for scoped model filtering
         is_node_scoped = bool(node_code)
 
+        routing_catalog_names: Optional[List[str]] = None
+        if original_group:
+            rc = list(model_group_manager.get_member_catalog_names(original_group))
+            if original_group in model_mapper.get_all_mappings() and original_group not in rc:
+                rc.append(original_group)
+            routing_catalog_names = rc if rc else None
+
         routing_allowed_node_ids = self._prepare_routing_allowed(data, model_name)
 
         base_url = None
@@ -2122,6 +2149,7 @@ class OllamaProxy:
             model_name or '',
             exclude_scoped=not is_node_scoped and not is_group_request,
             allowed_node_ids=routing_allowed_node_ids,
+            routing_catalog_names=routing_catalog_names,
         )
 
         url = f"{base_url}{endpoint}"
@@ -2344,6 +2372,7 @@ class OllamaProxy:
                     client_headers=client_headers,
                     allowed_node_ids=routing_allowed_node_ids,
                     routing_snapshot=routing_snapshot,
+                    routing_catalog_names=routing_catalog_names,
                 )
 
             # Non-streaming requests with failover support
@@ -2367,6 +2396,7 @@ class OllamaProxy:
                 client_headers=client_headers,
                 allowed_node_ids=routing_allowed_node_ids,
                 routing_snapshot=routing_snapshot,
+                routing_catalog_names=routing_catalog_names,
             )
 
         except HTTPException:
@@ -2403,6 +2433,7 @@ class OllamaProxy:
         client_headers: Optional[Dict[str, str]] = None,
         allowed_node_ids: Optional[List[int]] = None,
         routing_snapshot: Optional[Dict[str, str]] = None,
+        routing_catalog_names: Optional[List[str]] = None,
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2513,6 +2544,7 @@ class OllamaProxy:
                                     current_model, exclude_nodes=list(tried_nodes),
                                     exclude_scoped=exclude_scoped,
                                     allowed_node_ids=allowed_node_ids,
+                                    routing_catalog_names=routing_catalog_names,
                                 )
                                 if new_base_url:
                                     # Check node access for failover node
@@ -2567,6 +2599,7 @@ class OllamaProxy:
                                         fb_display or fallback_model,
                                         exclude_scoped=exclude_scoped,
                                         allowed_node_ids=fb_allowed,
+                                        routing_catalog_names=routing_catalog_names,
                                     )
                                     if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                         logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
@@ -3174,6 +3207,7 @@ class OllamaProxy:
                             current_model, exclude_nodes=list(tried_nodes),
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
+                            routing_catalog_names=routing_catalog_names,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3217,6 +3251,7 @@ class OllamaProxy:
                                 fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
+                                routing_catalog_names=routing_catalog_names,
                             )
                             if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                 logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
@@ -3298,6 +3333,7 @@ class OllamaProxy:
         client_headers: Optional[Dict[str, str]] = None,
         allowed_node_ids: Optional[List[int]] = None,
         routing_snapshot: Optional[Dict[str, str]] = None,
+        routing_catalog_names: Optional[List[str]] = None,
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -3383,6 +3419,7 @@ class OllamaProxy:
                             current_model, exclude_nodes=list(tried_nodes),
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
+                            routing_catalog_names=routing_catalog_names,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3439,6 +3476,7 @@ class OllamaProxy:
                                 fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
+                                routing_catalog_names=routing_catalog_names,
                             )
                             if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                 logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
@@ -3542,6 +3580,7 @@ class OllamaProxy:
                         current_model, exclude_nodes=list(tried_nodes),
                         exclude_scoped=exclude_scoped,
                         allowed_node_ids=allowed_node_ids,
+                        routing_catalog_names=routing_catalog_names,
                     )
                     if new_base_url:
                         if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3588,6 +3627,7 @@ class OllamaProxy:
                             fb_display or fallback_model,
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=fb_allowed,
+                            routing_catalog_names=routing_catalog_names,
                         )
                         if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                             logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
