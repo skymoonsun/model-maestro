@@ -127,6 +127,10 @@ async def update_system_config(
         for key, value in update.search.items():
             updates[f"search.{key}"] = str(value)
 
+    if update.tunnel:
+        for key, value in update.tunnel.items():
+            updates[f"tunnel.{key}"] = str(value)
+
     if update.ollama_unsupported_params is not None:
         updates["ollama_unsupported_params"] = json.dumps(update.ollama_unsupported_params)
 

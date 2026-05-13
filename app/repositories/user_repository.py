@@ -68,11 +68,21 @@ class UserRepository:
         user = await self.get_by_username(username)
         if not user:
             return False
-        
+
         user.is_active = False
         await self.session.commit()
         return True
-    
+
+    async def set_active(self, username: str, is_active: bool) -> bool:
+        """Set user active status"""
+        user = await self.get_by_username_any(username)
+        if not user:
+            return False
+
+        user.is_active = is_active
+        await self.session.commit()
+        return True
+
     async def delete(self, username: str) -> bool:
         """Hard delete user"""
         user = await self.get_by_username(username)

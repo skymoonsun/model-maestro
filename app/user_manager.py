@@ -174,12 +174,29 @@ class UserManager:
                 "is_active": user.is_active
             }
     
-    async def list_users(self) -> List[dict]:
+    async def get_user_any(self, username: str) -> Optional[dict]:
+        """Get user by username (including inactive users)"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username_any(username)
+            
+            if not user:
+                return None
+            
+            return {
+                "username": user.username,
+                "token": user.token,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                "is_active": user.is_active
+            }
+    
+    async def list_users(self, include_inactive: bool = False) -> List[dict]:
         """List all users"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            users = await user_repo.list_all()
-            
+            users = await user_repo.list_all(include_inactive=include_inactive)
+
             return [
                 {
                     "username": user.username,
@@ -190,7 +207,24 @@ class UserManager:
                 }
                 for user in users
             ]
-    
+
+    async def set_user_active(self, username: str, is_active: bool) -> bool:
+        """Set user active status"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            result = await user_repo.set_active(username, is_active)
+
+            if result:
+                # Invalidate Redis caches
+                from app.redis import redis_manager, CACHE_KEYS
+                if redis_manager:
+                    await redis_manager.delete(CACHE_KEYS["USER_ACCESS"].format(username=username))
+                    await redis_manager.delete(CACHE_KEYS["USER_LIMIT"].format(username=username))
+                    await redis_manager.delete(f"user_node_access:{username}")
+                    await redis_manager.delete(f"user_node_model_access:{username}")
+
+            return result
+
     async def verify_token(self, token: str) -> Optional[str]:
         """Verify JWT token and return username"""
         try:
@@ -260,7 +294,7 @@ class UserManager:
         """Get user's assigned models"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -359,7 +393,7 @@ class UserManager:
         """Get user activity logs"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -392,7 +426,7 @@ class UserManager:
         """Get user token usage statistics"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -409,7 +443,7 @@ class UserManager:
         """Get user model usage statistics"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -448,7 +482,7 @@ class UserManager:
         """Get user request and token limits"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -634,7 +668,7 @@ class UserManager:
         """Get user's allowed nodes with details"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
 
             if not user:
                 return None
@@ -689,11 +723,23 @@ class UserManager:
             user_node_model_repo = UserNodeModelRepository(session)
             return await user_node_model_repo.revoke_all_node_models(user.id)
 
+    async def revoke_all_node_models(self, username: str) -> bool:
+        """Revoke all node-model restrictions for user"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username(username)
+
+            if not user:
+                raise ValueError(f"Kullanıcı bulunamadı: {username}")
+
+            user_node_model_repo = UserNodeModelRepository(session)
+            return await user_node_model_repo.revoke_all_node_models(user.id)
+
     async def get_user_node_models(self, username: str) -> Optional[dict]:
         """Get user's allowed node-model combinations with details"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
 
             if not user:
                 return None

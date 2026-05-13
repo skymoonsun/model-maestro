@@ -160,6 +160,8 @@ export const usersApi = {
   get: (username: string) => adminFetch<User>(`/admin/users/${username}`),
   create: (username: string) =>
     adminFetch<User>('/admin/users', { method: 'POST', body: JSON.stringify({ username }) }),
+  update: (username: string, data: { is_active: boolean }) =>
+    adminFetch<User>(`/admin/users/${username}?is_active=${data.is_active}`, { method: 'PATCH' }),
   delete: (username: string) =>
     adminFetch<void>(`/admin/users/${username}`, { method: 'DELETE' }),
   regenerateToken: (username: string) =>
@@ -215,6 +217,8 @@ export const usersApi = {
     }),
   grantAllNodeModels: (username: string) =>
     adminFetch<UserNodeModels>(`/admin/users/${username}/node-models/all`, { method: 'POST' }),
+  revokeAllNodeModels: (username: string) =>
+    adminFetch<void>(`/admin/users/${username}/node-models/all`, { method: 'DELETE' }),
 };
 
 // ==================== Model Mappings ====================
@@ -308,6 +312,30 @@ export const grafanaConfigApi = {
   get: () => adminFetch<GrafanaConfigResponse>('/admin/grafana/config'),
   update: (data: GrafanaConfigUpdate) =>
     adminFetch<void>('/admin/grafana/config', { method: 'PUT', body: JSON.stringify(data) }),
+};
+
+// ==================== Tunnel ====================
+export interface TunnelConfig {
+  provider: string;
+  api_token: string;
+  public_url: string;
+}
+
+export interface TunnelStatus {
+  running: boolean;
+  provider: string;
+  public_url: string;
+  pid: number | null;
+  error: string;
+}
+
+export const tunnelApi = {
+  getStatus: () => adminFetch<TunnelStatus>('/admin/tunnel/status'),
+  start: () => adminFetch<TunnelStatus>('/admin/tunnel/start', { method: 'POST' }),
+  stop: () => adminFetch<TunnelStatus>('/admin/tunnel/stop', { method: 'POST' }),
+  getConfig: () => adminFetch<TunnelConfig>('/admin/tunnel/config'),
+  updateConfig: (data: TunnelConfig) =>
+    adminFetch<TunnelConfig>('/admin/tunnel/config', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
 // ==================== Nodes (Load Balancing) ====================

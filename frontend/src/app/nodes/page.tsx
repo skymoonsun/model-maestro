@@ -203,54 +203,56 @@ function NodeCard({
             className={`overflow-hidden ${isInactive ? 'opacity-60 bg-muted/30' : ''} ${isDragging ? 'ring-2 ring-primary z-50' : ''}`}
         >
             <CardHeader className="pb-2">
-                <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-2">
+                <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
                         <button
-                            className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground"
+                            className="cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground shrink-0"
                             {...attributes}
                             {...listeners}
                         >
                             <GripVertical className="h-5 w-5" />
                         </button>
-                        <CardTitle className="text-base">{node.name}</CardTitle>
-                        <Badge
-                            variant="outline"
-                            className={`text-xs ${
-                                node.node_type === 'vllm'
-                                    ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
-                                    : node.node_type === 'ollama'
-                                    ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                                    : node.node_type === 'antigravity'
-                                    ? 'bg-green-500/10 text-green-400 border-green-500/30'
-                                    : node.node_type === 'bedrock'
-                                    ? 'bg-orange-500/10 text-orange-400 border-orange-500/30'
-                                    : ''
-                            }`}
-                        >
-                            {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type === 'antigravity' ? 'Antigravity' : node.node_type === 'bedrock' ? 'Bedrock' : node.node_type}
-                        </Badge>
-                        {node.code && (
-                            <Badge variant="outline" className="text-xs font-mono text-cyan-400 border-cyan-400/30 bg-cyan-400/10">
-                                {node.code}
+                        <CardTitle className="text-base shrink-0">{node.name}</CardTitle>
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                            <Badge
+                                variant="outline"
+                                className={`text-[10px] px-1.5 py-0 ${
+                                    node.node_type === 'vllm'
+                                        ? 'bg-purple-500/10 text-purple-400 border-purple-500/30'
+                                        : node.node_type === 'ollama'
+                                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                                        : node.node_type === 'antigravity'
+                                        ? 'bg-green-500/10 text-green-400 border-green-500/30'
+                                        : node.node_type === 'bedrock'
+                                        ? 'bg-orange-500/10 text-orange-400 border-orange-500/30'
+                                        : ''
+                                }`}
+                            >
+                                {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type === 'antigravity' ? 'Antigravity' : node.node_type === 'bedrock' ? 'Bedrock' : node.node_type}
                             </Badge>
-                        )}
-                        {!node.warmup_enabled && (
-                            <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10">
-                                Warmup Off
-                            </Badge>
-                        )}
-                        {node.scoped_models && (
-                            <Badge variant="outline" className="text-xs text-pink-400 border-pink-400/30 bg-pink-400/10">
-                                Scoped
-                            </Badge>
-                        )}
-                        {isInactive && (
-                            <Badge variant="outline" className="text-muted-foreground">
-                                Inactive
-                            </Badge>
-                        )}
+                            {node.code && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono text-cyan-400 border-cyan-400/30 bg-cyan-400/10">
+                                    {node.code}
+                                </Badge>
+                            )}
+                            {!node.warmup_enabled && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-400 border-amber-400/30 bg-amber-400/10">
+                                    Warmup Off
+                                </Badge>
+                            )}
+                            {node.scoped_models && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-pink-400 border-pink-400/30 bg-pink-400/10">
+                                    Scoped
+                                </Badge>
+                            )}
+                            {isInactive && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground">
+                                    Inactive
+                                </Badge>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                         <Switch
                             checked={node.is_active}
                             onCheckedChange={(v) => toggleMut.mutate(v)}
@@ -302,7 +304,7 @@ function NodeCard({
                                 <span className="ml-1">Edit</span>
                             </Button>
                         </DialogTrigger>
-                        <DialogContent>
+                        <DialogContent className="max-h-[90vh] overflow-y-auto">
                             <DialogHeader>
                                 <DialogTitle>Edit Node</DialogTitle>
                             </DialogHeader>
@@ -567,7 +569,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                     Add Node
                 </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle>Add Node</DialogTitle>
                 </DialogHeader>

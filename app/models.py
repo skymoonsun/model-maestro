@@ -267,6 +267,7 @@ class SystemConfigResponse(BaseModel):
     http_client: Dict[str, Any] = {}
     defaults: Dict[str, Any] = {}
     search: Dict[str, Any] = {}
+    tunnel: Dict[str, Any] = {}
     ollama_unsupported_params: List[str] = []
 
 class UpdateSystemConfigRequest(BaseModel):
@@ -274,6 +275,7 @@ class UpdateSystemConfigRequest(BaseModel):
     background_tasks: Optional[Dict[str, Any]] = None
     http_client: Optional[Dict[str, Any]] = None
     defaults: Optional[Dict[str, Any]] = None
+    tunnel: Optional[Dict[str, Any]] = None
     search: Optional[Dict[str, Any]] = None
     ollama_unsupported_params: Optional[List[str]] = None
 

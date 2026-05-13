@@ -37,6 +37,7 @@ from app.admin_nodes import router as admin_nodes_router
 from app.admin_groups import router as admin_groups_router
 from app.openclaw import router as openclaw_router
 from app.claude import router as claude_router
+from app.admin_tunnel import router as admin_tunnel_router
 from app.user_manager import user_manager
 
 # Setup logging
@@ -87,6 +88,7 @@ app.include_router(admin_nodes_router)
 app.include_router(admin_groups_router)
 app.include_router(openclaw_router)
 app.include_router(claude_router)
+app.include_router(admin_tunnel_router)
 
 # Basic Auth for documentation
 def verify_docs_credentials(credentials: HTTPBasicCredentials = Depends(security)):
