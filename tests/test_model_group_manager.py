@@ -68,6 +68,7 @@ class TestModelGroupManager:
         # Second call should cycle to next member
         result2 = await manager.resolve_model("test-group")
         assert result2 in ["model-a", "model-b"]
+        assert result1 != result2
 
     @pytest.mark.asyncio
     async def test_resolve_model_group_weighted(self, manager):
@@ -180,7 +181,7 @@ class TestModelGroupManager:
         assert result == vision_member
 
     def test_select_by_capability_text(self, manager):
-        """Test selecting member for text-only request"""
+        """Text-only requests defer to strategy selection (capability helper stays idle)."""
         member1 = MagicMock()
         member1.model_display_name = "model-a"
         member1.capability_tags = ["vision"]
@@ -193,9 +194,8 @@ class TestModelGroupManager:
 
         members = [member1, member2]
 
-        # For text requests, should return highest priority (lowest number)
         result = manager._select_by_capability(members, needs_vision=False)
-        assert result == member2
+        assert result is None
 
     def test_select_by_capability_no_vision_members(self, manager):
         """Test fallback when no vision-capable members exist"""
@@ -211,10 +211,8 @@ class TestModelGroupManager:
 
         members = [member1, member2]
 
-        # When no vision members available, _select_by_capability falls back to
-        # returning the highest priority member (lowest priority number)
         result = manager._select_by_capability(members, needs_vision=True)
-        assert result == member1  # Falls back to highest priority member
+        assert result is None
 
     def test_select_by_capability_empty_members(self, manager):
         """Test selection with empty members list"""

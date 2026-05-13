@@ -888,32 +888,27 @@ class ModelGroupManager:
         self, members: List[Any], needs_vision: bool
     ) -> Optional[Any]:
         """
-        Select a member based on capability requirements.
+        Select a member only when vision is required.
 
-        Args:
-            members: List of ModelGroupMember objects
-            needs_vision: Whether vision capability is needed
-
-        Returns:
-            Selected ModelGroupMember or None if no match
+        Non-vision requests use ``_select_by_strategy`` so priority / round_robin /
+        weighted behave as configured.
         """
-        if not members:
+        if not members or not needs_vision:
             return None
 
-        if needs_vision:
-            # Find members with vision capability
-            vision_members = [
-                m
-                for m in members
-                if m.capability_tags and "vision" in m.capability_tags
-            ]
-            if vision_members:
-                # Return highest priority vision-capable member
-                return min(vision_members, key=lambda m: m.priority)
+        vision_members = [
+            m
+            for m in members
+            if m.capability_tags and "vision" in m.capability_tags
+        ]
+        if vision_members:
+            return min(vision_members, key=lambda m: m.priority)
 
-        # No special capability needed or no capable members found
-        # Return highest priority member
-        return min(members, key=lambda m: m.priority) if members else None
+        logger.warning(
+            "[ModelGroupManager] Vision-capable content detected but no active member "
+            "has capability_tags including 'vision'; falling back to group strategy selection."
+        )
+        return None
 
     def _select_by_strategy(
         self, members: List[Any], strategy: str, group_name: str
@@ -969,10 +964,21 @@ class ModelGroupManager:
         self, model_name: str, request_data: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, Optional[List[int]]]:
         """
-        Resolve a model name to an actual model name, returning the selected member's
-        preferred_node_ids as well.
+        Resolve a group slug to a member ``model_display_name`` and that member's preferred nodes.
 
-        If model_name is not a group, returns it unchanged with no preferred nodes.
+        **Member selection** follows ``group.strategy``:
+
+        - ``priority``: always the active member with the lowest ``priority`` number.
+        - ``round_robin``: cycles through members ordered by ``priority``.
+        - ``weighted``: weighted random choice among active members.
+
+        If the request needs vision (images), a vision-tagged member is chosen first
+        (among those, lowest ``priority``); if none qualify, falls back to strategy as above.
+
+        **Load balancing**: regardless of strategy, ``preferred_node_ids`` are only those
+        nodes linked to the **selected** member—not a union across all group members.
+
+        Non-group ``model_name`` is returned unchanged with no preferred nodes.
 
         Returns:
             Tuple of (actual_model_name, preferred_node_ids)
@@ -997,20 +1003,19 @@ class ModelGroupManager:
             messages = request_data.get("messages", [])
             needs_vision = self._detect_vision_request(messages)
 
-        # First, try capability-based selection
+        # Vision: narrow to vision-capable members (then lowest priority among them).
+        # Otherwise member choice is entirely driven by group.strategy (priority / round_robin / weighted).
         selected = self._select_by_capability(members, needs_vision)
 
-        # If no capable member found, fall back to strategy selection
         if not selected:
             selected = self._select_by_strategy(members, group.strategy, model_name)
 
         if selected:
-            pref_ids = [n.id for n in selected.preferred_nodes] if selected.preferred_nodes else []
-            pids = pref_ids if pref_ids else None
+            pids = self.preferred_node_ids_for_member(selected)
             logger.info(
                 f"[ModelGroupManager] Group '{model_name}' -> '{selected.model_display_name}' "
                 f"(strategy={group.strategy}, vision={needs_vision}, "
-                f"preferred_nodes={pids})"
+                f"preferred_node_ids={pids})"
             )
             return selected.model_display_name, pids
 
@@ -1071,6 +1076,29 @@ class ModelGroupManager:
                 return member.model_display_name
 
         return None
+
+    @staticmethod
+    def preferred_node_ids_for_member(member: Any) -> Optional[List[int]]:
+        """Preferred node ids for one group member (LB runs only within this pool)."""
+        pref = getattr(member, "preferred_nodes", None) or []
+        ids: List[int] = []
+        for node in pref:
+            nid = getattr(node, "id", None)
+            if nid is not None:
+                ids.append(int(nid))
+        return sorted(set(ids)) if ids else None
+
+    def get_member_catalog_names(self, group_name: str) -> List[str]:
+        """Member ``model_display_name`` values used to match node catalogs during LB."""
+        info = self._groups.get(group_name)
+        if not info:
+            return []
+        out: List[str] = []
+        for m in info["members"]:
+            name = getattr(m, "model_display_name", None)
+            if name and name not in out:
+                out.append(str(name))
+        return out
 
     def get_group_info(self, group_name: str) -> Optional[Dict[str, Any]]:
         """Get cached group info (group + members)"""
