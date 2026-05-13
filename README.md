@@ -43,6 +43,9 @@
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Configuration](#configuration)
+- [Antigravity (Google v1internal)](#antigravity-google-v1internal)
+- [AWS Bedrock](#aws-bedrock)
+- [Public Tunnel](#public-tunnel)
 - [Admin Panel](#admin-panel)
 - [API Reference](#api-reference)
   - [Authentication](#authentication)
@@ -98,12 +101,14 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **Node-Scoped Routing via Model Prefix** — Force a request to a specific node by prefixing the model name: `node:trmix:kimi-k2.6:latest` routes directly to the node with code `trmix`.
 - **Multi-Node Load Balancing** — Round-robin, weighted and priority-based strategies across Ollama and vLLM nodes.
 - **Antigravity Support** — Google v1internal API proxy via OAuth 2.0. Access Gemini and Claude models through Google's infrastructure as a first-class provider alongside Ollama and vLLM.
+- **AWS Bedrock Support** — Native AWS Bedrock Converse API node type with automatic credential forwarding, image input and streaming support.
 - **vLLM Support** — Native vLLM (OpenAI-compatible) node type with automatic health checks, model discovery and `Authorization: Bearer` header forwarding.
+- **Public Tunnel** — One-click Cloudflare (quick or named tunnel) and ngrok integration to expose your local API publicly without manual setup.
 - **Model Groups** — Group models into logical units with fallback chains. Requests dynamically resolve to the best member based on capability tags (vision, tools) and strategy.
-- **Node Health Management** — Automatic health checks, model discovery and availability tracking for both Ollama and vLLM nodes.
+- **Node Health Management** — Automatic health checks, model discovery and availability tracking for Ollama, vLLM, Antigravity and Bedrock nodes.
 - **Per-Node Warmup Toggle** — Enable or disable model warmup per node via admin UI.
 - **Drag-and-Drop Node Priority** — Reorder node cards in the admin panel to update fallback priority visually.
-- **User-Level Access Control** — Per-user model allowlists and rate limits (requests / tokens per day).
+- **User-Level Access Control** — Per-user model/node/node-model allowlists and rate limits (requests / tokens per day). Restrict a user to specific nodes or even specific models on specific nodes.
 - **Token Usage Tracking** — Background-batched activity logs with prompt / completion / total token breakdowns, plus request source identification (Cursor, Claude, OpenClaw, Grafana, etc.).
 - **Tool Set Filtering** — Restrict which tools a model is allowed to invoke via configurable tool sets.
 - **Unified Models Page** — Single tabbed view for both Ollama and vLLM models with live metadata (context length, capabilities, max model len) and one-click sync.
@@ -272,6 +277,79 @@ Or use model mappings to route transparently.
 
 ---
 
+## AWS Bedrock
+
+Model Maestro supports **AWS Bedrock** as a first-class node type. Bedrock nodes use the AWS Converse API behind an OpenAI-compatible facade, so existing clients work without changes.
+
+### Setup
+
+1. Create a node with **Node Type** = `bedrock`
+2. Set **Base URL** to your AWS region endpoint, e.g. `https://bedrock-runtime.us-east-1.amazonaws.com`
+3. Add AWS credentials in the node detail page:
+   - `AWS_ACCESS_KEY_ID`
+   - `AWS_SECRET_ACCESS_KEY`
+4. Click **Sync Models** to fetch available foundation models
+
+### Usage
+
+Force routing to Bedrock via node prefix:
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"model": "node:bedrock:us.anthropic.claude-3-5-sonnet-20241022-v2:0", "messages": [{"role":"user","content":"Hello"}]}'
+```
+
+Or use model mappings to route transparently.
+
+### Supported Features
+
+- Chat completions and streaming via Bedrock Converse API
+- Image input (base64)
+- Tool calls (via Converse API toolConfig)
+- Automatic AWS SigV4 signing
+
+---
+
+## Public Tunnel
+
+Expose your local Model Maestro instance to the internet with one click — useful for testing IDE integrations or sharing temporary access.
+
+### Supported Providers
+
+| Provider | Mode | Requires Account | Notes |
+|---|---|---|---|
+| **Cloudflare** | Quick Tunnel | No | Random `*.trycloudflare.com` URL, auto-generated |
+| **Cloudflare** | Named Tunnel | Yes | Custom domain via Cloudflare API + DNS |
+| **ngrok** | — | Yes (recommended) | `pyngrok` Python package required |
+
+### Setup
+
+1. Go to **Settings** in the admin panel
+2. Under **Tunnel**, select your provider:
+   - **Cloudflare (Quick)**: leave `hostname` empty — a random URL is generated automatically
+   - **Cloudflare (Named)**: fill `hostname` (e.g. `api.example.com`), `api_token`, `account_id` and optionally `zone_id`
+   - **ngrok**: fill `api_token` with your ngrok auth token
+3. Click **Start**
+4. The public URL will appear in the **public_url** field once the tunnel is active
+
+### API Endpoints
+
+```bash
+# Get tunnel status
+curl http://localhost:8000/admin/tunnel/status \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Start tunnel (uses saved config)
+curl -X POST http://localhost:8000/admin/tunnel/start \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Stop tunnel
+curl -X POST http://localhost:8000/admin/tunnel/stop \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+---
+
 ## Admin Panel
 
 The Next.js dashboard (`http://localhost:3000`) provides a visual interface for everything.
@@ -279,15 +357,15 @@ The Next.js dashboard (`http://localhost:3000`) provides a visual interface for 
 | Page | What you can do |
 |---|---|
 | **Dashboard** | Node health, model counts, user statistics |
-| **Users** | Create users, manage tokens, assign models, set limits |
-| **Nodes** | Add/edit Ollama, vLLM and Antigravity nodes, set codes, view health, trigger discovery, drag-and-drop priority |
+| **Users** | Create users, manage tokens, assign models/nodes/node-models, set limits, activate/deactivate |
+| **Nodes** | Add/edit Ollama, vLLM, Antigravity and Bedrock nodes, set codes, view health, trigger discovery, drag-and-drop priority |
 | **AI Models > Models** | Tabbed view for Ollama, vLLM and Antigravity models with sync buttons, capabilities and context length |
 | **AI Models > Mappings** | Display↔Real name mappings with provider badge (Ollama/vLLM/Antigravity), node-scoped overrides, context length, capabilities, sync caps |
 | **AI Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
 | **AI Models > Config** | Per-model tool restrictions and settings |
 | **Tool Sets** | Create tool groups and assign to models |
 | **Request Logs** | Filterable request history with source identification (Cursor, Claude, OpenClaw, Grafana, etc.) |
-| **Settings** | System-wide configuration |
+| **Settings** | System-wide configuration, tunnel setup |
 | **Audit Logs** | Filterable history of all admin actions |
 
 **Default login:** username `admin`, password from `ADMIN_PASSWORD` in `.env`.
@@ -400,6 +478,36 @@ curl -X POST http://localhost:8000/admin/users/john/limits \
   -d '{"request_limit": 1000, "token_limit": 1000000}'
 ```
 
+**User Node & Node-Model Access**
+
+Restrict which nodes and node-model combinations a user can access. If no restrictions are set, the user has access to everything.
+
+```bash
+# Grant access to specific nodes
+curl -X POST http://localhost:8000/admin/users/john/nodes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"node_ids": [1, 2]}'
+
+# Grant access to specific models on a specific node
+curl -X POST http://localhost:8000/admin/users/john/nodes/1/models \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"models": ["kimi-k2.6:latest"]}'
+
+# Grant access to ALL nodes
+curl -X POST http://localhost:8000/admin/users/john/nodes/all \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Grant access to ALL models on a node
+curl -X POST http://localhost:8000/admin/users/john/nodes/1/models/all \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Revoke all node access (reset to unrestricted)
+curl -X DELETE http://localhost:8000/admin/users/john/nodes \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
 **Model Mappings**
 
 ```bash
@@ -438,6 +546,18 @@ curl -X POST http://localhost:8000/admin/nodes \
     "node_type": "ollama"
   }'
 
+# Add Bedrock node (base_url auto-generated from region if omitted)
+curl -X POST http://localhost:8000/admin/nodes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "bedrock-us-east-1",
+    "region": "us-east-1",
+    "priority": 50,
+    "code": "br",
+    "node_type": "bedrock"
+  }'
+
 # Toggle activation
 curl -X PATCH http://localhost:8000/admin/nodes/1/toggle \
   -H "Authorization: Bearer $ADMIN_TOKEN"
@@ -447,6 +567,37 @@ curl -X PATCH http://localhost:8000/admin/nodes/batch/priority \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"priorities": [{"id": 1, "priority": 200}, {"id": 2, "priority": 100}]}'
+```
+
+**Tunnel**
+
+```bash
+# Get tunnel status
+curl http://localhost:8000/admin/tunnel/status \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Start tunnel with saved config
+curl -X POST http://localhost:8000/admin/tunnel/start \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Stop tunnel
+curl -X POST http://localhost:8000/admin/tunnel/stop \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Get tunnel config
+curl http://localhost:8000/admin/tunnel/config \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Update tunnel config
+curl -X PUT http://localhost:8000/admin/tunnel/config \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "cloudflare",
+    "api_token": "your-cloudflare-api-token",
+    "account_id": "your-account-id",
+    "hostname": "api.example.com"
+  }'
 ```
 
 **Model Groups**
