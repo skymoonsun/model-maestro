@@ -1046,7 +1046,6 @@ class OllamaProxy:
                 mapping_restrict,
             )
             return None
-            return inter
 
     def _prepare_routing_allowed(
         self,

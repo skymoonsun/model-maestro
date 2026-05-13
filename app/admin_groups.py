@@ -21,6 +21,7 @@ from app.models import (
     MemberReorderRequest,
 )
 from app.auth import verify_admin
+from app.config import model_group_manager
 from app.repositories.model_group_repository import ModelGroupRepository
 from app.database import async_session_maker
 from app.models_db import ModelGroupMember, model_group_member_nodes
@@ -94,6 +95,8 @@ async def create_model_group(
                     members.append(member)
 
         await session.commit()
+
+        await model_group_manager.reload()
 
         member_responses = await _members_to_response(session, members)
 
@@ -233,6 +236,8 @@ async def update_model_group(
 
         await session.commit()
 
+        await model_group_manager.reload()
+
         return ModelGroupDetailResponse(
             id=group.id,
             name=group.name,
@@ -253,8 +258,6 @@ async def delete_model_group(
     """
     Delete a model group permanently (DB row and members removed).
     """
-    from app.config import model_group_manager
-
     async with async_session_maker() as session:
         repo = ModelGroupRepository(session)
 
@@ -295,8 +298,6 @@ async def reorder_group_members(
         ]
     }
     """
-    from app.config import model_group_manager
-
     async with async_session_maker() as session:
         repo = ModelGroupRepository(session)
 
@@ -314,10 +315,9 @@ async def reorder_group_members(
 
         members = await repo.reorder_members(name, member_priorities)
 
-        # Invalidate cache so resolve_model picks up new order
-        model_group_manager.invalidate_cache(name)
-
         await session.commit()
+
+        await model_group_manager.reload()
 
         return ModelGroupDetailResponse(
             id=group.id,
@@ -393,6 +393,8 @@ async def add_group_member(
 
         await session.commit()
 
+        await model_group_manager.reload()
+
         return await _member_to_response(session, member)
 
 
@@ -431,6 +433,8 @@ async def remove_group_member(
         # Remove member
         await repo.remove_member(name, member.model_display_name)
         await session.commit()
+
+        await model_group_manager.reload()
 
         return None
 

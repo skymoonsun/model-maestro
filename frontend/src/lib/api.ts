@@ -633,7 +633,7 @@ export interface ModelMapping {
   real_name: string;
   node_ids: number[];
   node_names?: string[] | null;
-  /** @deprecated ilk node; çoklu için node_ids kullanın */
+  /** @deprecated first node only; use node_ids for multiple */
   node_id: number | null;
   node_name: string | null;
   node_type: string | null;
@@ -646,9 +646,9 @@ export interface ModelMapping {
 export interface CreateModelMapping {
   display_name: string;
   real_name: string;
-  /** Boş veya yok = tüm node’larda geçerli */
+  /** Empty or omitted = applies on all nodes */
   node_ids?: number[] | null;
-  /** @deprecated node_ids kullanın */
+  /** @deprecated use node_ids */
   node_id?: number | null;
   context_length: string;
   capabilities?: string[];
@@ -927,6 +927,6 @@ export type ModelGroupMemberCreate = {
   priority?: number;
   is_active?: boolean;
   preferred_node_ids?: number[] | null;
-  /** @deprecated preferred_node_ids kullanın */
+  /** @deprecated use preferred_node_ids */
   preferred_node_id?: number | null;
 };
