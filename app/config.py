@@ -372,6 +372,40 @@ class ModelMappingManager:
             return None
         return list(ids)
 
+    def _mapping_lookup_key(self, display_name: str) -> Optional[str]:
+        """Internal key used in `_mappings` / `_mapping_node_ids` for this client-visible name."""
+        if display_name in self._mappings:
+            return display_name
+        if ':' not in display_name:
+            latest_name = f"{display_name}:latest"
+            if latest_name in self._mappings:
+                return latest_name
+        return None
+
+    def get_real_model_name_for_node(
+        self, display_name: str, selected_node_id: Optional[int]
+    ) -> str:
+        """
+        Map display -> real only when appropriate for the outbound node.
+
+        If the mapping row limits nodes (junction non-empty), apply ``real_name`` only when
+        ``selected_node_id`` is in that set. Otherwise forward ``display_name`` so catalogs
+        that use the client-visible tag stay aligned.
+
+        Missing junction entry or empty junction list means global mapping (same as
+        ``get_real_model_name``).
+        """
+        key = self._mapping_lookup_key(display_name)
+        if key is None:
+            return display_name
+        real = self._mappings[key]
+        restricted = self._mapping_node_ids.get(key)
+        if restricted is None or not restricted:
+            return real
+        if selected_node_id is not None and selected_node_id in restricted:
+            return real
+        return display_name
+
     def get_real_model_name(self, display_name: str) -> str:
         """
         Convert display name to real Ollama model name
@@ -387,19 +421,10 @@ class ModelMappingManager:
             If display_name has no tag (no ':'), try with ':latest' suffix as well.
             Ollama automatically appends ':latest' to tagless model names.
         """
-        # Try exact match first
-        if display_name in self._mappings:
-            return self._mappings[display_name]
-        
-        # If no ':' in name, try with ':latest' suffix
-        # (Ollama treats "glm-4.6" as "glm-4.6:latest")
-        if ':' not in display_name:
-            latest_name = f"{display_name}:latest"
-            if latest_name in self._mappings:
-                return self._mappings[latest_name]
-        
-        # No mapping found, return as-is
-        return display_name
+        key = self._mapping_lookup_key(display_name)
+        if key is None:
+            return display_name
+        return self._mappings[key]
     
     def get_display_model_name(self, real_name: str) -> str:
         """

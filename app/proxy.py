@@ -1445,7 +1445,11 @@ class OllamaProxy:
 
         return data
 
-    def _map_model_to_ollama(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _map_model_to_ollama(
+        self,
+        data: Dict[str, Any],
+        selected_node_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         Map model names in request data from client format to Ollama format
 
@@ -1455,6 +1459,7 @@ class OllamaProxy:
 
         Args:
             data: Request data with potential model field
+            selected_node_id: Outbound node id when applying node-scoped mappings
 
         Returns:
             Modified data with real model names
@@ -1466,17 +1471,25 @@ class OllamaProxy:
 
         # Handle 'model' field
         if 'model' in data_copy:
-            data_copy['model'] = model_mapper.get_real_model_name(data_copy['model'])
+            data_copy['model'] = model_mapper.get_real_model_name_for_node(
+                data_copy['model'], selected_node_id
+            )
 
         # Handle 'name' field (used in show, delete, pull, push)
         if 'name' in data_copy:
-            data_copy['name'] = model_mapper.get_real_model_name(data_copy['name'])
+            data_copy['name'] = model_mapper.get_real_model_name_for_node(
+                data_copy['name'], selected_node_id
+            )
 
         # Handle 'source' and 'destination' fields (used in copy)
         if 'source' in data_copy:
-            data_copy['source'] = model_mapper.get_real_model_name(data_copy['source'])
+            data_copy['source'] = model_mapper.get_real_model_name_for_node(
+                data_copy['source'], selected_node_id
+            )
         if 'destination' in data_copy:
-            data_copy['destination'] = model_mapper.get_real_model_name(data_copy['destination'])
+            data_copy['destination'] = model_mapper.get_real_model_name_for_node(
+                data_copy['destination'], selected_node_id
+            )
 
         return data_copy
     
@@ -1898,6 +1911,47 @@ class OllamaProxy:
                 return parts[1], parts[2]
         return None, model_name
 
+    async def _resolve_selected_node_id(self, base_url: Optional[str]) -> Optional[int]:
+        """Resolve DB node id from active node's ``base_url`` (LB-selected URL)."""
+        if not base_url:
+            return None
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository
+
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                for n in nodes:
+                    if n.base_url == base_url:
+                        return n.id
+        except Exception as e:
+            logger.warning(f"[LB] Error resolving node id for base_url: {e}")
+        return None
+
+    async def _rebind_body_to_node(
+        self,
+        body: Dict[str, Any],
+        routing_snapshot: Dict[str, str],
+        base_url: Optional[str],
+    ) -> Dict[str, Any]:
+        """
+        After LB switches nodes, remap ``model`` / ``name`` / ``source`` / ``destination``
+        from pre-mapping snapshot names using node-aware model mappings.
+        """
+        if not routing_snapshot:
+            return body
+        nid = await self._resolve_selected_node_id(base_url)
+        remap_src = body.copy()
+        for field in ('model', 'name', 'source', 'destination'):
+            if field in routing_snapshot:
+                remap_src[field] = routing_snapshot[field]
+        out = self._map_model_to_ollama(remap_src, nid)
+        mapped_for_strip = out.get('model') or out.get('name')
+        if mapped_for_strip:
+            out = self._strip_images_from_messages(out, mapped_for_strip)
+        return out
+
     async def _log_user_activity(
         self,
         username: str,
@@ -2074,21 +2128,8 @@ class OllamaProxy:
         if base_url:
             tried_nodes.add(base_url)
 
-        # Resolve node_id for access control
-        selected_node_id = None
-        if base_url:
-            try:
-                from app.database import async_session_maker
-                from app.repositories.node_repository import NodeRepository
-                async with async_session_maker() as session:
-                    node_repo = NodeRepository(session)
-                    nodes = await node_repo.list_active()
-                    for n in nodes:
-                        if n.base_url == base_url:
-                            selected_node_id = n.id
-                            break
-            except Exception as e:
-                logger.warning(f"[Access] Error looking up node by base_url for access control: {e}")
+        # Resolve node_id for access control and node-scoped model mappings
+        selected_node_id = await self._resolve_selected_node_id(base_url)
 
         # ============================================================
         # NODE ACCESS CONTROL
@@ -2101,10 +2142,18 @@ class OllamaProxy:
                 logger.warning(f"[Access] User '{username}' denied access to node {selected_node_id}")
                 raise HTTPException(status_code=403, detail="Access denied to this node")
 
+        # Pre-mapping snapshot (group-resolved client-visible names) for LB failover remaps
+        routing_snapshot: Dict[str, str] = {}
+        if data and isinstance(data, dict):
+            for snap_key in ('model', 'name', 'source', 'destination'):
+                v = data.get(snap_key)
+                if isinstance(v, str):
+                    routing_snapshot[snap_key] = v
+
         # Step 2: Map model names (display_name -> real_name)
         mapped_model_name = None
         if data:
-            data = self._map_model_to_ollama(data)
+            data = self._map_model_to_ollama(data, selected_node_id)
             # Restore node-scoped model name to avoid mapping it to a different real name
             if node_scoped_model and isinstance(data, dict):
                 if 'model' in data:
@@ -2294,6 +2343,7 @@ class OllamaProxy:
                     bypass_node_access=is_group_request,
                     client_headers=client_headers,
                     allowed_node_ids=routing_allowed_node_ids,
+                    routing_snapshot=routing_snapshot,
                 )
 
             # Non-streaming requests with failover support
@@ -2316,6 +2366,7 @@ class OllamaProxy:
                 bypass_node_access=is_group_request,
                 client_headers=client_headers,
                 allowed_node_ids=routing_allowed_node_ids,
+                routing_snapshot=routing_snapshot,
             )
 
         except HTTPException:
@@ -2351,6 +2402,7 @@ class OllamaProxy:
         bypass_node_access: bool = False,
         client_headers: Optional[Dict[str, str]] = None,
         allowed_node_ids: Optional[List[int]] = None,
+        routing_snapshot: Optional[Dict[str, str]] = None,
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2374,6 +2426,8 @@ class OllamaProxy:
         Returns:
             StreamingResponse with failover support
         """
+        rsnap = routing_snapshot if routing_snapshot is not None else {}
+
         # Determine media type
         if is_openai_endpoint:
             media_type = "text/event-stream"
@@ -2473,6 +2527,9 @@ class OllamaProxy:
                                     current_url = f"{new_base_url}{endpoint}"
                                     current_api_key = new_api_key
                                     current_headers = new_headers
+                                    current_data = await self._rebind_body_to_node(
+                                        current_data, rsnap, new_base_url
+                                    )
                                     continue
                                 logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
 
@@ -2486,7 +2543,8 @@ class OllamaProxy:
 
                             if should_model_failover:
                                 # Try to get fallback model
-                                fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
+                                failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
+                                fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
 
                                 if fallback_model and fallback_model not in tried_models:
                                     logger.warning(f"[FAILOVER] Stream error {resp.status_code}, trying fallback model: {fallback_model}")
@@ -2496,16 +2554,17 @@ class OllamaProxy:
                                     current_data = original_data.copy() if original_data else {}
                                     current_data['model'] = fallback_model
                                     current_data = await self._resolve_model_groups(current_data)
-                                    current_data = self._map_model_to_ollama(current_data)
-                                    # Strip images if fallback model doesn't support vision
-                                    fallback_mapped = current_data.get('model') or current_data.get('name')
-                                    if fallback_mapped:
-                                        current_data = self._strip_images_from_messages(current_data, fallback_mapped)
+                                    rsnap.clear()
+                                    for snap_key in ('model', 'name', 'source', 'destination'):
+                                        v = current_data.get(snap_key)
+                                        if isinstance(v, str):
+                                            rsnap[snap_key] = v
 
-                                    fb_allowed = self._prepare_routing_allowed(current_data, fallback_mapped)
+                                    fb_display = current_data.get('model') or current_data.get('name')
+                                    fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
                                     # Select new node URL for fallback (reset tried_nodes for new model)
                                     new_base_url, new_api_key, _, new_headers = await self._select_node_url(
-                                        fallback_model,
+                                        fb_display or fallback_model,
                                         exclude_scoped=exclude_scoped,
                                         allowed_node_ids=fb_allowed,
                                     )
@@ -2518,6 +2577,9 @@ class OllamaProxy:
                                         tried_nodes.add(new_base_url)
                                         current_api_key = new_api_key
                                         current_headers = new_headers
+                                        current_data = await self._rebind_body_to_node(
+                                            current_data, rsnap, new_base_url
+                                        )
 
                                     # Log failover attempt
                                     logger.info(f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})")
@@ -3124,13 +3186,17 @@ class OllamaProxy:
                             )
                             current_url = f"{new_base_url}{endpoint}"
                             current_api_key = new_api_key
+                            current_data = await self._rebind_body_to_node(
+                                current_data, rsnap, new_base_url
+                            )
                             last_error = e
                             continue
                         logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
 
                     # === MODEL-LEVEL FALLBACK ===
                     if original_group and attempt < MAX_FAILOVER_RETRIES:
-                        fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
+                        failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
+                        fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
 
                         if fallback_model and fallback_model not in tried_models:
                             logger.warning(f"[FAILOVER] Connection error, trying fallback model: {fallback_model}")
@@ -3139,15 +3205,16 @@ class OllamaProxy:
                             current_data = original_data.copy() if original_data else {}
                             current_data['model'] = fallback_model
                             current_data = await self._resolve_model_groups(current_data)
-                            current_data = self._map_model_to_ollama(current_data)
-                            # Strip images if fallback model doesn't support vision
-                            fb_mapped = current_data.get('model') or current_data.get('name')
-                            if fb_mapped:
-                                current_data = self._strip_images_from_messages(current_data, fb_mapped)
+                            rsnap.clear()
+                            for snap_key in ('model', 'name', 'source', 'destination'):
+                                v = current_data.get(snap_key)
+                                if isinstance(v, str):
+                                    rsnap[snap_key] = v
 
-                            fb_allowed = self._prepare_routing_allowed(current_data, fb_mapped)
+                            fb_display = current_data.get('model') or current_data.get('name')
+                            fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
                             new_base_url, new_api_key, _, _ = await self._select_node_url(
-                                fallback_model,
+                                fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
                             )
@@ -3159,6 +3226,9 @@ class OllamaProxy:
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
+                                current_data = await self._rebind_body_to_node(
+                                    current_data, rsnap, new_base_url
+                                )
 
                             last_error = e
                             continue
@@ -3227,6 +3297,7 @@ class OllamaProxy:
         bypass_node_access: bool = False,
         client_headers: Optional[Dict[str, str]] = None,
         allowed_node_ids: Optional[List[int]] = None,
+        routing_snapshot: Optional[Dict[str, str]] = None,
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -3250,6 +3321,7 @@ class OllamaProxy:
         Returns:
             Response from Ollama
         """
+        rsnap = routing_snapshot if routing_snapshot is not None else {}
         last_error = None
         current_url = url
         current_data = data.copy() if data else {}
@@ -3324,6 +3396,9 @@ class OllamaProxy:
                             current_url = f"{new_base_url}{endpoint}"
                             current_api_key = new_api_key
                             current_headers = new_headers
+                            current_data = await self._rebind_body_to_node(
+                                current_data, rsnap, new_base_url
+                            )
                             last_error = HTTPException(
                                 status_code=response.status_code,
                                 detail=f"Ollama error: {error_text}"
@@ -3340,7 +3415,8 @@ class OllamaProxy:
                     )
 
                     if should_model_failover:
-                        fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
+                        failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
+                        fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
 
                         if fallback_model and fallback_model not in tried_models:
                             logger.warning(f"[FAILOVER] Error {response.status_code}, trying fallback model: {fallback_model}")
@@ -3350,16 +3426,17 @@ class OllamaProxy:
                             current_data = data.copy() if data else {}
                             current_data['model'] = fallback_model
                             current_data = await self._resolve_model_groups(current_data)
-                            current_data = self._map_model_to_ollama(current_data)
-                            # Strip images if fallback model doesn't support vision
-                            fb_mapped = current_data.get('model') or current_data.get('name')
-                            if fb_mapped:
-                                current_data = self._strip_images_from_messages(current_data, fb_mapped)
+                            rsnap.clear()
+                            for snap_key in ('model', 'name', 'source', 'destination'):
+                                v = current_data.get(snap_key)
+                                if isinstance(v, str):
+                                    rsnap[snap_key] = v
 
-                            fb_allowed = self._prepare_routing_allowed(current_data, fb_mapped)
+                            fb_display = current_data.get('model') or current_data.get('name')
+                            fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
                             # Select new node URL for fallback
                             new_base_url, new_api_key, _, new_headers = await self._select_node_url(
-                                fallback_model,
+                                fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
                             )
@@ -3372,6 +3449,9 @@ class OllamaProxy:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
                                 current_headers = new_headers
+                                current_data = await self._rebind_body_to_node(
+                                    current_data, rsnap, new_base_url
+                                )
 
                             last_error = HTTPException(
                                 status_code=response.status_code,
@@ -3474,6 +3554,9 @@ class OllamaProxy:
                         )
                         current_url = f"{new_base_url}{endpoint}"
                         current_api_key = new_api_key
+                        current_data = await self._rebind_body_to_node(
+                            current_data, rsnap, new_base_url
+                        )
                         last_error = HTTPException(
                             status_code=503,
                             detail=f"Failed to connect to Ollama: {str(e)}"
@@ -3483,7 +3566,8 @@ class OllamaProxy:
 
                 # === MODEL-LEVEL FALLBACK ===
                 if original_group and attempt < MAX_FAILOVER_RETRIES:
-                    fallback_model = self._get_fallback_model(original_group, current_model, tried_models)
+                    failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
+                    fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
 
                     if fallback_model and fallback_model not in tried_models:
                         logger.warning(f"[FAILOVER] Connection error, trying fallback model: {fallback_model}")
@@ -3492,15 +3576,16 @@ class OllamaProxy:
                         current_data = data.copy() if data else {}
                         current_data['model'] = fallback_model
                         current_data = await self._resolve_model_groups(current_data)
-                        current_data = self._map_model_to_ollama(current_data)
-                        # Strip images if fallback model doesn't support vision
-                        fb_mapped = current_data.get('model') or current_data.get('name')
-                        if fb_mapped:
-                            current_data = self._strip_images_from_messages(current_data, fb_mapped)
+                        rsnap.clear()
+                        for snap_key in ('model', 'name', 'source', 'destination'):
+                            v = current_data.get(snap_key)
+                            if isinstance(v, str):
+                                rsnap[snap_key] = v
 
-                        fb_allowed = self._prepare_routing_allowed(current_data, fb_mapped)
+                        fb_display = current_data.get('model') or current_data.get('name')
+                        fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
                         new_base_url, new_api_key, _, _ = await self._select_node_url(
-                            fallback_model,
+                            fb_display or fallback_model,
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=fb_allowed,
                         )
@@ -3512,6 +3597,9 @@ class OllamaProxy:
                         if new_base_url:
                             tried_nodes.add(new_base_url)
                             current_api_key = new_api_key
+                            current_data = await self._rebind_body_to_node(
+                                current_data, rsnap, new_base_url
+                            )
 
                         last_error = HTTPException(
                             status_code=503,
