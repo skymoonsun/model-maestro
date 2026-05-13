@@ -107,7 +107,7 @@ async def update_user_admin(
         result = await user_manager.set_user_active(username, is_active)
         if not result:
             raise HTTPException(status_code=404, detail=f"User not found: {username}")
-        user_data = await user_manager.get_user(username)
+        user_data = await user_manager.get_user_any(username)
         return UserResponse(
             username=user_data["username"],
             token=user_data["token"],
@@ -128,7 +128,7 @@ async def get_user_admin(
     Get user details including assigned models (Admin only).
     """
     try:
-        user_data = await user_manager.get_user(username)
+        user_data = await user_manager.get_user_any(username)
         user_models = await user_manager.get_user_models(username)
         
         return UserWithModelsResponse(
@@ -149,7 +149,7 @@ async def list_users_admin(admin: str = Depends(verify_admin)):
     """
     List all users with their assigned models (Admin only).
     """
-    users = await user_manager.list_users()
+    users = await user_manager.list_users(include_inactive=True)
     
     result = []
     for user in users:

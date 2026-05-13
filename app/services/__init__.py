@@ -199,6 +199,7 @@ class ConfigManager:
             "http_client": {},
             "defaults": {},
             "search": {},
+            "tunnel": {},
             "ollama_unsupported_params": self.get_ollama_unsupported_params(),
         }
 

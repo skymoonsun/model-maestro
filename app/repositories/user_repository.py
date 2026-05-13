@@ -75,7 +75,7 @@ class UserRepository:
 
     async def set_active(self, username: str, is_active: bool) -> bool:
         """Set user active status"""
-        user = await self.get_by_username(username)
+        user = await self.get_by_username_any(username)
         if not user:
             return False
 

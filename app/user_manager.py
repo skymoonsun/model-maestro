@@ -174,11 +174,28 @@ class UserManager:
                 "is_active": user.is_active
             }
     
-    async def list_users(self) -> List[dict]:
+    async def get_user_any(self, username: str) -> Optional[dict]:
+        """Get user by username (including inactive users)"""
+        async with async_session_maker() as session:
+            user_repo = UserRepository(session)
+            user = await user_repo.get_by_username_any(username)
+            
+            if not user:
+                return None
+            
+            return {
+                "username": user.username,
+                "token": user.token,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                "is_active": user.is_active
+            }
+    
+    async def list_users(self, include_inactive: bool = False) -> List[dict]:
         """List all users"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            users = await user_repo.list_all()
+            users = await user_repo.list_all(include_inactive=include_inactive)
 
             return [
                 {
@@ -277,7 +294,7 @@ class UserManager:
         """Get user's assigned models"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -376,7 +393,7 @@ class UserManager:
         """Get user activity logs"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -409,7 +426,7 @@ class UserManager:
         """Get user token usage statistics"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -426,7 +443,7 @@ class UserManager:
         """Get user model usage statistics"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -465,7 +482,7 @@ class UserManager:
         """Get user request and token limits"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
             
             if not user:
                 return None
@@ -651,7 +668,7 @@ class UserManager:
         """Get user's allowed nodes with details"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
 
             if not user:
                 return None
@@ -722,7 +739,7 @@ class UserManager:
         """Get user's allowed node-model combinations with details"""
         async with async_session_maker() as session:
             user_repo = UserRepository(session)
-            user = await user_repo.get_by_username(username)
+            user = await user_repo.get_by_username_any(username)
 
             if not user:
                 return None

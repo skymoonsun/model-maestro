@@ -34,6 +34,11 @@ SYSTEM_CONFIGS = {
         "Web search backend API key"
     ),
 
+    # Tunnel
+    "tunnel.provider": ("", "Tunnel provider: cloudflare, ngrok, or empty"),
+    "tunnel.api_token": ("", "Tunnel API token (ngrok auth token)"),
+    "tunnel.public_url": ("", "Tunnel public URL (auto-populated for cloudflared)"),
+
     # Ollama Unsupported Params
     "ollama_unsupported_params": (
         '["logit_bias","logprobs","top_logprobs","top_k","response_format","user","service_tier","parallel_tool_calls","store","metadata","prediction","modalities","audio"]',

@@ -314,6 +314,30 @@ export const grafanaConfigApi = {
     adminFetch<void>('/admin/grafana/config', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
+// ==================== Tunnel ====================
+export interface TunnelConfig {
+  provider: string;
+  api_token: string;
+  public_url: string;
+}
+
+export interface TunnelStatus {
+  running: boolean;
+  provider: string;
+  public_url: string;
+  pid: number | null;
+  error: string;
+}
+
+export const tunnelApi = {
+  getStatus: () => adminFetch<TunnelStatus>('/admin/tunnel/status'),
+  start: () => adminFetch<TunnelStatus>('/admin/tunnel/start', { method: 'POST' }),
+  stop: () => adminFetch<TunnelStatus>('/admin/tunnel/stop', { method: 'POST' }),
+  getConfig: () => adminFetch<TunnelConfig>('/admin/tunnel/config'),
+  updateConfig: (data: TunnelConfig) =>
+    adminFetch<TunnelConfig>('/admin/tunnel/config', { method: 'PUT', body: JSON.stringify(data) }),
+};
+
 // ==================== Nodes (Load Balancing) ====================
 export const nodesApi = {
   list: (activeOnly?: boolean) =>
