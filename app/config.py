@@ -367,7 +367,8 @@ class ModelMappingManager:
         If this display name has node restrictions in DB, return those node ids.
         Returns None when the mapping is global (any node).
         """
-        ids = self._mapping_node_ids.get(display_name)
+        key = self._mapping_lookup_key(display_name)
+        ids = self._mapping_node_restrictions(display_name, key)
         if not ids:
             return None
         return list(ids)
@@ -380,6 +381,46 @@ class ModelMappingManager:
             latest_name = f"{display_name}:latest"
             if latest_name in self._mappings:
                 return latest_name
+        return None
+
+    def _mapping_node_restrictions(
+        self, incoming_display_name: str, mapping_key: Optional[str]
+    ) -> Optional[List[int]]:
+        """
+        Junction table is keyed by ORM ``ModelMapping.display_name``. Client/group names may differ
+        only by ``:latest`` (e.g. row stored as ``foo:latest`` vs member ``foo``). Align keys so a
+        configured restriction is never mistaken as "missing" (which would apply mapping globally).
+
+        Returns:
+            None if no junction row matched any alias (mapping applies on every node).
+            Non-empty list: mapping applies only on these node ids.
+        """
+        candidates: List[str] = []
+        seen: set[str] = set()
+
+        def add(name: Optional[str]) -> None:
+            if not name or name in seen:
+                return
+            seen.add(name)
+            candidates.append(name)
+
+        add(mapping_key)
+        add(incoming_display_name)
+
+        def add_latest_variant(name: Optional[str]) -> None:
+            if not name:
+                return
+            if name.endswith(":latest"):
+                add(name[: -len(":latest")])
+            elif ":" not in name:
+                add(f"{name}:latest")
+
+        add_latest_variant(mapping_key)
+        add_latest_variant(incoming_display_name)
+
+        for c in candidates:
+            if c in self._mapping_node_ids:
+                return self._mapping_node_ids[c]
         return None
 
     def get_real_model_name_for_node(
@@ -399,7 +440,7 @@ class ModelMappingManager:
         if key is None:
             return display_name
         real = self._mappings[key]
-        restricted = self._mapping_node_ids.get(key)
+        restricted = self._mapping_node_restrictions(display_name, key)
         if restricted is None or not restricted:
             return real
         if selected_node_id is not None and selected_node_id in restricted:
