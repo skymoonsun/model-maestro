@@ -340,13 +340,27 @@ class ModelMappingManager:
             self._mapping_node_ids = {}
     
     async def ensure_loaded(self):
-        """Ensure mappings are loaded (from cache file or DB on first load)"""
-        # Only load once
+        """
+        Load model mappings once per process.
+
+        PostgreSQL is the source of truth. The JSON file under cache_dir is a
+        write-through snapshot (see _load_from_db / create_or_update_mapping);
+
+        loading from file first caused stale mappings when DB was updated but the
+        on-disk file still held an older snapshot (e.g. Docker volume).
+        """
+        if self._cache_loaded:
+            return
+        await self._load_from_db()
         if not self._cache_loaded:
-            # Try cache file first (fastest)
-            if not self._load_from_cache_file():
-                # Cache file empty/failed, load from DB and populate cache
-                await self._load_from_db()
+            # DB unreachable or failed — last resort: snapshot from previous successful sync
+            if self._load_from_cache_file():
+                print(
+                    "Model mappings: loaded from JSON cache file (database unavailable); "
+                    "mappings may be stale until DB is reachable."
+                )
+            else:
+                print("Model mappings: database load failed and no cache file; mappings empty")
 
     def get_restricted_node_ids(self, display_name: str) -> Optional[List[int]]:
         """

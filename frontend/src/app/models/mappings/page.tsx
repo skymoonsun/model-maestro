@@ -69,7 +69,7 @@ function MappingForm({
             </div>
             <div>
                 <label className="text-sm text-muted-foreground mb-2 block">Nodes (optional)</label>
-                <p className="text-xs text-muted-foreground mb-2">Seçilmezse mapping tüm node’larda geçerlidir. Birden fazla seçebilirsiniz.</p>
+                <p className="text-xs text-muted-foreground mb-2">If none are selected, the mapping applies to all nodes. You may select multiple nodes.</p>
                 <div className="max-h-40 overflow-y-auto rounded-md border p-2 space-y-2">
                     {nodes.length === 0 ? (
                         <span className="text-xs text-muted-foreground">No nodes</span>

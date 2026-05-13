@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger, DialogClose } from '@/components/ui/dialog';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { toast } from 'sonner';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
     DndContext,
     closestCenter,
@@ -157,6 +157,28 @@ function GroupDetail({
         .filter(([display_name]) => !existingNames.has(display_name))
         .map(([display_name, real_name]) => ({ display_name, real_name }))
         .sort((a, b) => a.display_name.localeCompare(b.display_name));
+
+    /** Model name as synced on nodes (Ollama); with a mapping, both real and display names are matched */
+    const filteredNodesForSelectedModel = useMemo(() => {
+        if (!nodesData?.length || !newMemberName) {
+            return [];
+        }
+        const mapping = mappingsData?.find((m) => m.display_name === newMemberName);
+        const realName = mapping?.real_name ?? newMemberName;
+        return nodesData.filter((node) =>
+            node.models?.some(
+                (m) =>
+                    m.is_available !== false &&
+                    (m.model_name === realName || m.model_name === newMemberName),
+            ),
+        );
+    }, [nodesData, newMemberName, mappingsData]);
+
+    useEffect(() => {
+        const allowed = new Set(filteredNodesForSelectedModel.map((n) => n.id));
+        setNewMemberNodeIds((prev) => prev.filter((id) => allowed.has(id)));
+    }, [filteredNodesForSelectedModel]);
+
     const [editing, setEditing] = useState(false);
     const [editForm, setEditForm] = useState({
         description: group.description || '',
@@ -330,7 +352,16 @@ function GroupDetail({
                                     Save Order
                                 </Button>
                             )}
-                            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+                            <Dialog
+                                open={addOpen}
+                                onOpenChange={(open) => {
+                                    setAddOpen(open);
+                                    if (!open) {
+                                        setNewMemberName('');
+                                        setNewMemberNodeIds([]);
+                                    }
+                                }}
+                            >
                                 <DialogTrigger asChild>
                                     <Button size="sm">
                                         <Plus className="h-3.5 w-3.5 mr-1" />
@@ -350,6 +381,7 @@ function GroupDetail({
                                                         value={m.display_name}
                                                         onSelect={() => {
                                                             setNewMemberName(m.display_name);
+                                                            setNewMemberNodeIds([]);
                                                         }}
                                                     >
                                                         <Check className={cn("mr-2 h-4 w-4", newMemberName === m.display_name ? "opacity-100" : "opacity-0")} />
@@ -360,35 +392,44 @@ function GroupDetail({
                                             </CommandGroup>
                                         </CommandList>
                                     </Command>
-                                    {nodesData && nodesData.length > 0 && (
+                                    {newMemberName && nodesData && nodesData.length > 0 && (
                                         <div className="mt-3">
                                             <Label className="text-sm mb-1.5 block">Preferred nodes (optional)</Label>
-                                            <p className="text-xs text-muted-foreground mb-2">İşaretlenirse trafik yalnızca bu node’lar arasında seçilir. Boş bırakırsanız load balancer tüm uygun node’ları kullanır.</p>
-                                            <div className="max-h-36 overflow-y-auto rounded-md border p-2 space-y-2">
-                                                {nodesData.map((n) => {
-                                                    const checked = newMemberNodeIds.includes(n.id);
-                                                    return (
-                                                        <label key={n.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                                                            <input
-                                                                type="checkbox"
-                                                                className="rounded border-input"
-                                                                checked={checked}
-                                                                onChange={() => {
-                                                                    setNewMemberNodeIds((prev) =>
-                                                                        checked ? prev.filter((id) => id !== n.id) : [...prev, n.id],
-                                                                    );
-                                                                }}
-                                                            />
-                                                            <span>{n.name}</span>
-                                                            <span className="text-xs text-muted-foreground truncate">{n.base_url}</span>
-                                                        </label>
-                                                    );
-                                                })}
-                                            </div>
+                                            <p className="text-xs text-muted-foreground mb-2">
+                                                Only nodes that currently host this model are listed (if a mapping exists, we match the real Ollama name too).
+                                                Checked nodes restrict traffic to that subset; leave all unchecked to let the load balancer use every eligible node.
+                                            </p>
+                                            {filteredNodesForSelectedModel.length === 0 ? (
+                                                <p className="text-xs text-amber-600 dark:text-amber-500 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-2">
+                                                    No node currently reports this model name. Run a node sync or verify the model name.
+                                                </p>
+                                            ) : (
+                                                <div className="max-h-36 overflow-y-auto rounded-md border p-2 space-y-2">
+                                                    {filteredNodesForSelectedModel.map((n) => {
+                                                        const checked = newMemberNodeIds.includes(n.id);
+                                                        return (
+                                                            <label key={n.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    className="rounded border-input"
+                                                                    checked={checked}
+                                                                    onChange={() => {
+                                                                        setNewMemberNodeIds((prev) =>
+                                                                            checked ? prev.filter((id) => id !== n.id) : [...prev, n.id],
+                                                                        );
+                                                                    }}
+                                                                />
+                                                                <span>{n.name}</span>
+                                                                <span className="text-xs text-muted-foreground truncate">{n.base_url}</span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                     <DialogFooter className="mt-4">
-                                        <Button variant="ghost" onClick={() => { setAddOpen(false); setNewMemberNodeIds([]); }}>Cancel</Button>
+                                        <Button variant="ghost" onClick={() => { setAddOpen(false); }}>Cancel</Button>
                                         <Button
                                             onClick={() => addMut.mutate({
                                                 model_display_name: newMemberName,
