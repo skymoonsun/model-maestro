@@ -202,6 +202,7 @@ class ModelMappingManager:
         self._reverse_mappings: Dict[str, List[str]] = {}  # One real_name can have multiple display_names
         self._context_lengths: Dict[str, int] = {}  # display_name -> context_length (token)
         self._capabilities: Dict[str, List[str]] = {}  # display_name -> capabilities
+        self._mapping_node_ids: Dict[str, List[int]] = {}  # display_name -> restricted node ids (empty entry = global)
         self._cache_loaded = False
         
         # Ensure cache directory exists
@@ -239,6 +240,7 @@ class ModelMappingManager:
                 # Load context lengths and capabilities
                 self._context_lengths = data.get("context_lengths", {})
                 self._capabilities = data.get("capabilities", {})
+                self._mapping_node_ids = data.get("mapping_node_ids", {})
                 if self._context_lengths:
                     print(f"Loaded {len(self._context_lengths)} context length configs from cache file")
                 if self._capabilities:
@@ -256,7 +258,8 @@ class ModelMappingManager:
                 "mappings": self._mappings,
                 "reverse_mappings": self._reverse_mappings,
                 "context_lengths": self._context_lengths,
-                "capabilities": self._capabilities
+                "capabilities": self._capabilities,
+                "mapping_node_ids": self._mapping_node_ids,
             }
             
             # Write to temporary file first, then rename (atomic operation)
@@ -312,9 +315,14 @@ class ModelMappingManager:
                     for m in mappings
                     if m.capabilities
                 }
-                
+
+                self._mapping_node_ids = {}
+                for m in mappings:
+                    if m.nodes:
+                        self._mapping_node_ids[m.display_name] = sorted({n.id for n in m.nodes})
+
                 self._cache_loaded = True
-                
+
                 # Save to cache file
                 self._save_to_cache_file()
                 
@@ -329,6 +337,7 @@ class ModelMappingManager:
             self._reverse_mappings = {}
             self._context_lengths = {}
             self._capabilities = {}
+            self._mapping_node_ids = {}
     
     async def ensure_loaded(self):
         """Ensure mappings are loaded (from cache file or DB on first load)"""
@@ -338,7 +347,17 @@ class ModelMappingManager:
             if not self._load_from_cache_file():
                 # Cache file empty/failed, load from DB and populate cache
                 await self._load_from_db()
-    
+
+    def get_restricted_node_ids(self, display_name: str) -> Optional[List[int]]:
+        """
+        If this display name has node restrictions in DB, return those node ids.
+        Returns None when the mapping is global (any node).
+        """
+        ids = self._mapping_node_ids.get(display_name)
+        if not ids:
+            return None
+        return list(ids)
+
     def get_real_model_name(self, display_name: str) -> str:
         """
         Convert display name to real Ollama model name
@@ -459,7 +478,14 @@ class ModelMappingManager:
         """Invalidate cache (force reload from DB)"""
         self._cache_loaded = False
     
-    async def create_or_update_mapping(self, display_name: str, real_name: str, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None, node_id: Optional[int] = None) -> Dict[str, any]:
+    async def create_or_update_mapping(
+        self,
+        display_name: str,
+        real_name: str,
+        context_length: Optional[int] = None,
+        capabilities: Optional[List[str]] = None,
+        node_ids: Optional[List[int]] = None,
+    ) -> Dict[str, any]:
         """
         Create or update a model mapping in database (upsert).
         Var olan mapping'i günceller, yoksa yeni oluşturur.
@@ -470,7 +496,7 @@ class ModelMappingManager:
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
 
-            mapping, is_new = await repo.upsert(display_name, real_name, node_id, context_length, capabilities)
+            mapping, is_new = await repo.upsert(display_name, real_name, node_ids, context_length, capabilities)
 
             # Update local cache - önce eski reverse mapping'i temizle
             old_real_name = self._mappings.get(display_name)
@@ -498,44 +524,51 @@ class ModelMappingManager:
                 # context_length gönderilmediyse mevcut değeri koru (update'de)
                 pass
 
+            if node_ids is not None:
+                if node_ids:
+                    self._mapping_node_ids[display_name] = sorted(set(node_ids))
+                else:
+                    self._mapping_node_ids.pop(display_name, None)
+
             # Save to cache file
             self._save_to_cache_file()
 
             action = "Created" if is_new else "Updated"
             ctx_info = f" (ctx={context_length})" if context_length else ""
-            node_info = f" (node={node_id})" if node_id else ""
+            node_info = f" (nodes={node_ids})" if node_ids else ""
             print(f"{action} mapping: {display_name} -> {real_name}{node_info}{ctx_info}")
 
+            nids = self._mapping_node_ids.get(display_name, [])
             return {
                 "display_name": mapping.display_name,
                 "real_name": mapping.real_name,
-                "node_id": mapping.node_id,
+                "node_ids": nids,
                 "context_length": mapping.context_length,
                 "capabilities": mapping.capabilities,
                 "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
                 "is_new": is_new
             }
-    
+
     async def delete_mapping(self, display_name: str):
         """Delete a model mapping from database"""
         from app.repositories.model_mapping_repository import ModelMappingRepository
         from app.database import async_session_maker
-        
+
         async with async_session_maker() as session:
             repo = ModelMappingRepository(session)
-            
+
             mapping = await repo.get_by_display_name(display_name)
             if not mapping:
                 raise ValueError(f"Model mapping not found: {display_name}")
-            
+
             await repo.delete(display_name)
             await session.commit()
-            
+
             # Update local cache
             real_name = self._mappings.get(display_name)
             if real_name:
                 del self._mappings[display_name]
-                
+
                 # Remove display_name from reverse mapping list
                 if real_name in self._reverse_mappings:
                     if display_name in self._reverse_mappings[real_name]:
@@ -543,17 +576,27 @@ class ModelMappingManager:
                     # If list becomes empty, remove the key
                     if not self._reverse_mappings[real_name]:
                         del self._reverse_mappings[real_name]
-            
+
             # Remove context length
             if display_name in self._context_lengths:
                 del self._context_lengths[display_name]
-            
+            if display_name in self._mapping_node_ids:
+                del self._mapping_node_ids[display_name]
+
             # Save to cache file
             self._save_to_cache_file()
-            
+
             print(f"Deleted mapping: {display_name}")
-    
-    async def update_mapping(self, old_display_name: str, new_display_name: Optional[str] = None, real_name: Optional[str] = None, context_length: Optional[int] = None, capabilities: Optional[List[str]] = None, node_id: Optional[int] = None) -> Dict[str, any]:
+
+    async def update_mapping(
+        self,
+        old_display_name: str,
+        new_display_name: Optional[str] = None,
+        real_name: Optional[str] = None,
+        context_length: Optional[int] = None,
+        capabilities: Optional[List[str]] = None,
+        node_ids: Optional[List[int]] = None,
+    ) -> Dict[str, any]:
         """
         Mevcut bir mapping'i güncelle. display_name de dahil tüm alanlar değiştirilebilir.
         Cache'i de senkronize eder.
@@ -576,12 +619,12 @@ class ModelMappingManager:
 
             if real_name is not None:
                 mapping.real_name = real_name
-            if node_id is not None:
-                mapping.node_id = node_id
             if context_length is not None:
                 mapping.context_length = context_length
             if capabilities is not None:
                 mapping.capabilities = capabilities
+            if node_ids is not None:
+                await repo.sync_mapping_nodes(mapping, node_ids)
 
             await session.commit()
             await session.refresh(mapping)
@@ -600,6 +643,7 @@ class ModelMappingManager:
                 del self._context_lengths[old_display_name]
             if old_display_name in self._capabilities:
                 del self._capabilities[old_display_name]
+            self._mapping_node_ids.pop(old_display_name, None)
 
             # Yeni değerleri cache'e ekle
             final_display_name = new_display_name or old_display_name
@@ -615,14 +659,21 @@ class ModelMappingManager:
             if mapping.capabilities:
                 self._capabilities[final_display_name] = mapping.capabilities
 
+            if node_ids is not None:
+                if node_ids:
+                    self._mapping_node_ids[final_display_name] = sorted(set(node_ids))
+                else:
+                    self._mapping_node_ids.pop(final_display_name, None)
+
             self._save_to_cache_file()
 
             print(f"Updated mapping: {old_display_name} -> {final_display_name}")
 
+            nids = sorted(set(node_ids)) if node_ids is not None else self._mapping_node_ids.get(final_display_name, [])
             return {
                 "display_name": mapping.display_name,
                 "real_name": mapping.real_name,
-                "node_id": mapping.node_id,
+                "node_ids": nids,
                 "context_length": mapping.context_length,
                 "capabilities": mapping.capabilities,
                 "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
@@ -641,7 +692,7 @@ class ModelMappingManager:
                 {
                     "display_name": m.display_name,
                     "real_name": m.real_name,
-                    "node_id": m.node_id,
+                    "node_ids": sorted({n.id for n in m.nodes}) if m.nodes else [],
                     "context_length": m.context_length,
                     "capabilities": m.capabilities,
                     "created_at": m.created_at.isoformat() if m.created_at else None
@@ -836,24 +887,15 @@ class ModelGroupManager:
 
     async def resolve_model_with_metadata(
         self, model_name: str, request_data: Optional[Dict[str, Any]] = None
-    ) -> Tuple[str, Optional[int]]:
+    ) -> Tuple[str, Optional[List[int]]]:
         """
         Resolve a model name to an actual model name, returning the selected member's
-        preferred_node_id as well.
+        preferred_node_ids as well.
 
-        If model_name is a group, selects the appropriate member based on:
-        1. Request capabilities (vision detection)
-        2. Group strategy (round_robin/weighted/priority)
-        3. Member capabilities and priorities
-
-        If model_name is not a group, returns it unchanged with no preferred node.
-
-        Args:
-            model_name: Model name from client request
-            request_data: Optional request body (for capability detection)
+        If model_name is not a group, returns it unchanged with no preferred nodes.
 
         Returns:
-            Tuple of (actual_model_name, preferred_node_id)
+            Tuple of (actual_model_name, preferred_node_ids)
         """
         await self.ensure_loaded()
 
@@ -883,12 +925,14 @@ class ModelGroupManager:
             selected = self._select_by_strategy(members, group.strategy, model_name)
 
         if selected:
+            pref_ids = [n.id for n in selected.preferred_nodes] if selected.preferred_nodes else []
+            pids = pref_ids if pref_ids else None
             logger.info(
                 f"[ModelGroupManager] Group '{model_name}' -> '{selected.model_display_name}' "
                 f"(strategy={group.strategy}, vision={needs_vision}, "
-                f"preferred_node={selected.preferred_node_id})"
+                f"preferred_nodes={pids})"
             )
-            return selected.model_display_name, getattr(selected, 'preferred_node_id', None)
+            return selected.model_display_name, pids
 
         # Fallback: return group name (will be handled by model_mapper)
         return model_name, None

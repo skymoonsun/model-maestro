@@ -5,6 +5,11 @@ Requires admin token for authentication.
 
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
+from collections import defaultdict
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models import (
     ModelGroupCreateRequest,
     ModelGroupUpdateRequest,
@@ -18,6 +23,7 @@ from app.models import (
 from app.auth import verify_admin
 from app.repositories.model_group_repository import ModelGroupRepository
 from app.database import async_session_maker
+from app.models_db import ModelGroupMember, model_group_member_nodes
 
 router = APIRouter(prefix="/admin/model-groups", tags=["Admin - Model Groups"])
 
@@ -71,7 +77,7 @@ async def create_model_group(
         )
 
         # Add members if provided
-        members = []
+        members: List[ModelGroupMember] = []
         if request.members:
             for member_req in request.members:
                 member = await repo.add_member(
@@ -82,12 +88,14 @@ async def create_model_group(
                     priority=member_req.priority,
                     is_fallback=member_req.is_fallback,
                     is_active=member_req.is_active,
-                    preferred_node_id=member_req.preferred_node_id,
+                    preferred_node_ids=member_req.preferred_node_ids,
                 )
                 if member:
-                    members.append(_member_to_response(member))
+                    members.append(member)
 
         await session.commit()
+
+        member_responses = await _members_to_response(session, members)
 
         return ModelGroupDetailResponse(
             id=group.id,
@@ -97,7 +105,7 @@ async def create_model_group(
             is_active=group.is_active,
             created_at=group.created_at.isoformat() if group.created_at else None,
             updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=members,
+            members=member_responses,
         )
 
 
@@ -159,7 +167,7 @@ async def get_model_group(
             is_active=group.is_active,
             created_at=group.created_at.isoformat() if group.created_at else None,
             updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=[_member_to_response(m) for m in members],
+            members=await _members_to_response(session, members),
         )
 
 
@@ -209,7 +217,7 @@ async def update_model_group(
                 is_active=group.is_active,
                 created_at=group.created_at.isoformat() if group.created_at else None,
                 updated_at=group.updated_at.isoformat() if group.updated_at else None,
-                members=[_member_to_response(m) for m in members],
+                members=await _members_to_response(session, members),
             )
 
         group = await repo.update_group(name, **update_data)
@@ -233,7 +241,7 @@ async def update_model_group(
             is_active=group.is_active,
             created_at=group.created_at.isoformat() if group.created_at else None,
             updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=[_member_to_response(m) for m in members],
+            members=await _members_to_response(session, members),
         )
 
 
@@ -243,14 +251,13 @@ async def delete_model_group(
     admin: str = Depends(verify_admin)
 ):
     """
-    Delete a model group (soft delete: is_active=False).
-
-    The group is marked as inactive instead of being permanently deleted.
+    Delete a model group permanently (DB row and members removed).
     """
+    from app.config import model_group_manager
+
     async with async_session_maker() as session:
         repo = ModelGroupRepository(session)
 
-        # Check if group exists
         group = await repo.get_group_by_name(name)
         if not group:
             raise HTTPException(
@@ -258,11 +265,12 @@ async def delete_model_group(
                 detail=f"Model group '{name}' not found"
             )
 
-        # Soft delete: set is_active=False
-        await repo.update_group(name, is_active=False)
+        await repo.delete_group(name)
         await session.commit()
 
-        return None
+    await model_group_manager.reload()
+
+    return None
 
 
 # ============================================================================
@@ -319,7 +327,7 @@ async def reorder_group_members(
             is_active=group.is_active,
             created_at=group.created_at.isoformat() if group.created_at else None,
             updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=[_member_to_response(m) for m in members],
+            members=await _members_to_response(session, members),
         )
 
 
@@ -374,7 +382,7 @@ async def add_group_member(
             priority=request.priority,
             is_fallback=request.is_fallback,
             is_active=request.is_active,
-            preferred_node_id=request.preferred_node_id,
+            preferred_node_ids=request.preferred_node_ids,
         )
 
         if not member:
@@ -385,7 +393,7 @@ async def add_group_member(
 
         await session.commit()
 
-        return _member_to_response(member)
+        return await _member_to_response(session, member)
 
 
 @router.delete("/{name}/members/{member_id}", status_code=204)
@@ -431,15 +439,40 @@ async def remove_group_member(
 # Helper Functions
 # ============================================================================
 
-def _member_to_response(member) -> ModelGroupMemberResponse:
-    """Convert ModelGroupMember to response model"""
-    return ModelGroupMemberResponse(
-        id=member.id,
-        model_display_name=member.model_display_name,
-        capability_tags=member.capability_tags,
-        weight=member.weight,
-        priority=member.priority,
-        is_fallback=member.is_fallback,
-        is_active=member.is_active,
-        preferred_node_id=member.preferred_node_id,
+async def _members_to_response(
+    session: AsyncSession, members: List[ModelGroupMember]
+) -> List[ModelGroupMemberResponse]:
+    """Build member responses without lazy-loading preferred_nodes (async-safe)."""
+    if not members:
+        return []
+    ids = [m.id for m in members]
+    r = await session.execute(
+        select(model_group_member_nodes.c.member_id, model_group_member_nodes.c.node_id).where(
+            model_group_member_nodes.c.member_id.in_(ids)
+        )
     )
+    by_mid: dict[int, List[int]] = defaultdict(list)
+    for mid, nid in r.all():
+        by_mid[mid].append(nid)
+    for mid in by_mid:
+        by_mid[mid].sort()
+    return [
+        ModelGroupMemberResponse(
+            id=m.id,
+            model_display_name=m.model_display_name,
+            capability_tags=m.capability_tags,
+            weight=m.weight,
+            priority=m.priority,
+            is_fallback=m.is_fallback,
+            is_active=m.is_active,
+            preferred_node_ids=by_mid.get(m.id, []),
+        )
+        for m in members
+    ]
+
+
+async def _member_to_response(
+    session: AsyncSession, member: ModelGroupMember
+) -> ModelGroupMemberResponse:
+    rows = await _members_to_response(session, [member])
+    return rows[0]

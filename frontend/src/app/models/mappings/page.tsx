@@ -68,26 +68,35 @@ function MappingForm({
                 <Input value={form.real_name} onChange={(e) => setForm({ ...form, real_name: e.target.value })} placeholder="qwen3.5:cloud" />
             </div>
             <div>
-                <label className="text-sm text-muted-foreground">Node (Optional)</label>
-                <Select
-                    value={form.node_id ? String(form.node_id) : 'none'}
-                    onValueChange={(v) => setForm({ ...form, node_id: v === 'none' ? null : Number(v) })}
-                >
-                    <SelectTrigger>
-                        <SelectValue placeholder="All nodes (global)" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="none">All nodes (global)</SelectItem>
-                        {nodes.map((n) => (
-                            <SelectItem key={n.id} value={String(n.id)}>
-                                <div className="flex items-center gap-2">
-                                    <Server className="h-3 w-3" />
-                                    {n.name}
-                                </div>
-                            </SelectItem>
-                        ))}
-                    </SelectContent>
-                </Select>
+                <label className="text-sm text-muted-foreground mb-2 block">Nodes (optional)</label>
+                <p className="text-xs text-muted-foreground mb-2">Seçilmezse mapping tüm node’larda geçerlidir. Birden fazla seçebilirsiniz.</p>
+                <div className="max-h-40 overflow-y-auto rounded-md border p-2 space-y-2">
+                    {nodes.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">No nodes</span>
+                    ) : (
+                        nodes.map((n) => {
+                            const set = new Set(form.node_ids || []);
+                            const checked = set.has(n.id);
+                            return (
+                                <label key={n.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        className="rounded border-input"
+                                        checked={checked}
+                                        onChange={() => {
+                                            const next = new Set(form.node_ids || []);
+                                            if (checked) next.delete(n.id);
+                                            else next.add(n.id);
+                                            setForm({ ...form, node_ids: Array.from(next) });
+                                        }}
+                                    />
+                                    <Server className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                    <span>{n.name}</span>
+                                </label>
+                            );
+                        })
+                    )}
+                </div>
             </div>
             <div>
                 <label className="text-sm text-muted-foreground">Context Length</label>
@@ -111,7 +120,11 @@ function MappingForm({
 
 function CreateMappingDialog({ nodes }: { nodes: { id: number; name: string }[] }) {
     const [form, setForm] = useState<CreateModelMapping>({
-        display_name: '', real_name: '', context_length: '', capabilities: [],
+        display_name: '',
+        real_name: '',
+        context_length: '',
+        capabilities: [],
+        node_ids: [],
     });
     const [open, setOpen] = useState(false);
     const queryClient = useQueryClient();
@@ -121,7 +134,13 @@ function CreateMappingDialog({ nodes }: { nodes: { id: number; name: string }[] 
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['model-mappings'] });
             toast.success('Mapping created');
-            setForm({ display_name: '', real_name: '', context_length: '', capabilities: [] });
+            setForm({
+                display_name: '',
+                real_name: '',
+                context_length: '',
+                capabilities: [],
+                node_ids: [],
+            });
             setOpen(false);
         },
         onError: (err: Error) => toast.error(err.message),
@@ -150,7 +169,12 @@ function EditMappingDialog({ mapping, nodes }: { mapping: ModelMapping; nodes: {
     const [form, setForm] = useState<CreateModelMapping>({
         display_name: mapping.display_name,
         real_name: mapping.real_name,
-        node_id: mapping.node_id,
+        node_ids:
+            mapping.node_ids?.length
+                ? [...mapping.node_ids]
+                : mapping.node_id != null
+                  ? [mapping.node_id]
+                  : [],
         context_length: mapping.context_length_display || String(mapping.context_length || ''),
         capabilities: mapping.capabilities || [],
     });
@@ -240,7 +264,10 @@ export default function ModelMappingsPage() {
             const matchesSearch =
                 m.display_name.toLowerCase().includes(search.toLowerCase()) ||
                 m.real_name.toLowerCase().includes(search.toLowerCase());
-            const matchesNode = nodeFilter === 'all' || String(m.node_id) === nodeFilter;
+            const matchesNode =
+                nodeFilter === 'all' ||
+                (m.node_ids?.includes(Number(nodeFilter)) ?? false) ||
+                (m.node_id != null && String(m.node_id) === nodeFilter);
             const matchesCap = capFilter === 'all' || m.capabilities?.includes(capFilter);
             const matchesCtx = !ctxMin || (m.context_length && m.context_length >= Number(ctxMin));
             return matchesSearch && matchesNode && matchesCap && matchesCtx;
@@ -329,7 +356,7 @@ export default function ModelMappingsPage() {
                                 <TableHead>Display Name</TableHead>
                                 <TableHead>Real Name</TableHead>
                                 <TableHead>Provider</TableHead>
-                                <TableHead>Node</TableHead>
+                                <TableHead>Nodes</TableHead>
                                 <TableHead>Context</TableHead>
                                 <TableHead>Capabilities</TableHead>
                                 <TableHead className="text-right">Action</TableHead>
@@ -348,13 +375,22 @@ export default function ModelMappingsPage() {
                                         )}
                                     </TableCell>
                                     <TableCell>
-                                        {m.node_id ? (
+                                        {(m.node_ids?.length ?? 0) > 0 ? (
+                                            <div className="flex flex-wrap gap-1">
+                                                {(m.node_names?.length ? m.node_names : m.node_ids!.map((id) => `#${id}`)).map((label, i) => (
+                                                    <Badge key={`${label}-${i}`} variant="outline" className="text-xs flex items-center gap-1">
+                                                        <Server className="h-3 w-3" />
+                                                        {label}
+                                                    </Badge>
+                                                ))}
+                                            </div>
+                                        ) : m.node_id ? (
                                             <Badge variant="outline" className="text-xs flex items-center gap-1">
                                                 <Server className="h-3 w-3" />
                                                 {m.node_name || `Node ${m.node_id}`}
                                             </Badge>
                                         ) : (
-                                            <span className="text-xs text-muted-foreground">—</span>
+                                            <span className="text-xs text-muted-foreground">All nodes</span>
                                         )}
                                     </TableCell>
                                     <TableCell>

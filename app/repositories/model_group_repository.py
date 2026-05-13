@@ -1,11 +1,16 @@
 """Repository for ModelGroup and ModelGroupMember operations"""
 
 from typing import Optional, List, Tuple
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models_db import ModelGroup, ModelGroupMember
+from app.models_db import (
+    ModelGroup,
+    ModelGroupMember,
+    OllamaNode,
+    model_group_member_nodes,
+)
 
 
 class ModelGroupRepository:
@@ -72,7 +77,9 @@ class ModelGroupRepository:
         """Get group with all its members ordered by priority"""
         stmt = (
             select(ModelGroup)
-            .options(selectinload(ModelGroup.members))
+            .options(
+                selectinload(ModelGroup.members).selectinload(ModelGroupMember.preferred_nodes),
+            )
             .where(ModelGroup.name == name)
         )
         result = await self.session.execute(stmt)
@@ -87,6 +94,7 @@ class ModelGroupRepository:
         stmt = (
             select(ModelGroupMember)
             .join(ModelGroup)
+            .options(selectinload(ModelGroupMember.preferred_nodes))
             .where(ModelGroup.name == group_name)
             .where(ModelGroupMember.is_active == True)
             .where(ModelGroupMember.capability_tags.contains(["vision"]))
@@ -101,6 +109,7 @@ class ModelGroupRepository:
         stmt = (
             select(ModelGroupMember)
             .join(ModelGroup)
+            .options(selectinload(ModelGroupMember.preferred_nodes))
             .where(ModelGroup.name == group_name)
             .where(ModelGroupMember.is_active == True)
             .where(ModelGroupMember.is_fallback == True)
@@ -112,6 +121,27 @@ class ModelGroupRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _sync_preferred_nodes(self, member: ModelGroupMember, node_ids: Optional[List[int]]) -> None:
+        """Persist preferred nodes via junction table (avoids lazy-load on secondary in async)."""
+        await self.session.execute(
+            delete(model_group_member_nodes).where(
+                model_group_member_nodes.c.member_id == member.id
+            )
+        )
+        if not node_ids:
+            return
+        uniq = sorted({int(x) for x in node_ids})
+        result = await self.session.execute(select(OllamaNode).where(OllamaNode.id.in_(uniq)))
+        nodes = list(result.scalars().all())
+        found = {n.id for n in nodes}
+        missing = set(uniq) - found
+        if missing:
+            raise ValueError(f"Unknown node id(s): {sorted(missing)}")
+        await self.session.execute(
+            insert(model_group_member_nodes),
+            [{"member_id": member.id, "node_id": nid} for nid in uniq],
+        )
+
     async def add_member(
         self,
         group_name: str,
@@ -121,7 +151,7 @@ class ModelGroupRepository:
         priority: int = 0,
         is_fallback: bool = False,
         is_active: bool = True,
-        preferred_node_id: Optional[int] = None,
+        preferred_node_ids: Optional[List[int]] = None,
     ) -> Optional[ModelGroupMember]:
         """Add a member to a group"""
         group = await self.get_group_by_name(group_name)
@@ -136,10 +166,10 @@ class ModelGroupRepository:
             priority=priority,
             is_fallback=is_fallback,
             is_active=is_active,
-            preferred_node_id=preferred_node_id,
         )
         self.session.add(member)
         await self.session.flush()
+        await self._sync_preferred_nodes(member, preferred_node_ids)
         return member
 
     async def remove_member(self, group_name: str, model_display_name: str) -> bool:
@@ -160,6 +190,7 @@ class ModelGroupRepository:
         """Get all members of a group"""
         stmt = (
             select(ModelGroupMember)
+            .options(selectinload(ModelGroupMember.preferred_nodes))
             .join(ModelGroup)
             .where(ModelGroup.name == group_name)
             .order_by(ModelGroupMember.priority)
@@ -199,5 +230,4 @@ class ModelGroupRepository:
 
         await self.session.flush()
 
-        # Return updated members sorted by new priority
         return await self.get_members_by_group_name(group_name)

@@ -1,10 +1,25 @@
 """SQLAlchemy database models"""
 
-from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, DateTime, UniqueConstraint, Numeric, BigInteger
+from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, DateTime, UniqueConstraint, Numeric, BigInteger, Table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
+
+
+model_group_member_nodes = Table(
+    "model_group_member_nodes",
+    Base.metadata,
+    Column("member_id", Integer, ForeignKey("model_group_members.id", ondelete="CASCADE"), primary_key=True),
+    Column("node_id", Integer, ForeignKey("ollama_nodes.id", ondelete="CASCADE"), primary_key=True),
+)
+
+model_mapping_nodes = Table(
+    "model_mapping_nodes",
+    Base.metadata,
+    Column("mapping_id", Integer, ForeignKey("model_mappings.id", ondelete="CASCADE"), primary_key=True),
+    Column("node_id", Integer, ForeignKey("ollama_nodes.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 class User(Base):
@@ -32,19 +47,17 @@ class ModelMapping(Base):
     id = Column(Integer, primary_key=True, index=True)
     display_name = Column(String(255), unique=True, nullable=False, index=True)
     real_name = Column(String(255), nullable=False)
-    node_id = Column(Integer, ForeignKey("ollama_nodes.id", ondelete="SET NULL"), nullable=True, index=True)
     context_length = Column(Integer, nullable=True)  # Context window size in tokens (e.g., 131072 for 128K)
     capabilities = Column(ARRAY(String), nullable=True)  # ["completion", "tools", "thinking", "vision"]
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
-    node = relationship("OllamaNode")
+    nodes = relationship("OllamaNode", secondary=model_mapping_nodes)
 
     def __repr__(self):
         ctx = f", ctx={self.context_length}" if self.context_length else ""
         caps = f", caps={self.capabilities}" if self.capabilities else ""
-        node = f", node={self.node_id}" if self.node_id else ""
-        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{node}{ctx}{caps})>"
+        return f"<ModelMapping(display_name='{self.display_name}', real_name='{self.real_name}'{ctx}{caps})>"
 
 
 class UserModel(Base):
@@ -403,16 +416,10 @@ class ModelGroupMember(Base):
     priority = Column(Integer, default=0, nullable=False)  # For priority strategy (lower = higher priority)
     is_fallback = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    preferred_node_id = Column(
-        Integer,
-        ForeignKey("ollama_nodes.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True
-    )
 
     # Relationships
     group = relationship("ModelGroup", back_populates="members")
-    preferred_node = relationship("OllamaNode", foreign_keys=[preferred_node_id])
+    preferred_nodes = relationship("OllamaNode", secondary=model_group_member_nodes)
 
     # Unique constraint: one model per group
     __table_args__ = (
