@@ -1908,6 +1908,7 @@ class OllamaProxy:
                 tried_models.add(model_name)
 
         # Node-scoped routing via model name prefix (node:code:model)
+        node_code: Optional[str] = None
         node_scoped_model: Optional[str] = None
         if model_name and isinstance(model_name, str):
             node_code, actual_model = self._parse_node_prefix(model_name)

@@ -23,6 +23,7 @@ SYSTEM_CONFIGS = {
     # Defaults
     "defaults.context_length": ("32768", "DB'de tanımsız modeller için varsayılan context uzunluğu"),
     "defaults.log_level": ("INFO", "Uygulama log seviyesi"),
+    "defaults.local_port": ("8000", "Tunnel için local port"),
 
     # Search
     "search.web_search_url": (

@@ -17,6 +17,9 @@ class TunnelConfig(BaseModel):
     provider: str = ""  # "cloudflare", "ngrok", or ""
     api_token: str = ""
     public_url: str = ""
+    account_id: str = ""
+    zone_id: str = ""
+    hostname: str = ""
 
 
 class TunnelStatusResponse(BaseModel):
@@ -25,6 +28,8 @@ class TunnelStatusResponse(BaseModel):
     public_url: str = ""
     pid: int | None = None
     error: str = ""
+    tunnel_id: str = ""
+    tunnel_token: str = ""
 
 
 @router.get("/tunnel/status", response_model=TunnelStatusResponse, tags=["Admin - Tunnel"])
@@ -43,8 +48,18 @@ async def start_tunnel(admin: str = Depends(verify_admin)):
 
     api_token = config_manager.get("tunnel.api_token", "")
     local_port = int(config_manager.get("defaults.local_port", "8000"))
+    account_id = config_manager.get("tunnel.account_id", "")
+    zone_id = config_manager.get("tunnel.zone_id", "")
+    hostname = config_manager.get("tunnel.hostname", "")
 
-    result = await tunnel_manager.start(provider=provider, local_port=local_port, api_token=api_token)
+    result = await tunnel_manager.start(
+        provider=provider,
+        local_port=local_port,
+        api_token=api_token,
+        account_id=account_id,
+        zone_id=zone_id,
+        hostname=hostname,
+    )
     return TunnelStatusResponse(**result)
 
 
@@ -63,6 +78,9 @@ async def get_tunnel_config(admin: str = Depends(verify_admin)):
         provider=config_manager.get("tunnel.provider", ""),
         api_token=config_manager.get("tunnel.api_token", ""),
         public_url=config_manager.get("tunnel.public_url", ""),
+        account_id=config_manager.get("tunnel.account_id", ""),
+        zone_id=config_manager.get("tunnel.zone_id", ""),
+        hostname=config_manager.get("tunnel.hostname", ""),
     )
 
 
@@ -74,6 +92,9 @@ async def update_tunnel_config(config: TunnelConfig, admin: str = Depends(verify
         await repo.upsert("tunnel.provider", config.provider, "Tunnel provider (cloudflare, ngrok)")
         await repo.upsert("tunnel.api_token", config.api_token, "Tunnel API token")
         await repo.upsert("tunnel.public_url", config.public_url, "Tunnel public URL")
+        await repo.upsert("tunnel.account_id", config.account_id, "Cloudflare account ID")
+        await repo.upsert("tunnel.zone_id", config.zone_id, "Cloudflare zone ID")
+        await repo.upsert("tunnel.hostname", config.hostname, "Cloudflare tunnel hostname")
         await session.commit()
 
     # Refresh cache

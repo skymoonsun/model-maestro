@@ -79,7 +79,9 @@ export default function SettingsPage() {
         updateMutation.mutate(grouped);
     };
 
-    const tunnelConfig = editValues.tunnel || {};
+    const tunnelConfig = (editValues.tunnel || {}) as unknown as TunnelConfig;
+    const isCloudflare = tunnelConfig.provider === 'cloudflare';
+    const isNgrok = tunnelConfig.provider === 'ngrok';
 
     if (isLoading) return <Card><CardContent className="p-6"><Skeleton className="h-96 w-full" /></CardContent></Card>;
 
@@ -115,15 +117,15 @@ export default function SettingsPage() {
                                 value={tunnelConfig.provider || ''}
                                 onChange={(e) => {
                                     const provider = e.target.value;
+                                    const next = {
+                                        ...tunnelConfig,
+                                        provider,
+                                    };
                                     setEditValues((prev) => ({
                                         ...prev,
-                                        tunnel: { ...prev.tunnel, provider },
+                                        tunnel: next,
                                     }));
-                                    tunnelConfigMutation.mutate({
-                                        provider,
-                                        api_token: tunnelConfig.api_token || '',
-                                        public_url: tunnelConfig.public_url || '',
-                                    });
+                                    tunnelConfigMutation.mutate(next as TunnelConfig);
                                 }}
                             >
                                 <option value="">Disabled</option>
@@ -135,19 +137,13 @@ export default function SettingsPage() {
                             <label className="text-xs text-muted-foreground font-mono">api_token</label>
                             <Input
                                 type="password"
-                                placeholder="ngrok auth token (optional for cloudflare)"
+                                placeholder={isCloudflare ? 'Cloudflare API token' : isNgrok ? 'ngrok auth token' : 'API token'}
                                 value={tunnelConfig.api_token || ''}
-                                onChange={(e) => setEditValues((prev) => ({
-                                    ...prev,
-                                    tunnel: { ...prev.tunnel, api_token: e.target.value },
-                                }))}
-                                onBlur={() => {
-                                    tunnelConfigMutation.mutate({
-                                        provider: tunnelConfig.provider || '',
-                                        api_token: tunnelConfig.api_token || '',
-                                        public_url: tunnelConfig.public_url || '',
-                                    });
+                                onChange={(e) => {
+                                    const next = { ...tunnelConfig, api_token: e.target.value };
+                                    setEditValues((prev) => ({ ...prev, tunnel: next }));
                                 }}
+                                onBlur={() => tunnelConfigMutation.mutate(tunnelConfig as TunnelConfig)}
                                 className="font-mono text-sm"
                             />
                         </div>
@@ -162,8 +158,67 @@ export default function SettingsPage() {
                             />
                         </div>
                     </div>
+
+                    {/* Cloudflare extra fields */}
+                    {isCloudflare && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label className="text-xs text-muted-foreground font-mono">account_id</label>
+                                <Input
+                                    type="text"
+                                    placeholder="Cloudflare account ID"
+                                    value={tunnelConfig.account_id || ''}
+                                    onChange={(e) => {
+                                        const next = { ...tunnelConfig, account_id: e.target.value };
+                                        setEditValues((prev) => ({ ...prev, tunnel: next }));
+                                    }}
+                                    onBlur={() => tunnelConfigMutation.mutate(tunnelConfig as TunnelConfig)}
+                                    className="font-mono text-sm"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs text-muted-foreground font-mono">zone_id</label>
+                                <Input
+                                    type="text"
+                                    placeholder="Cloudflare zone ID"
+                                    value={tunnelConfig.zone_id || ''}
+                                    onChange={(e) => {
+                                        const next = { ...tunnelConfig, zone_id: e.target.value };
+                                        setEditValues((prev) => ({ ...prev, tunnel: next }));
+                                    }}
+                                    onBlur={() => tunnelConfigMutation.mutate(tunnelConfig as TunnelConfig)}
+                                    className="font-mono text-sm"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs text-muted-foreground font-mono">hostname</label>
+                                <Input
+                                    type="text"
+                                    placeholder="api.example.com"
+                                    value={tunnelConfig.hostname || ''}
+                                    onChange={(e) => {
+                                        const next = { ...tunnelConfig, hostname: e.target.value };
+                                        setEditValues((prev) => ({ ...prev, tunnel: next }));
+                                    }}
+                                    onBlur={() => tunnelConfigMutation.mutate(tunnelConfig as TunnelConfig)}
+                                    className="font-mono text-sm"
+                                />
+                            </div>
+                        </div>
+                    )}
+
                     {tunnelStatus?.error && (
-                        <p className="text-xs text-red-400">{tunnelStatus.error}</p>
+                        <div className="text-xs text-red-400 whitespace-pre-wrap">{tunnelStatus.error}</div>
+                    )}
+                    {tunnelStatus?.tunnel_token && (
+                        <div className="text-xs text-muted-foreground">
+                            <strong>Tunnel token:</strong> {tunnelStatus.tunnel_token.substring(0, 40)}...
+                            <br />
+                            <span className="text-amber-400">If cloudflared is not installed in the container, run this on the host:</span>
+                            <code className="block bg-muted p-2 mt-1 rounded font-mono text-[10px]">
+                                cloudflared tunnel run --token {tunnelStatus.tunnel_token}
+                            </code>
+                        </div>
                     )}
                     <div className="flex items-center gap-2">
                         <Button

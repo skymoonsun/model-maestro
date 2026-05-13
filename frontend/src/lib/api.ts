@@ -319,6 +319,9 @@ export interface TunnelConfig {
   provider: string;
   api_token: string;
   public_url: string;
+  account_id: string;
+  zone_id: string;
+  hostname: string;
 }
 
 export interface TunnelStatus {
@@ -327,6 +330,8 @@ export interface TunnelStatus {
   public_url: string;
   pid: number | null;
   error: string;
+  tunnel_id: string;
+  tunnel_token: string;
 }
 
 export const tunnelApi = {
