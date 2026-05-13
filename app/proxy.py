@@ -1092,6 +1092,34 @@ class OllamaProxy:
         mmap = model_mapper.get_restricted_node_ids(model_name) if model_name else None
         return self._merge_allowed_node_ids(pids, mmap)
 
+    async def _gather_nodes_for_model_candidates(
+        self, model_name: str
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Nodes that advertise this model under either the mapped real name or the client/display name.
+
+        Using only the first successful lookup misses nodes whose catalog uses the other spelling
+        (e.g. display ``deepseek-v4-pro`` vs real ``deepseek-v4-pro:cloud``).
+        """
+        from app.node_manager import node_manager
+
+        real_model_name = model_mapper.get_real_model_name(model_name)
+        variants: List[str] = []
+        for v in (real_model_name, model_name):
+            if v and v not in variants:
+                variants.append(v)
+
+        merged: Dict[int, Dict[str, Any]] = {}
+        for variant in variants:
+            batch = await node_manager.get_nodes_for_model(variant)
+            for n in batch:
+                nid = n.get("node_id")
+                if nid is None:
+                    continue
+                merged.setdefault(nid, n)
+
+        return list(merged.values()), real_model_name
+
     async def _select_node_url(
         self,
         model_name: str,
@@ -1115,15 +1143,7 @@ class OllamaProxy:
             from app.node_manager import node_manager
             from app.load_balancer import load_balancer
 
-            # Get real model name
-            real_model_name = model_mapper.get_real_model_name(model_name)
-
-            # Get available nodes for this model from Redis (zero DB hits on hot path!)
-            nodes = await node_manager.get_nodes_for_model(real_model_name)
-
-            if not nodes:
-                # Try display name as fallback
-                nodes = await node_manager.get_nodes_for_model(model_name)
+            nodes, real_model_name = await self._gather_nodes_for_model_candidates(model_name)
 
             if not nodes:
                 # No nodes have this model - use default (if not excluded)
@@ -1140,8 +1160,18 @@ class OllamaProxy:
                     nodes = filtered_allow
                     logger.info(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
                 else:
-                    logger.warning(
-                        f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for {model_name}; using full pool"
+                    logger.error(
+                        f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for model "
+                        f"'{model_name}' (mapped real '{real_model_name}'); refusing to widen pool"
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Routing is restricted to specific nodes for this model, but none of those nodes "
+                            f"currently advertise '{model_name}' or mapped real name '{real_model_name}'. "
+                            "Sync node catalogs so preferred nodes list the same spelling your mapping uses, "
+                            "or adjust mapping / preferred nodes."
+                        ),
                     )
 
             # Filter out scoped nodes when doing normal load balancing
@@ -1196,9 +1226,11 @@ class OllamaProxy:
 
             return self.base_url, None, 'ollama', None
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
-            return self.base_url, None, 'ollama'
+            return self.base_url, None, 'ollama', None
     
     async def _ensure_mappings_loaded(self):
         """Ensure model mappings and groups are loaded from database"""
