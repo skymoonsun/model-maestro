@@ -138,17 +138,20 @@ async def refresh_waf_cookie(
                     continue
 
                 set_cookie = response.headers.get("set-cookie")
+                logger.info(f"[WAF] Raw Set-Cookie header: {set_cookie!r}")
                 if not set_cookie:
                     logger.warning(f"[WAF] Challenge status {last_status} but no Set-Cookie header on [{method}] {target_url}")
                     continue
 
                 cookie = parse_set_cookie(set_cookie)
+                logger.info(f"[WAF] Parsed cookie: {cookie!r}")
                 if not cookie:
                     logger.warning(f"[WAF] Could not parse Set-Cookie: {set_cookie}")
                     continue
 
                 updated_headers = merge_cookie_into_headers(existing_headers, cookie)
                 logger.info(f"[WAF] Captured new cookie for {base_url} from [{method}] {target_url}")
+                logger.info(f"[WAF] Updated headers: {updated_headers}")
                 return True, updated_headers, None
 
             return False, None, f"No WAF challenge cookie found after {len(probes)} attempts (last status: {last_status})"
