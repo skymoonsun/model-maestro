@@ -18,6 +18,7 @@ import {
     Group,
     FileText,
     Cog,
+    BookOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -65,6 +66,7 @@ const navigation: NavItem[] = [
     { label: 'Tool Sets', href: '/tool-sets', icon: Wrench },
     { label: 'Request Logs', href: '/request-logs', icon: FileText },
     { label: 'Audit Logs', href: '/audit-logs', icon: ClipboardList },
+    { label: 'Guide', href: '/guide', icon: BookOpen },
     { label: 'Settings', href: '/settings', icon: Cog },
 ];
 
