@@ -1,10 +1,11 @@
 # IDE Integration Guide
 
-Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide covers setup for **Claude Code**, **OpenClaw**, **Cursor** and **Grafana Assistant**.
+Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide covers setup for **Claude Code**, **VS Code** (Claude Code & Kilo Code extensions), **OpenClaw**, **Cursor** and **Grafana Assistant**.
 
 ## Table of Contents
 
 - [Claude Code](#claude-code)
+- [VS Code](#vs-code)
 - [OpenClaw](#openclaw)
 - [Cursor](#cursor)
 - [Grafana Assistant](#grafana-assistant)
@@ -37,6 +38,73 @@ claude
 - Both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` should contain your Maestro JWT token.
 - `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` should be **display names** from your model mappings (e.g. `kimi-k2.6:latest`).
 - Create a user token via the admin panel (`/users`) if you do not have one.
+
+---
+
+## VS Code
+
+The **Claude Code** extension for VS Code supports custom environment variables via `settings.json`.
+
+### Configuration
+
+Open your VS Code user settings JSON (macOS: `~/Library/Application\ Support/Code/User/settings.json`) and add the `claudeCode.environmentVariables` array:
+
+```json
+{
+    "claudeCode.environmentVariables": [
+        {
+            "name": "ANTHROPIC_BASE_URL",
+            "value": "https://maestro.example.com/claude/"
+        },
+        {
+            "name": "ANTHROPIC_API_KEY",
+            "value": "<your-maestro-jwt-token>"
+        },
+        {
+            "name": "ANTHROPIC_AUTH_TOKEN",
+            "value": "<your-maestro-jwt-token>"
+        },
+        {
+            "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+            "value": "1"
+        }
+    ]
+}
+```
+
+### Notes
+
+- `ANTHROPIC_BASE_URL` must end with `/claude/` to hit the Claude-compatible proxy endpoint.
+- Both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` should contain your Maestro JWT token.
+- `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` enables automatic model discovery from the Maestro gateway — models mapped in Maestro will appear in the extension's model picker.
+- The Claude Code extension in VS Code uses the same `/claude/` endpoint as the CLI tool.
+- Create a user token via the admin panel (`/users`) if you do not have one.
+
+---
+
+## Kilo Code
+
+**Kilo Code** is a VS Code extension that supports connecting to custom providers via an OpenAI-compatible API.
+
+### Setup
+
+1. Install the **Kilo Code** extension from the VS Code marketplace.
+2. Open the Kilo Code settings and navigate to the **Providers** page.
+3. Click **Custom provider connect**.
+4. Fill in the connection fields:
+
+   | Field | Value |
+   |---|---|
+   | Provider ID | `maestro` |
+   | Display name | `Maestro` |
+   | Base URL | `https://maestro.example.com/v1` |
+   | API Key | Your Maestro JWT token |
+
+### Notes
+
+- The `/v1` endpoint proxies OpenAI-compatible requests directly.
+- Kilo Code does not require model-name mapping — it uses the models exposed by the `/v1/models` endpoint.
+- Ensure your Maestro instance has at least one model mapping configured so `/v1/models` returns a non-empty list.
 
 ---
 

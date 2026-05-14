@@ -143,6 +143,64 @@ Instance ID:   1622805
 API Token:     <your-maestro-jwt-token>`,
         note: 'See docs/grafana-assistant-bypass.js for the browser console bypass script.',
     },
+    {
+        id: 'vscode',
+        name: 'VS Code',
+        logo: '/guide/vscode.svg',
+        color: 'text-blue-500',
+        bg: 'bg-blue-500/10 border-blue-500/30',
+        description: 'VS Code extensions for AI-powered coding with Model Maestro.',
+        extensions: [
+            {
+                extId: 'claude-code-ext',
+                extName: 'Claude Code',
+                extLogo: '/guide/claude.svg',
+                extSteps: [
+                    'Open VS Code settings JSON (Cmd+Shift+P → Preferences: Open User Settings JSON).',
+                    'Add claudeCode.environmentVariables array with your Maestro endpoint.',
+                    'Set ANTHROPIC_BASE_URL to end with /claude/.',
+                    'Enable CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY for auto model listing.',
+                ],
+                extCode: `{
+    "claudeCode.environmentVariables": [
+        {
+            "name": "ANTHROPIC_BASE_URL",
+            "value": "https://maestro.example.com/claude/"
+        },
+        {
+            "name": "ANTHROPIC_API_KEY",
+            "value": "<your-maestro-jwt-token>"
+        },
+        {
+            "name": "ANTHROPIC_AUTH_TOKEN",
+            "value": "<your-maestro-jwt-token>"
+        },
+        {
+            "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+            "value": "1"
+        }
+    ]
+}`,
+                extNote: 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY enables automatic model discovery from Maestro. ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN should both contain your Maestro JWT token.',
+            },
+            {
+                extId: 'kilo-code-ext',
+                extName: 'Kilo Code',
+                extLogo: '/guide/kilocode.svg',
+                extSteps: [
+                    'Install the Kilo Code extension from the VS Code marketplace.',
+                    'Open Kilo Code settings → Providers page.',
+                    'Click "Custom provider connect".',
+                    'Fill in the fields with your Maestro endpoint and token.',
+                ],
+                extCode: `Provider ID:   maestro
+Display name:  Maestro
+Base URL:      https://maestro.example.com/v1
+API Key:       <your-maestro-jwt-token>`,
+                extNote: 'The /v1 endpoint proxies OpenAI-compatible requests. Kilo Code uses this endpoint directly without model-name mapping.',
+            },
+        ],
+    },
 ];
 
 const providers = [
@@ -209,7 +267,7 @@ export default function GuidePage() {
                 <TabsContent value="ide" className="space-y-6">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {ideIntegrations.map((ide) => (
-                            <Card key={ide.id} className={`border ${ide.bg}`}>
+                            <Card key={ide.id} className={`border ${ide.bg} ${ide.id === 'vscode' ? 'md:col-span-2' : ''}`}>
                                 <CardHeader className="pb-3">
                                     <div className="flex items-center gap-3">
                                         <div className={`p-2 rounded-md bg-muted ${ide.color}`}>
@@ -222,20 +280,48 @@ export default function GuidePage() {
                                     </div>
                                 </CardHeader>
                                 <CardContent className="space-y-4 pt-0">
-                                    <div className="space-y-2">
-                                        {ide.steps.map((step, i) => (
-                                            <div key={i} className="flex items-start gap-2 text-sm">
-                                                <CheckCircle className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
-                                                <span className="text-muted-foreground">{step}</span>
+                                    {ide.extensions ? (
+                                        ide.extensions.map((ext) => (
+                                            <div key={ext.extId} className="border-t border-border/50 first:border-t-0 pt-4 first:pt-0">
+                                                <div className="flex items-center gap-2 mb-3">
+                                                    <img src={ext.extLogo} alt={ext.extName} className="h-5 w-5 object-contain" />
+                                                    <h4 className="text-sm font-semibold">{ext.extName}</h4>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    {ext.extSteps.map((step, i) => (
+                                                        <div key={i} className="flex items-start gap-2 text-sm">
+                                                            <CheckCircle className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+                                                            <span className="text-muted-foreground">{step}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <CodeBlock code={ext.extCode} />
+                                                {ext.extNote && (
+                                                    <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-400/5 rounded-md p-2">
+                                                        <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                                        <span>{ext.extNote}</span>
+                                                    </div>
+                                                )}
                                             </div>
-                                        ))}
-                                    </div>
-                                    <CodeBlock code={ide.code} />
-                                    {ide.note && (
-                                        <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-400/5 rounded-md p-2">
-                                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                                            <span>{ide.note}</span>
-                                        </div>
+                                        ))
+                                    ) : (
+                                        <>
+                                            <div className="space-y-2">
+                                                {ide.steps.map((step, i) => (
+                                                    <div key={i} className="flex items-start gap-2 text-sm">
+                                                        <CheckCircle className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+                                                        <span className="text-muted-foreground">{step}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            <CodeBlock code={ide.code} />
+                                            {ide.note && (
+                                                <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-400/5 rounded-md p-2">
+                                                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                                    <span>{ide.note}</span>
+                                                </div>
+                                            )}
+                                        </>
                                     )}
                                 </CardContent>
                             </Card>
