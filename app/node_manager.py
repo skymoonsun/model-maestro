@@ -553,15 +553,16 @@ class NodeManager:
         from app.redis import redis_manager, CACHE_KEYS
         if redis_manager:
             try:
-                # Delete model nodes cache (pattern scan)
-                keys = await redis_manager.keys(CACHE_KEYS["MODEL_NODES"].replace("{model_name}", "*"))
-                if keys:
-                    await redis_manager.delete(*keys)
+                # Delete model nodes cache by pattern
+                pattern = CACHE_KEYS["MODEL_NODES"].replace("{model_name}", "*")
+                deleted = await redis_manager.delete_pattern(pattern)
+                logger.info(f"[CacheInvalidate] Deleted {deleted} model_nodes keys via pattern '{pattern}'")
                 # Also delete node loads and active nodes
                 await redis_manager.delete(CACHE_KEYS["NODE_LOADS"])
                 await redis_manager.delete(CACHE_KEYS["ACTIVE_NODES"])
-            except Exception:
-                pass
+                logger.info("[CacheInvalidate] NODE_LOADS and ACTIVE_NODES deleted")
+            except Exception as e:
+                logger.warning(f"[CacheInvalidate] Error: {e}")
     
     async def pull_model_to_node(
         self,

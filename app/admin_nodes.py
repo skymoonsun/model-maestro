@@ -107,6 +107,10 @@ async def create_node(
             admin_ip=None
         )
 
+        # Invalidate cache so proxy picks up the new node immediately
+        await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
+
         return OllamaNodeResponse(
             id=node.id,
             name=node.name,
@@ -295,6 +299,7 @@ async def update_node(
 
         # Invalidate Redis cache so proxy picks up new api_key / headers immediately
         await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
 
         # Audit log
         audit_repo = AuditLogRepository(session)
@@ -361,7 +366,11 @@ async def delete_node(
         )
         
         deleted = await repo.delete(node_id)
-        
+
+        # Invalidate cache so proxy stops routing to the deleted node
+        await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
+
         return {
             "success": True,
             "message": f"Node '{node_name}' deleted",
@@ -409,7 +418,11 @@ async def check_node_health(
         status = "healthy" if is_healthy else "unhealthy"
         await repo.update_health_status(node_id, status, error)
         await session.commit()
-        
+
+        # Invalidate cache so proxy picks up the new health status immediately
+        await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
+
         return {
             "node_id": node_id,
             "node_name": node.name,
@@ -449,7 +462,11 @@ async def sync_node_models(
             details={"synced_count": result["synced_count"]},
             admin_ip=None
         )
-        
+
+        # Invalidate cache so proxy picks up the new model catalog immediately
+        await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
+
         return NodeSyncResponse(**result)
 
 
@@ -476,7 +493,11 @@ async def sync_all_nodes(
             },
             admin_ip=None
         )
-        
+
+        # Invalidate cache so proxy picks up the refreshed catalogs immediately
+        await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
+
         return results["results"]
 
 
@@ -607,30 +628,48 @@ async def update_node_priorities(
     Expects a list of {node_id, priority} objects.
     Higher priority = preferred in fallback order.
     """
+    logger.info(f"[PriorityBatch] Received {len(request.priorities)} updates")
+    for p in request.priorities:
+        logger.info(f"[PriorityBatch]  -> node_id={p.node_id}, priority={p.priority}")
+
     async with async_session_maker() as session:
         repo = NodeRepository(session)
         updated_nodes = []
 
+        # Single transaction: collect all nodes first, then commit once
         for item in request.priorities:
-            node = await repo.update(item.node_id, priority=item.priority)
+            node = await repo.get_by_id(item.node_id)
             if node:
-                updated_nodes.append(OllamaNodeResponse(
-                    id=node.id,
-                    name=node.name,
-                    base_url=node.base_url,
-                    api_key=node.api_key,
-                    api_key_set=bool(node.api_key),
-                    priority=node.priority,
-                    weight=node.weight,
-                    is_active=node.is_active,
-                    node_type=node.node_type,
-                    warmup_enabled=node.warmup_enabled,
-                    health_status=node.health_status,
-                    last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
-                    created_at=node.created_at.isoformat() if node.created_at else None,
-                    updated_at=node.updated_at.isoformat() if node.updated_at else None,
-                    auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
-                ))
+                node.priority = item.priority
+                updated_nodes.append(node)
+                logger.info(f"[PriorityBatch] Queued update node {node.name} (id={node.id}) priority={item.priority}")
+
+        await session.commit()
+
+        # Refresh all updated nodes
+        for node in updated_nodes:
+            await session.refresh(node)
+
+        # Build response
+        response_nodes = []
+        for node in updated_nodes:
+            response_nodes.append(OllamaNodeResponse(
+                id=node.id,
+                name=node.name,
+                base_url=node.base_url,
+                api_key=node.api_key,
+                api_key_set=bool(node.api_key),
+                priority=node.priority,
+                weight=node.weight,
+                is_active=node.is_active,
+                node_type=node.node_type,
+                warmup_enabled=node.warmup_enabled,
+                health_status=node.health_status,
+                last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
+                created_at=node.created_at.isoformat() if node.created_at else None,
+                updated_at=node.updated_at.isoformat() if node.updated_at else None,
+                auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
+            ))
 
         # Audit log
         audit_repo = AuditLogRepository(session)
@@ -638,13 +677,17 @@ async def update_node_priorities(
             action="batch_update_priorities",
             entity_type="node",
             entity_id="batch",
-            details={"updated_count": len(updated_nodes)},
+            details={"updated_count": len(response_nodes)},
             admin_ip=None
         )
 
+        # Invalidate cache so proxy picks up the new priority order immediately
+        await node_manager.invalidate_cache()
+        await load_balancer.invalidate_cache()
+
         return NodePriorityBatchResponse(
-            updated=len(updated_nodes),
-            nodes=updated_nodes
+            updated=len(response_nodes),
+            nodes=response_nodes
         )
 
 
