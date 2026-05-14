@@ -2,14 +2,6 @@
 
 import { useState } from 'react';
 import {
-    Terminal,
-    Wrench,
-    MousePointerClick,
-    BarChart3,
-    Server,
-    Zap,
-    Globe,
-    Cloud,
     Copy,
     CheckCircle,
     AlertTriangle,
@@ -20,6 +12,86 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+
+// ── SVG Logos ──────────────────────────────────────────────
+
+function ClaudeLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <path d="M16 2C8.268 2 2 8.268 2 16s6.268 14 14 14 14-6.268 14-14S23.732 2 16 2z" fill="currentColor" opacity="0.15" />
+            <path d="M16 8c-4.418 0-8 3.582-8 8s3.582 8 8 8 8-3.582 8-8-3.582-8-8-8z" fill="currentColor" opacity="0.3" />
+            <path d="M16 12c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4z" fill="currentColor" />
+        </svg>
+    );
+}
+
+function OpenClawLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <path d="M16 4L6 28h6l4-10 4 10h6L16 4z" fill="currentColor" />
+        </svg>
+    );
+}
+
+function CursorLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <rect x="4" y="4" width="24" height="24" rx="6" fill="currentColor" opacity="0.15" />
+            <path d="M10 10l12 6-5 2 3 8-2 1-3-8-5 2V10z" fill="currentColor" />
+        </svg>
+    );
+}
+
+function GrafanaLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <circle cx="16" cy="16" r="12" stroke="currentColor" strokeWidth="3" fill="none" />
+            <circle cx="16" cy="16" r="4" fill="currentColor" />
+            <path d="M16 4v4M16 24v4M4 16h4M24 16h4" stroke="currentColor" strokeWidth="2" />
+        </svg>
+    );
+}
+
+function OllamaLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <ellipse cx="16" cy="20" rx="10" ry="8" fill="currentColor" opacity="0.2" />
+            <circle cx="16" cy="13" r="6" fill="currentColor" opacity="0.5" />
+            <path d="M12 7L10 3M20 7L22 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <circle cx="14" cy="12" r="1" fill="white" />
+            <circle cx="18" cy="12" r="1" fill="white" />
+        </svg>
+    );
+}
+
+function VllmLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <path d="M16 4L8 28h4l4-12 4 12h4L16 4z" fill="currentColor" />
+        </svg>
+    );
+}
+
+function AntigravityLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <circle cx="16" cy="16" r="12" fill="currentColor" opacity="0.15" />
+            <path d="M16 22V10M12 14l4-4 4 4" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    );
+}
+
+function BedrockLogo({ className }: { className?: string }) {
+    return (
+        <svg viewBox="0 0 32 32" fill="none" className={className}>
+            <rect x="4" y="10" width="24" height="12" rx="2" fill="currentColor" opacity="0.2" />
+            <rect x="8" y="8" width="16" height="16" rx="2" fill="currentColor" />
+            <text x="16" y="20" textAnchor="middle" fill="white" fontSize="10" fontWeight="bold" fontFamily="sans-serif">B</text>
+        </svg>
+    );
+}
+
+// ── Shared UI ────────────────────────────────────────────────
 
 function CopyButton({ text }: { text: string }) {
     const [copied, setCopied] = useState(false);
@@ -44,22 +116,24 @@ function CopyButton({ text }: { text: string }) {
     );
 }
 
-function CodeBlock({ code, lang = 'bash' }: { code: string; lang?: string }) {
+function CodeBlock({ code }: { code: string }) {
     return (
         <div className="relative rounded-md bg-muted p-3 mt-3">
             <CopyButton text={code} />
-            <pre className="text-xs font-mono text-foreground overflow-x-auto pr-8">
+            <pre className="text-xs font-mono text-foreground whitespace-pre-wrap break-all pr-8">
                 <code>{code}</code>
             </pre>
         </div>
     );
 }
 
+// ── Data ─────────────────────────────────────────────────────
+
 const ideIntegrations = [
     {
         id: 'claude-code',
         name: 'Claude Code',
-        icon: Terminal,
+        logo: ClaudeLogo,
         color: 'text-amber-400',
         bg: 'bg-amber-400/10 border-amber-400/30',
         description: 'Anthropic CLI tool with custom base URL support.',
@@ -79,7 +153,7 @@ claude`,
     {
         id: 'openclaw',
         name: 'OpenClaw',
-        icon: Wrench,
+        logo: OpenClawLogo,
         color: 'text-cyan-400',
         bg: 'bg-cyan-400/10 border-cyan-400/30',
         description: 'Universal AI IDE plugin reading provider config from ~/.openclaw/openclaw.json.',
@@ -117,7 +191,7 @@ claude`,
     {
         id: 'cursor',
         name: 'Cursor',
-        icon: MousePointerClick,
+        logo: CursorLogo,
         color: 'text-purple-400',
         bg: 'bg-purple-400/10 border-purple-400/30',
         description: 'AI-native code editor using custom OpenAI base URLs.',
@@ -133,7 +207,7 @@ Override OpenAI Base URL:  https://maestro.example.com/cursor`,
     {
         id: 'grafana',
         name: 'Grafana Assistant',
-        icon: BarChart3,
+        logo: GrafanaLogo,
         color: 'text-orange-400',
         bg: 'bg-orange-400/10 border-orange-400/30',
         description: 'Official Grafana plugin for AI-powered dashboards.',
@@ -153,7 +227,7 @@ const providers = [
     {
         id: 'ollama',
         name: 'Ollama',
-        icon: Server,
+        logo: OllamaLogo,
         color: 'text-blue-400',
         bg: 'bg-blue-400/10 border-blue-400/30',
         type: 'ollama',
@@ -163,7 +237,7 @@ const providers = [
     {
         id: 'vllm',
         name: 'vLLM',
-        icon: Zap,
+        logo: VllmLogo,
         color: 'text-purple-400',
         bg: 'bg-purple-400/10 border-purple-400/30',
         type: 'vllm',
@@ -173,7 +247,7 @@ const providers = [
     {
         id: 'antigravity',
         name: 'Antigravity',
-        icon: Globe,
+        logo: AntigravityLogo,
         color: 'text-green-400',
         bg: 'bg-green-400/10 border-green-400/30',
         type: 'antigravity',
@@ -183,7 +257,7 @@ const providers = [
     {
         id: 'bedrock',
         name: 'AWS Bedrock',
-        icon: Cloud,
+        logo: BedrockLogo,
         color: 'text-orange-400',
         bg: 'bg-orange-400/10 border-orange-400/30',
         type: 'bedrock',
@@ -192,9 +266,11 @@ const providers = [
     },
 ];
 
+// ── Page ─────────────────────────────────────────────────────
+
 export default function GuidePage() {
     return (
-        <div className="max-w-5xl mx-auto">
+        <div className="w-full">
             <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Integration Guide</h1>
                 <p className="text-muted-foreground mt-2 max-w-2xl">
@@ -215,7 +291,7 @@ export default function GuidePage() {
                                 <CardHeader className="pb-3">
                                     <div className="flex items-center gap-3">
                                         <div className={`p-2 rounded-md bg-muted ${ide.color}`}>
-                                            <ide.icon className="h-5 w-5" />
+                                            <ide.logo className="h-6 w-6" />
                                         </div>
                                         <div>
                                             <CardTitle className="text-base">{ide.name}</CardTitle>
@@ -253,7 +329,7 @@ export default function GuidePage() {
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-3">
                                             <div className={`p-2 rounded-md bg-muted ${provider.color}`}>
-                                                <provider.icon className="h-5 w-5" />
+                                                <provider.logo className="h-6 w-6" />
                                             </div>
                                             <div>
                                                 <CardTitle className="text-base">{provider.name}</CardTitle>
