@@ -74,9 +74,21 @@ async def refresh_waf_cookie(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             )
+        # Additional browser-like headers that many WAFs require
+        if "accept" not in {k.lower() for k in request_headers.keys()}:
+            request_headers["Accept"] = (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            )
+        if "accept-language" not in {k.lower() for k in request_headers.keys()}:
+            request_headers["Accept-Language"] = "en-US,en;q=0.9"
+        if "accept-encoding" not in {k.lower() for k in request_headers.keys()}:
+            request_headers["Accept-Encoding"] = "gzip, deflate, br"
+        if "connection" not in {k.lower() for k in request_headers.keys()}:
+            request_headers["Connection"] = "keep-alive"
+        if "upgrade-insecure-requests" not in {k.lower() for k in request_headers.keys()}:
+            request_headers["Upgrade-Insecure-Requests"] = "1"
 
-        # Determine probe URL — try root first (many WAFs only challenge on /),
-        # then fall back to the API-specific path.
+        # Determine probe URLs
         root_url = f"{base_url.rstrip('/')}/"
         if health_check_url:
             api_url = health_check_url
@@ -84,6 +96,10 @@ async def refresh_waf_cookie(
             api_url = f"{base_url.rstrip('/')}/v1/models"
         else:
             api_url = f"{base_url.rstrip('/')}/api/tags"
+
+        # If there is an existing stale Cookie, the WAF may reject outright
+        # without issuing a new challenge. Try without Cookie first.
+        headers_without_cookie = {k: v for k, v in request_headers.items() if k.lower() != "cookie"}
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)),
@@ -94,23 +110,36 @@ async def refresh_waf_cookie(
             ),
             follow_redirects=False,  # WAF often returns 302; we want to inspect headers
         ) as client:
-            # 1) Probe root URL first
-            for target_url in (root_url, api_url):
+            probes = [
+                # (method, url, headers_variant, description)
+                ("GET", root_url, headers_without_cookie, "root (no cookie)"),
+                ("GET", root_url, request_headers, "root (with headers)"),
+                ("HEAD", root_url, headers_without_cookie, "root HEAD (no cookie)"),
+                ("GET", api_url, headers_without_cookie, "api (no cookie)"),
+                ("GET", api_url, request_headers, "api (with headers)"),
+                ("POST", root_url, headers_without_cookie, "root POST (no cookie)"),
+            ]
+
+            last_status = None
+            for method, target_url, hdrs, desc in probes:
                 if target_url == api_url and api_url == root_url:
-                    continue  # don't probe the same URL twice
+                    continue
+                logger.info(f"[WAF] Probing [{method}] {target_url} ({desc}) ...")
+                try:
+                    response = await client.request(method, target_url, headers=hdrs, timeout=timeout)
+                except Exception as probe_err:
+                    logger.warning(f"[WAF] Probe [{method}] {target_url} failed: {probe_err}")
+                    continue
 
-                logger.info(f"[WAF] Probing {target_url} for challenge cookie ...")
-                response = await client.get(target_url, headers=request_headers, timeout=timeout)
-
-                logger.info(f"[WAF] Probe status: {response.status_code}")
+                last_status = response.status_code
+                logger.info(f"[WAF] Probe [{method}] status: {last_status}")
 
                 if response.status_code not in WAF_RETRYABLE_STATUS_CODES:
-                    # Not a challenge response — either healthy or some other error
                     continue
 
                 set_cookie = response.headers.get("set-cookie")
                 if not set_cookie:
-                    logger.warning(f"[WAF] Challenge status {response.status_code} but no Set-Cookie header on {target_url}")
+                    logger.warning(f"[WAF] Challenge status {last_status} but no Set-Cookie header on [{method}] {target_url}")
                     continue
 
                 cookie = parse_set_cookie(set_cookie)
@@ -119,10 +148,10 @@ async def refresh_waf_cookie(
                     continue
 
                 updated_headers = merge_cookie_into_headers(existing_headers, cookie)
-                logger.info(f"[WAF] Captured new cookie for {base_url} from {target_url}")
+                logger.info(f"[WAF] Captured new cookie for {base_url} from [{method}] {target_url}")
                 return True, updated_headers, None
 
-            return False, None, f"No WAF challenge cookie found on root or API path (last status: {response.status_code})"
+            return False, None, f"No WAF challenge cookie found after {len(probes)} attempts (last status: {last_status})"
 
     except httpx.TimeoutException:
         return False, None, "WAF cookie refresh timed out"
