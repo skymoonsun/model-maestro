@@ -93,7 +93,8 @@ async def create_node(
             aws_secret_key=request.aws_secret_key,
             aws_region=request.aws_region,
             aws_session_token=request.aws_session_token,
-            scoped_models=request.scoped_models if request.scoped_models is not None else False
+            scoped_models=request.scoped_models if request.scoped_models is not None else False,
+            auto_cookie_refresh=request.auto_cookie_refresh if request.auto_cookie_refresh is not None else False
         )
 
         # Audit log
@@ -128,7 +129,8 @@ async def create_node(
             aws_secret_key=node.aws_secret_key,
             aws_region=node.aws_region,
             aws_session_token=node.aws_session_token,
-            scoped_models=node.scoped_models if node.scoped_models is not None else False
+            scoped_models=node.scoped_models if node.scoped_models is not None else False,
+            auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
         )
 
 
@@ -190,6 +192,7 @@ async def get_node(
             aws_secret_key=node.aws_secret_key,
             aws_region=node.aws_region,
             aws_session_token=node.aws_session_token,
+            auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False,
             model_count=len(models),
             models=[
                 {
@@ -282,6 +285,9 @@ async def update_node(
         if request.scoped_models is not None:
             update_data["scoped_models"] = request.scoped_models
 
+        if request.auto_cookie_refresh is not None:
+            update_data["auto_cookie_refresh"] = request.auto_cookie_refresh
+
         node = await repo.update(node_id, **update_data)
 
         if not node:
@@ -322,7 +328,8 @@ async def update_node(
             aws_secret_key=node.aws_secret_key,
             aws_region=node.aws_region,
             aws_session_token=node.aws_session_token,
-            scoped_models=node.scoped_models if node.scoped_models is not None else False
+            scoped_models=node.scoped_models if node.scoped_models is not None else False,
+            auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
         )
 
 
@@ -380,7 +387,7 @@ async def check_node_health(
             raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
         
         # Perform health check
-        is_healthy, error = await node_manager.health_check_node(
+        is_healthy, error, updated_headers = await node_manager.health_check_node(
             node.base_url,
             node.api_key,
             node_type=getattr(node, 'node_type', 'ollama'),
@@ -390,9 +397,14 @@ async def check_node_health(
             aws_secret_key=getattr(node, 'aws_secret_key', None),
             aws_region=getattr(node, 'aws_region', None),
             aws_session_token=getattr(node, 'aws_session_token', None),
-            health_check_url=getattr(node, 'health_check_url', None)
+            health_check_url=getattr(node, 'health_check_url', None),
+            auto_cookie_refresh=getattr(node, 'auto_cookie_refresh', False),
         )
-        
+
+        # Persist refreshed WAF cookie if captured
+        if updated_headers:
+            await repo.update(node_id, headers=updated_headers)
+
         # Update node status
         status = "healthy" if is_healthy else "unhealthy"
         await repo.update_health_status(node_id, status, error)
@@ -616,7 +628,8 @@ async def update_node_priorities(
                     health_status=node.health_status,
                     last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
                     created_at=node.created_at.isoformat() if node.created_at else None,
-                    updated_at=node.updated_at.isoformat() if node.updated_at else None
+                    updated_at=node.updated_at.isoformat() if node.updated_at else None,
+                    auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
                 ))
 
         # Audit log

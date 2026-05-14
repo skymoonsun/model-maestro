@@ -300,7 +300,7 @@ async def node_health_check_task():
 
                 # Check all nodes concurrently instead of sequentially
                 async def _check_one(node):
-                    is_healthy, error = await node_manager.health_check_node(
+                    is_healthy, error, updated_headers = await node_manager.health_check_node(
                         node.base_url,
                         node.api_key,
                         timeout=3.0,
@@ -311,9 +311,10 @@ async def node_health_check_task():
                         aws_secret_key=getattr(node, 'aws_secret_key', None),
                         aws_region=getattr(node, 'aws_region', None),
                         aws_session_token=getattr(node, 'aws_session_token', None),
-                        health_check_url=getattr(node, 'health_check_url', None)
+                        health_check_url=getattr(node, 'health_check_url', None),
+                        auto_cookie_refresh=getattr(node, 'auto_cookie_refresh', False),
                     )
-                    return node, is_healthy, error
+                    return node, is_healthy, error, updated_headers
 
                 results = await asyncio.gather(
                     *[_check_one(n) for n in nodes],
@@ -324,7 +325,12 @@ async def node_health_check_task():
                     if isinstance(result, Exception):
                         logger.warning(f"Health check error: {result}")
                         continue
-                    node, is_healthy, error = result
+                    node, is_healthy, error, updated_headers = result
+
+                    # Persist refreshed WAF cookie if captured
+                    if updated_headers:
+                        await node_repo.update(node.id, headers=updated_headers)
+
                     status = "healthy" if is_healthy else "unhealthy"
                     await node_repo.update_health_status(
                         node.id,

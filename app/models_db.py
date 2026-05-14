@@ -300,6 +300,7 @@ class OllamaNode(Base):
     aws_region = Column(String(50), nullable=True)  # AWS Region for Bedrock (e.g. us-east-1)
     aws_session_token = Column(String(4000), nullable=True)  # AWS Session Token (optional, for STS temp creds)
     scoped_models = Column(Boolean, default=False, nullable=True, server_default='false')  # If True, models only accessible via node:code:model prefix
+    auto_cookie_refresh = Column(Boolean, default=False, nullable=False, server_default='false')  # Auto-capture WAF challenge cookies
     last_health_check = Column(DateTime(timezone=True), nullable=True)
     health_status = Column(String(50), default='unknown')  # 'healthy', 'unhealthy', 'unknown'
     created_at = Column(DateTime(timezone=True), server_default=func.now())

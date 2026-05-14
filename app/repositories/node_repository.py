@@ -33,7 +33,8 @@ class NodeRepository:
         aws_secret_key: Optional[str] = None,
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
-        scoped_models: bool = False
+        scoped_models: bool = False,
+        auto_cookie_refresh: bool = False
     ) -> OllamaNode:
         """Create a new Ollama node"""
         node = OllamaNode(
@@ -54,6 +55,7 @@ class NodeRepository:
             aws_region=aws_region,
             aws_session_token=aws_session_token,
             scoped_models=scoped_models,
+            auto_cookie_refresh=auto_cookie_refresh,
             health_status='unknown'
         )
         self.session.add(node)
