@@ -148,6 +148,7 @@ function NodeCard({
         aws_region: node.aws_region ?? undefined,
         aws_session_token: node.aws_session_token ?? undefined,
         scoped_models: node.scoped_models,
+        auto_cookie_refresh: node.auto_cookie_refresh,
     });
     const [headersStr, setHeadersStr] = useState<string>(
         node.headers ? JSON.stringify(node.headers, null, 2) : ''
@@ -189,10 +190,11 @@ function NodeCard({
                 aws_region: node.aws_region ?? undefined,
                 aws_session_token: node.aws_session_token ?? undefined,
                 scoped_models: node.scoped_models,
+                auto_cookie_refresh: node.auto_cookie_refresh,
             });
             setHeadersStr(node.headers ? JSON.stringify(node.headers, null, 2) : '');
         }
-    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.scoped_models]);
+    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.scoped_models, node.auto_cookie_refresh]);
 
     const isInactive = !node.is_active;
 
@@ -243,6 +245,11 @@ function NodeCard({
                             {node.scoped_models && (
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-pink-400 border-pink-400/30 bg-pink-400/10">
                                     Scoped
+                                </Badge>
+                            )}
+                            {node.auto_cookie_refresh && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-emerald-400 border-emerald-400/30 bg-emerald-400/10">
+                                    Cookie Refresh
                                 </Badge>
                             )}
                             {isInactive && (
@@ -468,6 +475,16 @@ function NodeCard({
                                         When enabled, models on this node are only accessible via node:code:model prefix.
                                     </p>
                                 </div>
+                                <div className="flex items-center gap-2">
+                                    <Switch
+                                        checked={form.auto_cookie_refresh}
+                                        onCheckedChange={(v) => setForm((f) => ({ ...f, auto_cookie_refresh: v }))}
+                                    />
+                                    <Label>Auto Cookie Refresh</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        Automatically capture WAF challenge cookies on this node.
+                                    </p>
+                                </div>
                             </div>
                             <DialogFooter>
                                 <Button variant="ghost" onClick={() => setEditOpen(false)}>
@@ -545,6 +562,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         aws_region: undefined,
         aws_session_token: undefined,
         scoped_models: false,
+        auto_cookie_refresh: false,
     });
     const [headersStr, setHeadersStr] = useState('');
     const qc = useQueryClient();
@@ -553,7 +571,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null, headers: undefined, aws_secret_key: undefined, aws_region: undefined, aws_session_token: undefined, scoped_models: false });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null, headers: undefined, aws_secret_key: undefined, aws_region: undefined, aws_session_token: undefined, scoped_models: false, auto_cookie_refresh: false });
             setHeadersStr('');
             toast.success('Node created');
             onSuccess();
@@ -731,6 +749,16 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                         <Label>Scoped Models</Label>
                         <p className="text-xs text-muted-foreground">
                             When enabled, models on this node are only accessible via node:code:model prefix.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            checked={form.auto_cookie_refresh}
+                            onCheckedChange={(v) => setForm((f) => ({ ...f, auto_cookie_refresh: v }))}
+                        />
+                        <Label>Auto Cookie Refresh</Label>
+                        <p className="text-xs text-muted-foreground">
+                            Automatically capture WAF challenge cookies on this node.
                         </p>
                     </div>
                 </div>

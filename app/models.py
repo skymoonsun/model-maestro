@@ -523,6 +523,7 @@ class OllamaNodeCreate(BaseModel):
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
     scoped_models: Optional[bool] = False
+    auto_cookie_refresh: Optional[bool] = False
 
 
 class OllamaNodeUpdate(BaseModel):
@@ -544,6 +545,7 @@ class OllamaNodeUpdate(BaseModel):
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
     scoped_models: Optional[bool] = False
+    auto_cookie_refresh: Optional[bool] = False
 
 
 class OllamaNodeResponse(BaseModel):
@@ -570,6 +572,7 @@ class OllamaNodeResponse(BaseModel):
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
     scoped_models: bool = False
+    auto_cookie_refresh: bool = False
 
 
 class NodeModelInfo(BaseModel):
@@ -604,6 +607,7 @@ class OllamaNodeDetailResponse(BaseModel):
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
     scoped_models: bool = False
+    auto_cookie_refresh: bool = False
     model_count: int = 0
     models: List[NodeModelInfo] = []
 

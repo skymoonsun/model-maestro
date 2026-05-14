@@ -17,6 +17,7 @@ const pageTitles: Record<string, string> = {
     '/tool-sets': 'Tool Sets',
     '/settings': 'Settings',
     '/audit-logs': 'Audit Logs',
+    '/guide': 'Integration Guide',
 };
 
 export function Header() {

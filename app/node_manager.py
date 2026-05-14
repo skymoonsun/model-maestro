@@ -63,7 +63,8 @@ class NodeManager:
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
         health_check_url: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
+        auto_cookie_refresh: bool = False,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, str]]]:
         """
         Check if a node is healthy.
 
@@ -86,22 +87,24 @@ class NodeManager:
         # Antigravity nodes use Google v1internal health check
         if node_type == 'antigravity':
             if not oauth_tokens:
-                return False, "Missing OAuth tokens for antigravity node"
+                return False, "Missing OAuth tokens for antigravity node", None
             from app.google_proxy import health_check_antigravity
-            return await health_check_antigravity(oauth_tokens, timeout=timeout)
+            is_healthy, error = await health_check_antigravity(oauth_tokens, timeout=timeout)
+            return is_healthy, error, None
 
         # Bedrock nodes use AWS ListFoundationModels health check
         if node_type == 'bedrock':
             if not api_key or not aws_secret_key or not aws_region:
-                return False, "Missing AWS credentials or region for bedrock node"
+                return False, "Missing AWS credentials or region for bedrock node", None
             from app.bedrock_proxy import health_check_bedrock
-            return await health_check_bedrock(
+            is_healthy, error = await health_check_bedrock(
                 access_key=api_key,
                 secret_key=aws_secret_key,
                 region=aws_region,
                 session_token=aws_session_token,
                 timeout=timeout
             )
+            return is_healthy, error, None
 
         try:
             client = await self.get_client()
@@ -126,17 +129,44 @@ class NodeManager:
             )
 
             if response.status_code == 200:
-                return True, None
-            else:
-                return False, f"HTTP {response.status_code}"
+                return True, None, None
+
+            # WAF challenge detection
+            if auto_cookie_refresh and response.status_code in (302, 401, 403, 405, 407):
+                from app.waf_cookie_handler import refresh_waf_cookie
+                refreshed, updated_headers, refresh_error = await refresh_waf_cookie(
+                    base_url=base_url,
+                    api_key=api_key,
+                    node_type=node_type,
+                    existing_headers=headers,
+                    health_check_url=health_check_url,
+                    timeout=timeout,
+                )
+                if refreshed and updated_headers:
+                    # Retry health check with refreshed cookie
+                    request_headers_retry = {}
+                    request_headers_retry.update(updated_headers)
+                    if api_key and "Authorization" not in request_headers_retry:
+                        request_headers_retry["Authorization"] = f"Bearer {api_key}"
+                    retry_response = await client.get(
+                        health_url,
+                        headers=request_headers_retry,
+                        timeout=timeout,
+                    )
+                    if retry_response.status_code == 200:
+                        return True, None, updated_headers
+                    return False, f"HTTP {retry_response.status_code} after cookie refresh", updated_headers
+                return False, f"HTTP {response.status_code} (cookie refresh failed: {refresh_error})", None
+
+            return False, f"HTTP {response.status_code}", None
 
         except httpx.TimeoutException:
-            return False, "Request timeout"
+            return False, "Request timeout", None
         except httpx.ConnectError as e:
-            return False, f"Connection error: {str(e)}"
+            return False, f"Connection error: {str(e)}", None
         except Exception as e:
             logger.error(f"Health check error for {base_url}: {e}")
-            return False, str(e)
+            return False, str(e), None
 
     async def discover_models_from_node(
         self,
@@ -150,7 +180,8 @@ class NodeManager:
         aws_secret_key: Optional[str] = None,
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
-    ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+        auto_cookie_refresh: bool = False,
+    ) -> Tuple[bool, List[Dict[str, Any]], Optional[str], Optional[Dict[str, str]]]:
         """
         Discover models from a node.
 
@@ -172,21 +203,23 @@ class NodeManager:
         # Antigravity nodes use Google v1internal model discovery
         if node_type == 'antigravity':
             if not oauth_tokens:
-                return False, [], "Missing OAuth tokens for antigravity node"
+                return False, [], "Missing OAuth tokens for antigravity node", None
             from app.google_proxy import discover_antigravity_models
-            return await discover_antigravity_models(oauth_tokens, project_id)
+            success, models, error = await discover_antigravity_models(oauth_tokens, project_id)
+            return success, models, error, None
 
         # Bedrock nodes use AWS ListFoundationModels discovery
         if node_type == 'bedrock':
             if not api_key or not aws_secret_key or not aws_region:
-                return False, [], "Missing AWS credentials or region for bedrock node"
+                return False, [], "Missing AWS credentials or region for bedrock node", None
             from app.bedrock_proxy import discover_bedrock_models
-            return await discover_bedrock_models(
+            success, models, error = await discover_bedrock_models(
                 access_key=api_key,
                 secret_key=aws_secret_key,
                 region=aws_region,
                 session_token=aws_session_token
             )
+            return success, models, error, None
 
         try:
             client = await self.get_client()
@@ -209,7 +242,56 @@ class NodeManager:
             )
 
             if response.status_code != 200:
-                return False, [], f"HTTP {response.status_code}"
+                # WAF challenge detection
+                if auto_cookie_refresh and response.status_code in (302, 401, 403, 405, 407):
+                    from app.waf_cookie_handler import refresh_waf_cookie
+                    refreshed, updated_headers, refresh_error = await refresh_waf_cookie(
+                        base_url=base_url,
+                        api_key=api_key,
+                        node_type=node_type,
+                        existing_headers=headers,
+                        timeout=timeout,
+                    )
+                    if refreshed and updated_headers:
+                        request_headers_retry = {}
+                        request_headers_retry.update(updated_headers)
+                        if api_key:
+                            request_headers_retry["Authorization"] = f"Bearer {api_key}"
+                        retry_response = await client.get(
+                            discovery_url,
+                            headers=request_headers_retry,
+                            timeout=timeout,
+                        )
+                        if retry_response.status_code == 200:
+                            data = retry_response.json()
+                            result_models = []
+                            if node_type == 'vllm':
+                                models = data.get("data", [])
+                                for model in models:
+                                    result_models.append({
+                                        "name": model.get("id"),
+                                        "size": None,
+                                        "digest": None,
+                                        "modified_at": None,
+                                        "details": {"max_model_len": model.get("max_model_len")},
+                                        "family": None
+                                    })
+                            else:
+                                models = data.get("models", [])
+                                for model in models:
+                                    result_models.append({
+                                        "name": model.get("name"),
+                                        "size": model.get("size"),
+                                        "digest": model.get("digest"),
+                                        "modified_at": model.get("modified_at"),
+                                        "details": model.get("details", {}),
+                                        "family": model.get("details", {}).get("family") if isinstance(model.get("details"), dict) else None
+                                    })
+                            return True, result_models, None, updated_headers
+                        return False, [], f"HTTP {retry_response.status_code} after cookie refresh", updated_headers
+                    return False, [], f"HTTP {response.status_code} (cookie refresh failed: {refresh_error})", None
+
+                return False, [], f"HTTP {response.status_code}", None
 
             data = response.json()
             result_models = []
@@ -239,15 +321,15 @@ class NodeManager:
                         "family": model.get("details", {}).get("family") if isinstance(model.get("details"), dict) else None
                     })
 
-            return True, result_models, None
+            return True, result_models, None, None
 
         except httpx.TimeoutException:
-            return False, [], "Request timeout"
+            return False, [], "Request timeout", None
         except httpx.ConnectError as e:
-            return False, [], f"Connection error: {str(e)}"
+            return False, [], f"Connection error: {str(e)}", None
         except Exception as e:
             logger.error(f"Discovery error for {base_url}: {e}")
-            return False, [], str(e)
+            return False, [], str(e), None
 
     async def sync_node_models(
         self,
@@ -272,7 +354,7 @@ class NodeManager:
         await model_repo.mark_all_unavailable_for_node(node_id)
         
         # Discover models
-        success, models, error = await self.discover_models_from_node(
+        success, models, error, updated_headers = await self.discover_models_from_node(
             node.base_url,
             node.api_key,
             node_type=getattr(node, 'node_type', 'ollama'),
@@ -281,9 +363,14 @@ class NodeManager:
             project_id=getattr(node, 'project_id', None),
             aws_secret_key=getattr(node, 'aws_secret_key', None),
             aws_region=getattr(node, 'aws_region', None),
-            aws_session_token=getattr(node, 'aws_session_token', None)
+            aws_session_token=getattr(node, 'aws_session_token', None),
+            auto_cookie_refresh=getattr(node, 'auto_cookie_refresh', False),
         )
-        
+
+        # Persist refreshed WAF cookie if captured
+        if updated_headers:
+            await node_repo.update(node_id, headers=updated_headers)
+
         if not success:
             # Update node health status
             await node_repo.update_health_status(node_id, "unhealthy", error)

@@ -805,6 +805,7 @@ export interface OllamaNodeResponse {
   aws_region?: string | null;
   aws_session_token?: string | null;
   scoped_models?: boolean;
+  auto_cookie_refresh?: boolean;
 }
 
 export interface NodeModel {
@@ -839,6 +840,7 @@ export interface CreateNode {
   aws_region?: string | null;
   aws_session_token?: string | null;
   scoped_models?: boolean;
+  auto_cookie_refresh?: boolean;
 }
 
 export interface HealthCheckResult {

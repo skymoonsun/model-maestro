@@ -1143,7 +1143,7 @@ class OllamaProxy:
         exclude_scoped: bool = False,
         allowed_node_ids: Optional[List[int]] = None,
         routing_catalog_names: Optional[List[str]] = None,
-    ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]]]:
+    ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]], bool]:
         """
         Select the best node URL for a model using load balancing.
         Uses Redis cache first (zero DB hits per request).
@@ -1240,17 +1240,18 @@ class OllamaProxy:
                 node_api_key = selected_node.get('api_key')
                 node_type = selected_node.get('node_type', 'ollama')
                 node_headers = selected_node.get('headers')
+                node_auto_cookie_refresh = selected_node.get('auto_cookie_refresh', False)
                 logger.info(f"[LB] Selected node {node_name} ({node_type}) for model {model_name}")
                 if node_base_url:
-                    return node_base_url, node_api_key, node_type, node_headers
+                    return node_base_url, node_api_key, node_type, node_headers, node_auto_cookie_refresh
 
-            return self.base_url, None, 'ollama', None
+            return self.base_url, None, 'ollama', None, False
 
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"[LB] Error selecting node for model '{model_name}': {e!r}, falling back to default URL", exc_info=True)
-            return self.base_url, None, 'ollama', None
+            return self.base_url, None, 'ollama', None, False
     
     async def _ensure_mappings_loaded(self):
         """Ensure model mappings and groups are loaded from database"""
@@ -2145,7 +2146,7 @@ class OllamaProxy:
         node_type = 'ollama'
         node_headers = None
 
-        base_url, api_key, node_type, node_headers = await self._select_node_url(
+        base_url, api_key, node_type, node_headers, auto_cookie_refresh = await self._select_node_url(
             model_name or '',
             exclude_scoped=not is_node_scoped and not is_group_request,
             allowed_node_ids=routing_allowed_node_ids,
@@ -2367,6 +2368,7 @@ class OllamaProxy:
                     start_time=start_time,
                     node_type=node_type,
                     node_headers=node_headers,
+                    auto_cookie_refresh=auto_cookie_refresh,
                     exclude_scoped=not is_node_scoped and not is_group_request,
                     bypass_node_access=is_group_request,
                     client_headers=client_headers,
@@ -2391,6 +2393,7 @@ class OllamaProxy:
                 start_time=start_time,
                 node_type=node_type,
                 node_headers=node_headers,
+                auto_cookie_refresh=auto_cookie_refresh,
                 exclude_scoped=not is_node_scoped and not is_group_request,
                 bypass_node_access=is_group_request,
                 client_headers=client_headers,
@@ -2428,6 +2431,7 @@ class OllamaProxy:
         start_time: float,
         node_type: str = 'ollama',
         node_headers: Optional[Dict[str, Any]] = None,
+        auto_cookie_refresh: bool = False,
         exclude_scoped: bool = False,
         bypass_node_access: bool = False,
         client_headers: Optional[Dict[str, str]] = None,
@@ -2514,6 +2518,24 @@ class OllamaProxy:
 
                         # Check status code before streaming
                         if resp.status_code != 200:
+                            # === WAF COOKIE REFRESH ===
+                            # Before failover, try refreshing the WAF cookie on the same node
+                            if auto_cookie_refresh and resp.status_code in (302, 401, 403, 405, 407) and attempt < MAX_FAILOVER_RETRIES:
+                                from app.waf_cookie_handler import refresh_waf_cookie
+                                current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
+                                refreshed, updated_headers, refresh_error = await refresh_waf_cookie(
+                                    base_url=current_base_url,
+                                    api_key=current_api_key,
+                                    node_type=node_type,
+                                    existing_headers=current_headers,
+                                    timeout=10.0,
+                                )
+                                if refreshed and updated_headers:
+                                    logger.warning(f"[WAF] Refreshed cookie for {current_base_url}, retrying same node")
+                                    current_headers = updated_headers
+                                    continue
+                                logger.warning(f"[WAF] Cookie refresh failed for {current_base_url}: {refresh_error}")
+
                             error_text = await resp.aread()
                             error_msg = error_text.decode()
 
@@ -2540,7 +2562,7 @@ class OllamaProxy:
                                 current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                                 tried_nodes.add(current_base_url)
 
-                                new_base_url, new_api_key, _, new_headers = await self._select_node_url(
+                                new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
                                     current_model, exclude_nodes=list(tried_nodes),
                                     exclude_scoped=exclude_scoped,
                                     allowed_node_ids=allowed_node_ids,
@@ -2595,7 +2617,7 @@ class OllamaProxy:
                                     fb_display = current_data.get('model') or current_data.get('name')
                                     fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
                                     # Select new node URL for fallback (reset tried_nodes for new model)
-                                    new_base_url, new_api_key, _, new_headers = await self._select_node_url(
+                                    new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
                                         fb_display or fallback_model,
                                         exclude_scoped=exclude_scoped,
                                         allowed_node_ids=fb_allowed,
@@ -3203,7 +3225,7 @@ class OllamaProxy:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                         tried_nodes.add(current_base_url)
 
-                        new_base_url, new_api_key, _, _ = await self._select_node_url(
+                        new_base_url, new_api_key, _, _, _ = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes),
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
@@ -3247,7 +3269,7 @@ class OllamaProxy:
 
                             fb_display = current_data.get('model') or current_data.get('name')
                             fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
-                            new_base_url, new_api_key, _, _ = await self._select_node_url(
+                            new_base_url, new_api_key, _, _, _ = await self._select_node_url(
                                 fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
@@ -3328,6 +3350,7 @@ class OllamaProxy:
         start_time: float,
         node_type: str = 'ollama',
         node_headers: Optional[Dict[str, Any]] = None,
+        auto_cookie_refresh: bool = False,
         exclude_scoped: bool = False,
         bypass_node_access: bool = False,
         client_headers: Optional[Dict[str, str]] = None,
@@ -3402,6 +3425,24 @@ class OllamaProxy:
 
                 # Check response status
                 if response.status_code >= 400:
+                    # === WAF COOKIE REFRESH ===
+                    # Before failover, try refreshing the WAF cookie on the same node
+                    if auto_cookie_refresh and response.status_code in (302, 401, 403, 405, 407) and attempt < MAX_FAILOVER_RETRIES:
+                        from app.waf_cookie_handler import refresh_waf_cookie
+                        current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
+                        refreshed, updated_headers, refresh_error = await refresh_waf_cookie(
+                            base_url=current_base_url,
+                            api_key=current_api_key,
+                            node_type=node_type,
+                            existing_headers=current_headers,
+                            timeout=10.0,
+                        )
+                        if refreshed and updated_headers:
+                            logger.warning(f"[WAF] Refreshed cookie for {current_base_url}, retrying same node")
+                            current_headers = updated_headers
+                            continue
+                        logger.warning(f"[WAF] Cookie refresh failed for {current_base_url}: {refresh_error}")
+
                     error_text = response.text
                     provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
                     logger.error(f"{provider_label} error ({response.status_code}): {error_text}")
@@ -3415,7 +3456,7 @@ class OllamaProxy:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                         tried_nodes.add(current_base_url)
 
-                        new_base_url, new_api_key, _, new_headers = await self._select_node_url(
+                        new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes),
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
@@ -3472,7 +3513,7 @@ class OllamaProxy:
                             fb_display = current_data.get('model') or current_data.get('name')
                             fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
                             # Select new node URL for fallback
-                            new_base_url, new_api_key, _, new_headers = await self._select_node_url(
+                            new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
                                 fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
@@ -3576,7 +3617,7 @@ class OllamaProxy:
                     current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                     tried_nodes.add(current_base_url)
 
-                    new_base_url, new_api_key, _, _ = await self._select_node_url(
+                    new_base_url, new_api_key, _, _, _ = await self._select_node_url(
                         current_model, exclude_nodes=list(tried_nodes),
                         exclude_scoped=exclude_scoped,
                         allowed_node_ids=allowed_node_ids,
@@ -3623,7 +3664,7 @@ class OllamaProxy:
 
                         fb_display = current_data.get('model') or current_data.get('name')
                         fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
-                        new_base_url, new_api_key, _, _ = await self._select_node_url(
+                        new_base_url, new_api_key, _, _, _ = await self._select_node_url(
                             fb_display or fallback_model,
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=fb_allowed,
@@ -3688,7 +3729,7 @@ class OllamaProxy:
         """Public helper: get the best node URL for a given model (using load balancer)."""
         await self._ensure_mappings_loaded()
         try:
-            base_url, _, _, _ = await self._select_node_url(model_name, exclude_scoped=True)
+            base_url, _, _, _, _ = await self._select_node_url(model_name, exclude_scoped=True)
             return base_url
         except Exception:
             return self.base_url
