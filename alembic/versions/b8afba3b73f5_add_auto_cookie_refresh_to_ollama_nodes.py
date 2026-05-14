@@ -1,7 +1,7 @@
 """add auto_cookie_refresh to ollama_nodes
 
 Revision ID: b8afba3b73f5
-Revises: f6c9b3e4f2d5
+Revises: a1b2c3d4e5f6
 Create Date: 2026-05-14 12:35:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'b8afba3b73f5'
-down_revision = 'f6c9b3e4f2d5'
+down_revision = 'a1b2c3d4e5f6'
 branch_labels = None
 depends_on = None
 
