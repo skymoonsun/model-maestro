@@ -310,7 +310,8 @@ async def node_health_check_task():
                         project_id=getattr(node, 'project_id', None),
                         aws_secret_key=getattr(node, 'aws_secret_key', None),
                         aws_region=getattr(node, 'aws_region', None),
-                        aws_session_token=getattr(node, 'aws_session_token', None)
+                        aws_session_token=getattr(node, 'aws_session_token', None),
+                        health_check_url=getattr(node, 'health_check_url', None)
                     )
                     return node, is_healthy, error
 

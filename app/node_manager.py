@@ -62,6 +62,7 @@ class NodeManager:
         aws_secret_key: Optional[str] = None,
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
+        health_check_url: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         Check if a node is healthy.
@@ -77,6 +78,7 @@ class NodeManager:
             aws_secret_key: AWS Secret Access Key (for bedrock)
             aws_region: AWS Region (for bedrock)
             aws_session_token: AWS Session Token (for bedrock)
+            health_check_url: Optional custom health check endpoint URL
 
         Returns:
             Tuple of (is_healthy, error_message)
@@ -106,11 +108,13 @@ class NodeManager:
             request_headers = {}
             if headers:
                 request_headers.update(headers)
-            if api_key:
+            if api_key and "Authorization" not in request_headers:
                 request_headers["Authorization"] = f"Bearer {api_key}"
 
-            # Use different health check endpoint based on node type
-            if node_type == 'vllm':
+            # Use custom health check URL if provided, otherwise fall back to node type default
+            if health_check_url:
+                health_url = health_check_url
+            elif node_type == 'vllm':
                 health_url = f"{base_url.rstrip('/')}/v1/models"
             else:
                 health_url = f"{base_url.rstrip('/')}/api/tags"
@@ -244,10 +248,7 @@ class NodeManager:
         except Exception as e:
             logger.error(f"Discovery error for {base_url}: {e}")
             return False, [], str(e)
-        except Exception as e:
-            logger.error(f"Model discovery error for {base_url}: {e}")
-            return False, [], str(e)
-    
+
     async def sync_node_models(
         self,
         node_id: int,
