@@ -166,6 +166,7 @@ class NodeRepository:
                 "aws_region": node.aws_region,
                 "aws_session_token": node.aws_session_token,
                 "scoped_models": node.scoped_models,
+                "auto_cookie_refresh": node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False,
                 "health_status": node.health_status,
                 "last_health_check": node.last_health_check.isoformat() if node.last_health_check else None,
                 "created_at": node.created_at.isoformat() if node.created_at else None,
