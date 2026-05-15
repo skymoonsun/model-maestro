@@ -294,12 +294,17 @@ async def list_models(username: str = Depends(get_current_user)):
                 # Get ALL display names for this real model
                 display_names = model_mapper.get_all_display_names_for_real_name(model_name)
 
-                for display_name in display_names:
-                    if display_name not in models_dict:
-                        model_copy = model.copy()
-                        model_copy["name"] = display_name
-                        model_copy["model"] = display_name
-                        models_dict[display_name] = model_copy
+                if display_names:
+                    for display_name in display_names:
+                        if display_name not in models_dict:
+                            model_copy = model.copy()
+                            model_copy["name"] = display_name
+                            model_copy["model"] = display_name
+                            models_dict[display_name] = model_copy
+                else:
+                    # No mapping for this model – add with its original name
+                    if model_name not in models_dict:
+                        models_dict[model_name] = model
 
         # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
         # This allows multiple display names to point to the same real model
@@ -748,15 +753,20 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                 # Get ALL display names for this real model
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
 
-                for display_name in display_names:
-                    if display_name not in models_dict:
-                        model_copy = model.copy()
-                        model_copy["id"] = display_name
-                        # Cursor IDE reads max_model_len to show context usage % and trigger summarization
-                        ctx_len = get_context_length_for_model(display_name)
-                        if ctx_len:
-                            model_copy["max_model_len"] = ctx_len
-                        models_dict[display_name] = model_copy
+                if display_names:
+                    for display_name in display_names:
+                        if display_name not in models_dict:
+                            model_copy = model.copy()
+                            model_copy["id"] = display_name
+                            # Cursor IDE reads max_model_len to show context usage % and trigger summarization
+                            ctx_len = get_context_length_for_model(display_name)
+                            if ctx_len:
+                                model_copy["max_model_len"] = ctx_len
+                            models_dict[display_name] = model_copy
+                else:
+                    # No mapping for this model – add with its original id
+                    if model_id not in models_dict:
+                        models_dict[model_id] = model
 
         # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
         for display_name, real_name in all_mappings.items():
