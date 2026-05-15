@@ -301,6 +301,16 @@ class LoadBalancer:
             logger.error(f"Error getting load status: {e}")
             return []
 
+    async def invalidate_cache(self):
+        """Invalidate Redis load-balancer cache so priority/weight changes take effect immediately."""
+        from app.redis import redis_manager, CACHE_KEYS
+        if redis_manager:
+            try:
+                await redis_manager.delete(CACHE_KEYS["NODE_LOADS"])
+                logger.info("[LB] Load-balancer cache invalidated")
+            except Exception as e:
+                logger.warning(f"[LB] Failed to invalidate load-balancer cache: {e}")
+
 
 class RoutingRuleEngine:
     """

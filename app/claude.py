@@ -108,12 +108,9 @@ async def claude_list_models(
     """
     logger.info(f"[Claude] User {username} requesting model list (limit={limit})")
 
-    # Get all models from Ollama
-    all_models_response = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/api/tags",
-        username=username,
-    )
+    # Get all models from DB (includes antigravity, bedrock, vllm, ollama)
+    from app.node_manager import node_manager
+    all_models_response = await node_manager.get_all_models_from_nodes()
 
     # Get user's model access
     user_models_data = await user_manager.get_user_models(username)
@@ -131,12 +128,13 @@ async def claude_list_models(
             model_id = model.get("name") or model.get("model")
             if model_id:
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
-                for display_name in display_names:
-                    ctx_len = get_context_length_for_model(display_name) or 131072
+                ids_to_add = display_names if display_names else [model_id]
+                for name in ids_to_add:
+                    ctx_len = get_context_length_for_model(name) or 131072
                     models_list.append({
                         "type": "model",
-                        "id": f"claude-{display_name}",
-                        "display_name": display_name,
+                        "id": name if name.startswith("claude-") else f"claude-{name}",
+                        "display_name": name,
                         "created_at": _MODEL_LIST_TIMESTAMP,
                         "max_input_tokens": ctx_len,
                         "max_tokens": 8192,
@@ -187,9 +185,12 @@ async def claude_messages(
     """
     body = await request.json()
     model_name = body.get("model", "")
-    # Strip claude- prefix added by the model list for Claude Code compatibility
+    # Strip claude- prefix only when it was artificially added by the model list.
+    # If the model's real name already starts with claude-, keep it.
     if model_name.startswith("claude-"):
-        model_name = model_name[7:]
+        stripped = model_name[7:]
+        if model_mapper._mapping_lookup_key(stripped) is not None:
+            model_name = stripped
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")

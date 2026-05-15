@@ -131,12 +131,9 @@ async def openclaw_list_models(username: str = Depends(get_openclaw_user)):
     """
     logger.info(f"[OpenClaw] User {username} requesting model list")
 
-    # Get all models from Ollama
-    all_models_response = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/api/tags",
-        username=username,
-    )
+    # Get all models from DB (includes antigravity, bedrock, vllm, ollama)
+    from app.node_manager import node_manager
+    all_models_response = await node_manager.get_all_models_from_nodes()
 
     # Get user's model access
     user_models_data = await user_manager.get_user_models(username)
@@ -155,15 +152,19 @@ async def openclaw_list_models(username: str = Depends(get_openclaw_user)):
             model_name = model.get("name") or model.get("model")
             if model_name:
                 display_names = model_mapper.get_all_display_names_for_real_name(model_name)
-                for display_name in display_names:
-                    if display_name not in models_dict:
-                        model_copy = model.copy()
-                        model_copy["name"] = display_name
-                        model_copy["model"] = display_name
-                        # Remove remote_model/remote_host to hide cloud provider details
-                        model_copy.pop("remote_model", None)
-                        model_copy.pop("remote_host", None)
-                        models_dict[display_name] = model_copy
+                if display_names:
+                    for display_name in display_names:
+                        if display_name not in models_dict:
+                            model_copy = model.copy()
+                            model_copy["name"] = display_name
+                            model_copy["model"] = display_name
+                            # Remove remote_model/remote_host to hide cloud provider details
+                            model_copy.pop("remote_model", None)
+                            model_copy.pop("remote_host", None)
+                            models_dict[display_name] = model_copy
+                else:
+                    if model_name not in models_dict:
+                        models_dict[model_name] = model
 
         # Add mappings that don't have a real Ollama model entry yet
         for display_name, real_name in all_mappings.items():
@@ -491,11 +492,9 @@ async def openclaw_v1_models(username: str = Depends(get_openclaw_user)):
     """
     logger.info(f"[OpenClaw] User {username} requesting v1/models")
 
-    ollama_resp = await ollama_proxy.proxy_request(
-        method="GET",
-        endpoint="/api/tags",
-        username=username,
-    )
+    # Get all models from DB (includes antigravity, bedrock, vllm, ollama)
+    from app.node_manager import node_manager
+    ollama_resp = await node_manager.get_all_models_from_nodes()
 
     user_models_data = await user_manager.get_user_models(username)
     if not user_models_data:
@@ -507,9 +506,17 @@ async def openclaw_v1_models(username: str = Depends(get_openclaw_user)):
             model_id = model.get("name") or model.get("model")
             if model_id:
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
-                for display_name in display_names:
+                if display_names:
+                    for display_name in display_names:
+                        openai_models.append({
+                            "id": display_name,
+                            "object": "model",
+                            "created": 0,
+                            "owned_by": "ollama",
+                        })
+                else:
                     openai_models.append({
-                        "id": display_name,
+                        "id": model_id,
                         "object": "model",
                         "created": 0,
                         "owned_by": "ollama",

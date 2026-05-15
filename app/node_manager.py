@@ -545,7 +545,38 @@ class NodeManager:
         """
         model_repo = NodeModelRepository(session)
         return await model_repo.get_model_distribution()
-    
+
+    async def get_all_active_healthy_nodes(self) -> List[Dict[str, Any]]:
+        """Get all active, healthy nodes (fallback for unmapped models)."""
+        from app.database import async_session_maker
+        from app.repositories.node_repository import NodeRepository
+
+        try:
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                return [
+                    {
+                        "node_id": node.id,
+                        "node_name": node.name,
+                        "base_url": node.base_url,
+                        "api_key": node.api_key,
+                        "node_type": getattr(node, 'node_type', 'ollama'),
+                        "priority": node.priority,
+                        "weight": node.weight,
+                        "health_status": node.health_status,
+                        "headers": node.headers,
+                        "oauth_tokens": node.oauth_tokens,
+                        "project_id": node.project_id,
+                        "scoped_models": node.scoped_models,
+                    }
+                    for node in nodes
+                    if node.health_status in ("healthy", "unknown")
+                ]
+        except Exception as e:
+            logger.error(f"[NodeManager] Error fetching active nodes: {e}")
+            return []
+
     async def invalidate_cache(self):
         """Invalidate model cache in both memory and Redis"""
         self._model_cache.clear()
@@ -553,15 +584,16 @@ class NodeManager:
         from app.redis import redis_manager, CACHE_KEYS
         if redis_manager:
             try:
-                # Delete model nodes cache (pattern scan)
-                keys = await redis_manager.keys(CACHE_KEYS["MODEL_NODES"].replace("{model_name}", "*"))
-                if keys:
-                    await redis_manager.delete(*keys)
+                # Delete model nodes cache by pattern
+                pattern = CACHE_KEYS["MODEL_NODES"].replace("{model_name}", "*")
+                deleted = await redis_manager.delete_pattern(pattern)
+                logger.info(f"[CacheInvalidate] Deleted {deleted} model_nodes keys via pattern '{pattern}'")
                 # Also delete node loads and active nodes
                 await redis_manager.delete(CACHE_KEYS["NODE_LOADS"])
                 await redis_manager.delete(CACHE_KEYS["ACTIVE_NODES"])
-            except Exception:
-                pass
+                logger.info("[CacheInvalidate] NODE_LOADS and ACTIVE_NODES deleted")
+            except Exception as e:
+                logger.warning(f"[CacheInvalidate] Error: {e}")
     
     async def pull_model_to_node(
         self,
@@ -661,124 +693,58 @@ class NodeManager:
     
     async def get_all_models_from_nodes(self) -> Dict[str, Any]:
         """
-        Fetch models from all healthy, active nodes concurrently and merge results.
+        Fetch models from the database (node_models table).
 
-        Deduplicates by model name, keeping the first occurrence's details.
+        Uses DB instead of live HTTP discovery so antigravity/bedrock/vllm/ollama
+        models all appear consistently. Relies on sync_node_models() / background
+        tasks keeping node_models up to date.
+
         Returns Ollama-compatible format: {"models": [...], "nodes_queried": int, "nodes_failed": int}
-
-        Falls back to an empty model list if no nodes are available.
         """
         from app.database import async_session_maker
-
-        nodes_to_query = []
+        from app.repositories.node_repository import NodeModelRepository, NodeRepository
 
         try:
             async with async_session_maker() as session:
                 node_repo = NodeRepository(session)
-                active_nodes = await node_repo.list_active()
+                nodes = await node_repo.list_active()
+                healthy_nodes = [n for n in nodes if n.health_status in ("healthy", "unknown")]
+                healthy_node_ids = {n.id for n in healthy_nodes}
 
-                for node in active_nodes:
-                    if node.health_status in ("healthy", "unknown"):
-                        nodes_to_query.append({
-                            "id": node.id,
-                            "name": node.name,
-                            "base_url": node.base_url,
-                            "api_key": node.api_key,
-                            "node_type": getattr(node, 'node_type', 'ollama'),
-                        })
-        except Exception as e:
-            logger.error(f"[ModelAggregation] Error fetching nodes from DB: {e}")
-            return {"models": [], "nodes_queried": 0, "nodes_failed": 0}
+                model_repo = NodeModelRepository(session)
+                db_models = await model_repo.get_all_available_models()
 
-        if not nodes_to_query:
-            logger.warning("[ModelAggregation] No healthy nodes found for model listing")
-            return {"models": [], "nodes_queried": 0, "nodes_failed": 0}
+                seen_names: set[str] = set()
+                merged_models: List[Dict[str, Any]] = []
+                for m in db_models:
+                    if m.node_id not in healthy_node_ids:
+                        continue
+                    name = m.model_name
+                    if not name or name in seen_names:
+                        continue
+                    seen_names.add(name)
+                    merged_models.append({
+                        "name": name,
+                        "size": m.model_size,
+                        "digest": m.digest,
+                        "modified_at": m.modified_at.isoformat() if m.modified_at else None,
+                        "details": m.model_capabilities or {},
+                        "family": m.model_family,
+                    })
 
-        async def _fetch_node_models(node_info: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], bool]:
-            """Fetch models from a single node. Returns (node_name, models, success)."""
-            try:
-                client = await self.get_client()
-                headers = {}
-                if node_info["api_key"]:
-                    headers["Authorization"] = f"Bearer {node_info['api_key']}"
-
-                node_type = node_info.get("node_type", "ollama")
-                if node_type == "vllm":
-                    discovery_url = f"{node_info['base_url'].rstrip('/')}/v1/models"
-                else:
-                    discovery_url = f"{node_info['base_url'].rstrip('/')}/api/tags"
-
-                response = await client.get(
-                    discovery_url,
-                    headers=headers,
-                    timeout=15.0,
+                logger.info(
+                    f"[ModelAggregation] DB scan returned {len(merged_models)} unique models "
+                    f"from {len(healthy_nodes)} healthy node(s)"
                 )
+                return {
+                    "models": merged_models,
+                    "nodes_queried": len(healthy_nodes),
+                    "nodes_failed": 0,
+                }
 
-                if response.status_code != 200:
-                    logger.warning(
-                        f"[ModelAggregation] Node {node_info['name']} returned {response.status_code}"
-                    )
-                    return node_info["name"], [], False
-
-                data = response.json()
-
-                if node_type == "vllm":
-                    # vLLM returns {"object": "list", "data": [{"id": "...", ...}]}
-                    # Convert to Ollama-compatible format {"models": [{"name": "...", ...}]}
-                    raw_models = data.get("data", [])
-                    models = []
-                    for m in raw_models:
-                        models.append({
-                            "name": m.get("id"),
-                            "size": None,
-                            "digest": None,
-                            "modified_at": None,
-                            "details": None,
-                        })
-                else:
-                    models = data.get("models", [])
-
-                return node_info["name"], models, True
-
-            except Exception as e:
-                logger.warning(f"[ModelAggregation] Error fetching from node {node_info['name']}: {e}")
-                return node_info["name"], [], False
-
-        # Fetch from all nodes concurrently
-        results = await asyncio.gather(
-            *[_fetch_node_models(n) for n in nodes_to_query],
-            return_exceptions=False,
-        )
-
-        # Merge models, deduplicating by name
-        seen_names = set()
-        merged_models = []
-        nodes_succeeded = 0
-        nodes_failed = 0
-
-        for node_name, models, success in results:
-            if success:
-                nodes_succeeded += 1
-            else:
-                nodes_failed += 1
-
-            for model in models:
-                model_name = model.get("name")
-                if model_name and model_name not in seen_names:
-                    seen_names.add(model_name)
-                    merged_models.append(model)
-
-        logger.info(
-            f"[ModelAggregation] Fetched {len(merged_models)} unique models "
-            f"from {nodes_succeeded}/{len(nodes_to_query)} nodes "
-            f"({nodes_failed} failed)"
-        )
-
-        return {
-            "models": merged_models,
-            "nodes_queried": nodes_succeeded,
-            "nodes_failed": nodes_failed,
-        }
+        except Exception as e:
+            logger.error(f"[ModelAggregation] Error reading models from DB: {e}", exc_info=True)
+            return {"models": [], "nodes_queried": 0, "nodes_failed": 0}
 
     async def get_node_models(self, node_id: int, session) -> List[Dict[str, Any]]:
         """Get all models for a specific node"""
