@@ -261,6 +261,16 @@ export const vllmModelsApi = {
   syncMeta: () => adminFetch<SyncVllmMetaResult>('/admin/models/sync-vllm-meta', { method: 'POST' }),
 };
 
+// ==================== Antigravity Models ====================
+export const antigravityModelsApi = {
+  list: () => adminFetch<VllmModel[]>('/admin/models/antigravity'),
+};
+
+// ==================== Bedrock Models ====================
+export const bedrockModelsApi = {
+  list: () => adminFetch<VllmModel[]>('/admin/models/bedrock'),
+};
+
 // ==================== Model Config ====================
 export const modelConfigApi = {
   list: () => adminFetch<ModelConfig[]>('/admin/model-config'),
