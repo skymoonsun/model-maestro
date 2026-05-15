@@ -4,6 +4,7 @@ const API_BASE = typeof window !== 'undefined'
   : (process.env.BACKEND_URL || 'http://localhost:8000');  // Server-side
 
 const TOKEN_STORAGE_KEY = 'admin_token';
+let _redirectingToLogin = false;
 
 function getAdminToken(): string {
   if (typeof window === 'undefined') return '';
@@ -15,11 +16,16 @@ export function clearAdminToken(): void {
 }
 
 async function handleUnauthorized() {
-  if (typeof window !== 'undefined') {
-    clearAdminToken();
-    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { }
-    window.location.href = '/login';
+  if (typeof window === 'undefined' || _redirectingToLogin) return;
+  if (window.location.pathname === '/login') return;
+  _redirectingToLogin = true;
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch {
+    // still clear client state and send user to login
   }
+  clearAdminToken();
+  window.location.replace('/login');
 }
 
 export class ApiError extends Error {

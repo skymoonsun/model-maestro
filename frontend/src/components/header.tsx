@@ -30,15 +30,10 @@ export function Header() {
         return 'Admin Panel';
     };
 
-    const handleLogout = async () => {
-        try {
-            clearAdminToken();
-            await fetch('/api/auth/logout', { method: 'POST' });
-            toast.success('Logged out');
-            window.location.href = '/login';
-        } catch {
-            toast.error('Logout failed');
-        }
+    const handleLogout = () => {
+        clearAdminToken();
+        toast.success('Logged out');
+        window.location.replace('/login');
     };
 
     return (

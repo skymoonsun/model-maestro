@@ -7,13 +7,12 @@ export function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
 
     if (pathname === '/login') {
-        if (request.cookies.get(SESSION_COOKIE)?.value) {
-            return NextResponse.redirect(new URL('/', request.url));
-        }
+        // Cookie alone does not mean a valid UI session — JWT lives in sessionStorage.
+        // Redirecting to / when only the cookie exists trapped users in a / ↔ /login loop.
         return NextResponse.next();
     }
 
-    if (pathname.startsWith('/api/auth/')) {
+    if (pathname.startsWith('/api/')) {
         return NextResponse.next();
     }
 
