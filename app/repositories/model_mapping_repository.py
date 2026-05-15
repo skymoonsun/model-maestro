@@ -1,11 +1,11 @@
 """Model mapping repository for database operations"""
 
 from typing import Optional, List, Dict, Tuple
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models_db import ModelMapping, OllamaNode
+from app.models_db import ModelMapping, OllamaNode, model_mapping_nodes
 
 
 class ModelMappingRepository:
@@ -15,8 +15,10 @@ class ModelMappingRepository:
         self.session = session
 
     async def sync_mapping_nodes(self, mapping: ModelMapping, node_ids: Optional[List[int]]) -> None:
-        """Replace M:N node associations. Empty list clears all (global routing)."""
-        mapping.nodes.clear()
+        """Replace M:N node associations via direct SQL (avoids async lazy-load issues)."""
+        await self.session.execute(
+            delete(model_mapping_nodes).where(model_mapping_nodes.c.mapping_id == mapping.id)
+        )
         if not node_ids:
             return
         uniq = sorted({int(x) for x in node_ids})
@@ -26,7 +28,13 @@ class ModelMappingRepository:
         missing = set(uniq) - found
         if missing:
             raise ValueError(f"Unknown node id(s): {sorted(missing)}")
-        mapping.nodes.extend(nodes)
+        if nodes:
+            await self.session.execute(
+                insert(model_mapping_nodes).values([
+                    {"mapping_id": mapping.id, "node_id": n.id}
+                    for n in nodes
+                ])
+            )
 
     async def create(
         self,
