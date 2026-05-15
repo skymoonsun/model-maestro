@@ -545,7 +545,38 @@ class NodeManager:
         """
         model_repo = NodeModelRepository(session)
         return await model_repo.get_model_distribution()
-    
+
+    async def get_all_active_healthy_nodes(self) -> List[Dict[str, Any]]:
+        """Get all active, healthy nodes (fallback for unmapped models)."""
+        from app.database import async_session_maker
+        from app.repositories.node_repository import NodeRepository
+
+        try:
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                return [
+                    {
+                        "node_id": node.id,
+                        "node_name": node.name,
+                        "base_url": node.base_url,
+                        "api_key": node.api_key,
+                        "node_type": getattr(node, 'node_type', 'ollama'),
+                        "priority": node.priority,
+                        "weight": node.weight,
+                        "health_status": node.health_status,
+                        "headers": node.headers,
+                        "oauth_tokens": node.oauth_tokens,
+                        "project_id": node.project_id,
+                        "scoped_models": node.scoped_models,
+                    }
+                    for node in nodes
+                    if node.health_status in ("healthy", "unknown")
+                ]
+        except Exception as e:
+            logger.error(f"[NodeManager] Error fetching active nodes: {e}")
+            return []
+
     async def invalidate_cache(self):
         """Invalidate model cache in both memory and Redis"""
         self._model_cache.clear()

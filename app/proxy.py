@@ -1087,13 +1087,26 @@ class OllamaProxy:
     ) -> Optional[List[int]]:
         """Strip internal preferred-node keys from request body and compute LB restriction."""
         if not isinstance(data, dict):
-            return model_mapper.get_restricted_node_ids(model_name) if model_name else None
+            mmap = model_mapper.get_restricted_node_ids(model_name) if model_name else None
+            logger.info(f"[LB][RoutingDebug] data is not dict, model={model_name}, mapping_restrict={mmap}")
+            return mmap
         legacy = data.pop('_preferred_node_id', None)
         pids = data.pop('_preferred_node_ids', None)
         if legacy is not None and not pids:
             pids = [legacy]
-        mmap = model_mapper.get_restricted_node_ids(model_name) if model_name else None
-        return self._merge_allowed_node_ids(pids, mmap)
+
+        # Only apply mapping restrictions if the model is actually mapped.
+        # Unmapped models should not be restricted by phantom/stale mapping data.
+        mmap = None
+        if model_name and model_mapper._mapping_lookup_key(model_name) is not None:
+            mmap = model_mapper.get_restricted_node_ids(model_name)
+
+        merged = self._merge_allowed_node_ids(pids, mmap)
+        logger.info(
+            f"[LB][RoutingDebug] model={model_name} _preferred_node_ids={pids} "
+            f"mapping_restrict={mmap} merged={merged}"
+        )
+        return merged
 
     async def _gather_nodes_for_model_candidates(
         self,
@@ -1165,6 +1178,15 @@ class OllamaProxy:
                 routing_catalog_names=routing_catalog_names,
             )
 
+            # Fallback for unmapped/ungrouped models: scan all active healthy nodes
+            has_mapping = model_mapper._mapping_lookup_key(model_name) is not None if model_name else False
+            is_grouped = model_group_manager.is_group(model_name) if model_name else False
+
+            if not nodes and not has_mapping and not is_grouped:
+                logger.info(f"[LB] Model '{model_name}' is unmapped/ungrouped and not in any catalog. Falling back to all active nodes.")
+                nodes = await node_manager.get_all_active_healthy_nodes()
+                logger.info(f"[LB] Fallback returned {len(nodes)} active healthy node(s) for unmapped model '{model_name}'")
+
             if not nodes:
                 # No nodes have this model - use default (if not excluded)
                 if exclude_nodes and self.base_url in exclude_nodes:
@@ -1180,19 +1202,26 @@ class OllamaProxy:
                     nodes = filtered_allow
                     logger.info(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
                 else:
-                    logger.error(
-                        f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for model "
-                        f"'{model_name}' (mapped real '{real_model_name}'); refusing to widen pool"
-                    )
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "Routing is restricted to specific nodes for this model, but none of those nodes "
-                            f"currently advertise '{model_name}' or mapped real name '{real_model_name}'. "
-                            "Sync node catalogs so preferred nodes list the same spelling your mapping uses, "
-                            "or adjust mapping / preferred nodes."
-                        ),
-                    )
+                    # For unmapped/ungrouped models, don't 503; widen the pool instead
+                    if not has_mapping and not is_grouped:
+                        logger.warning(
+                            f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for unmapped/ungrouped model "
+                            f"'{model_name}' (mapped real '{real_model_name}'). Using all {len(nodes)} found node(s) instead."
+                        )
+                    else:
+                        logger.error(
+                            f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for model "
+                            f"'{model_name}' (mapped real '{real_model_name}'); refusing to widen pool"
+                        )
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Routing is restricted to specific nodes for this model, but none of those nodes "
+                                f"currently advertise '{model_name}' or mapped real name '{real_model_name}'. "
+                                "Sync node catalogs so preferred nodes list the same spelling your mapping uses, "
+                                "or adjust mapping / preferred nodes."
+                            ),
+                        )
 
             # Filter out scoped nodes when doing normal load balancing
             if exclude_scoped:

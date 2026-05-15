@@ -628,10 +628,6 @@ async def update_node_priorities(
     Expects a list of {node_id, priority} objects.
     Higher priority = preferred in fallback order.
     """
-    logger.info(f"[PriorityBatch] Received {len(request.priorities)} updates")
-    for p in request.priorities:
-        logger.info(f"[PriorityBatch]  -> node_id={p.node_id}, priority={p.priority}")
-
     async with async_session_maker() as session:
         repo = NodeRepository(session)
         updated_nodes = []
@@ -642,7 +638,6 @@ async def update_node_priorities(
             if node:
                 node.priority = item.priority
                 updated_nodes.append(node)
-                logger.info(f"[PriorityBatch] Queued update node {node.name} (id={node.id}) priority={item.priority}")
 
         await session.commit()
 
