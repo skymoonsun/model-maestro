@@ -186,6 +186,11 @@ class UserActivityRepository:
                 conditions.append(
                     (UserActivityLog.status_code >= 400) | (UserActivityLog.status_code == None)
                 )
+            elif status_category == "4xx":
+                conditions.append(UserActivityLog.status_code >= 400)
+                conditions.append(UserActivityLog.status_code < 500)
+            elif status_category == "5xx":
+                conditions.append(UserActivityLog.status_code >= 500)
         if request_type is not None:
             conditions.append(UserActivityLog.request_type == request_type)
         if source is not None:

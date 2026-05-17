@@ -2218,6 +2218,18 @@ class OllamaProxy:
         # Block if no node found (model unavailable)
         if not base_url:
             logger.warning(f"[Proxy] No available node found for model '{model_name}' — model may be unavailable")
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            if username and model_name:
+                await self._log_user_activity(
+                    username=username,
+                    model_name=model_name,
+                    request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
+                    status_code=404,
+                    duration_ms=duration_ms,
+                    error_message=f"Model '{model_name}' is not available",
+                    source=self._detect_request_source(endpoint),
+                    url_path=endpoint
+                )
             raise HTTPException(
                 status_code=404,
                 detail=f"Model '{model_name}' is not available"
@@ -2576,15 +2588,18 @@ class OllamaProxy:
                     if current_api_key:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
 
-                    # Log full outgoing request body and headers for debugging
+                    # Log full outgoing request body and headers for debugging (debug level only)
                     if current_data:
                         _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                        logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
-                    logger.info(f"[OUTGOING] request headers: {request_headers}")
+                        logger.debug(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
+                    logger.debug(f"[OUTGOING] request headers: {request_headers}")
 
                     async with client.stream("POST", current_url, json=current_data, headers=request_headers) as resp:
                         provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                        logger.info(f"[STREAM] {provider_label} response status: {resp.status_code}")
+                        if resp.status_code >= 400:
+                            logger.warning(f"[STREAM] {provider_label} response status: {resp.status_code}")
+                        else:
+                            logger.debug(f"[STREAM] {provider_label} response status: {resp.status_code}")
 
                         # Check status code before streaming
                         if resp.status_code != 200:
@@ -2785,13 +2800,13 @@ class OllamaProxy:
                             total_bytes += len(chunk)
 
                             if chunk_count <= 3:
-                                logger.info(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
+                                logger.debug(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
 
                             buffer += chunk
 
                             # Guard against unbounded buffer growth from malformed upstream
                             if len(buffer) > 1024 * 1024:
-                                logger.warning(f"[STREAM] Buffer exceeded 1MB, discarding {len(buffer)} bytes")
+                                logger.debug(f"[STREAM] Buffer exceeded 1MB, discarding {len(buffer)} bytes")
                                 buffer = b""
                                 continue
 
@@ -3279,10 +3294,10 @@ class OllamaProxy:
                                 yield b'data: ' + _json_dumps(text_chunk) + b'\n\n'
                                 deepseek_suspicion_buffer = ""
 
-                            logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
+                            logger.debug(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
                             yield b'data: [DONE]\n\n'
 
-                        logger.info(f"[STREAM END] Stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
+                        logger.debug(f"[STREAM END] Stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
                         return  # Successfully completed
 
                 except httpx.RequestError as e:
@@ -3478,11 +3493,11 @@ class OllamaProxy:
                 if current_api_key:
                     request_headers["Authorization"] = f"Bearer {current_api_key}"
 
-                # Log full outgoing request body and headers for debugging
+                # Log full outgoing request body and headers for debugging (debug level only)
                 if current_data:
                     _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                    logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
-                logger.info(f"[OUTGOING] request headers: {request_headers}")
+                    logger.debug(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
+                logger.debug(f"[OUTGOING] request headers: {request_headers}")
 
                 if method.upper() == "GET":
                     response = await client.get(current_url, headers=request_headers)
