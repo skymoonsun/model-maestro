@@ -447,7 +447,9 @@ async def list_models(username: str = Depends(get_current_user)):
         all_models_response = await ollama_proxy.proxy_request(
             method="GET",
             endpoint="/api/tags",
-            username=username
+            username=username,
+            source="Ollama Native",
+            url_path="/api/tags"
         )
 
     # Get user's model access
@@ -535,7 +537,9 @@ async def generate(
         endpoint="/api/generate",
         data=request.model_dump(exclude_none=True),
         stream=request.stream or False,
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/generate"
     )
 
 
@@ -572,7 +576,9 @@ async def chat(
         endpoint="/api/chat",
         data=request.model_dump(exclude_none=True),
         stream=request.stream or False,
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/chat"
     )
 
 
@@ -608,7 +614,9 @@ async def embeddings(
         method="POST",
         endpoint="/api/embeddings",
         data=request.model_dump(exclude_none=True),
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/embeddings"
     )
 
 
@@ -646,7 +654,9 @@ async def embed(
         method="POST",
         endpoint="/api/embed",
         data=request.model_dump(exclude_none=True),
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/embed"
     )
 
 
@@ -683,7 +693,9 @@ async def openai_embeddings(
         method="POST",
         endpoint="/v1/embeddings",
         data=request.model_dump(exclude_none=True),
-        username=username
+        username=username,
+        source="OpenAI-Compatible",
+        url_path="/v1/embeddings"
     )
 
     return response
@@ -718,7 +730,9 @@ async def show_model(
         method="POST",
         endpoint="/api/show",
         data=data,
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/show"
     )
 
 
@@ -874,7 +888,9 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         native_models_response = await ollama_proxy.proxy_request(
             method="GET",
             endpoint="/api/tags",
-            username=username
+            username=username,
+            source="OpenAI-Compatible",
+            url_path="/v1/models",
         )
 
     # Convert Ollama native format to OpenAI format
@@ -1091,7 +1107,9 @@ async def openai_chat_completions(
         data=data,
         stream=stream,
         username=username,
-        client_headers=client_headers
+        client_headers=client_headers,
+        source="OpenAI-Compatible",
+        url_path="/v1/chat/completions"
     )
 
 
@@ -1134,7 +1152,9 @@ async def openai_completions(
         endpoint="/v1/completions",
         data=data,
         stream=data.get("stream", False),
-        username=username
+        username=username,
+        source="OpenAI-Compatible",
+        url_path="/v1/completions"
     )
 
 
@@ -1276,7 +1296,9 @@ async def cursor_chat_completions(
         endpoint="/v1/chat/completions",
         data=data,
         stream=stream,
-        username=username
+        username=username,
+        source="Cursor",
+        url_path="/cursor/chat/completions"
     )
 
 

@@ -231,6 +231,8 @@ async def openclaw_show_model(
             endpoint="/api/show",
             data=ollama_body,
             username=username,
+            source="OpenClaw",
+            url_path="/openclaw/api/show",
         )
     except HTTPException as e:
         # If Ollama doesn't have this model (e.g. cloud model), build a synthetic response
@@ -439,6 +441,8 @@ async def openclaw_chat(
         data=body,
         stream=stream,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/api/chat",
     )
 
 
@@ -480,6 +484,8 @@ async def openclaw_embed(
         data=body,
         stream=False,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/api/embed",
     )
 
 
@@ -573,6 +579,8 @@ async def openclaw_v1_chat_completions(
         data=body,
         stream=stream,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/chat/completions",
     )
 
 
@@ -612,6 +620,8 @@ async def openclaw_v1_embeddings(
         data=ollama_body,
         stream=False,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/embeddings",
     )
 
     if isinstance(response, dict):

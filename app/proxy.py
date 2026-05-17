@@ -1972,6 +1972,8 @@ class OllamaProxy:
         """Detect request source/client from endpoint path."""
         if endpoint.startswith('/openclaw'):
             return 'OpenClaw'
+        if endpoint.startswith('/claude'):
+            return 'Claude'
         if endpoint.startswith('/grafana'):
             return 'Grafana'
         if endpoint.startswith('/api/'):
@@ -2090,7 +2092,9 @@ class OllamaProxy:
         data: Optional[Dict[str, Any]] = None,
         stream: bool = False,
         username: Optional[str] = None,
-        client_headers: Optional[Dict[str, str]] = None
+        client_headers: Optional[Dict[str, str]] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
     ):
         """
         Proxy request to Ollama with automatic failover.
@@ -2227,8 +2231,8 @@ class OllamaProxy:
                     status_code=404,
                     duration_ms=duration_ms,
                     error_message=f"Model '{model_name}' is not available",
-                    source=self._detect_request_source(endpoint),
-                    url_path=endpoint
+                    source=source or self._detect_request_source(endpoint),
+                    url_path=url_path or endpoint
                 )
             raise HTTPException(
                 status_code=404,
@@ -2457,6 +2461,8 @@ class OllamaProxy:
                     allowed_node_ids=routing_allowed_node_ids,
                     routing_snapshot=routing_snapshot,
                     routing_catalog_names=routing_catalog_names,
+                    source=source,
+                    url_path=url_path,
                 )
 
             # Non-streaming requests with failover support
@@ -2482,6 +2488,8 @@ class OllamaProxy:
                 allowed_node_ids=routing_allowed_node_ids,
                 routing_snapshot=routing_snapshot,
                 routing_catalog_names=routing_catalog_names,
+                source=source,
+                url_path=url_path,
             )
 
         except HTTPException:
@@ -2520,6 +2528,8 @@ class OllamaProxy:
         allowed_node_ids: Optional[List[int]] = None,
         routing_snapshot: Optional[Dict[str, str]] = None,
         routing_catalog_names: Optional[List[str]] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
     ):
         """
         Handle streaming requests with automatic failover.
@@ -3233,8 +3243,8 @@ class OllamaProxy:
                                 total_tokens=prompt_tokens + completion_tokens,
                                 status_code=200,
                                 duration_ms=duration_ms,
-                                source=self._detect_request_source(endpoint),
-                                url_path=endpoint
+                                source=source or self._detect_request_source(endpoint),
+                                url_path=url_path or endpoint
                             )
 
                         # Send [DONE] if not already sent
@@ -3442,6 +3452,8 @@ class OllamaProxy:
         allowed_node_ids: Optional[List[int]] = None,
         routing_snapshot: Optional[Dict[str, str]] = None,
         routing_catalog_names: Optional[List[str]] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -3641,8 +3653,8 @@ class OllamaProxy:
                             prompt_tokens=0,
                             completion_tokens=0,
                             total_tokens=0,
-                            source=self._detect_request_source(endpoint),
-                            url_path=endpoint
+                            source=source or self._detect_request_source(endpoint),
+                            url_path=url_path or endpoint
                         )
                     return response.text
 
@@ -3687,8 +3699,8 @@ class OllamaProxy:
                         total_tokens=total_tokens or (prompt_tokens + completion_tokens),
                         status_code=200,
                         duration_ms=duration_ms,
-                        source=self._detect_request_source(endpoint),
-                        url_path=endpoint
+                        source=source or self._detect_request_source(endpoint),
+                        url_path=url_path or endpoint
                     )
 
                 return response_data
@@ -3799,8 +3811,8 @@ class OllamaProxy:
                 status_code=error_status,
                 duration_ms=duration_ms,
                 error_message=error_msg[:500],
-                source=self._detect_request_source(endpoint),
-                url_path=endpoint
+                source=source or self._detect_request_source(endpoint),
+                url_path=url_path or endpoint
             )
         if last_error:
             raise last_error
