@@ -69,7 +69,7 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
         async with async_session_maker() as session:
             node_repo = NodeRepository(session)
             nodes = await node_repo.list_active()
-            healthy_nodes = [n for n in nodes if n.health_status in ("healthy", "unknown")]
+            healthy_nodes = [n for n in nodes if n.health_status in ("healthy", "unknown") and n.node_type == 'ollama']
             healthy_node_ids = {n.id for n in healthy_nodes}
 
             model_repo = NodeModelRepository(session)
