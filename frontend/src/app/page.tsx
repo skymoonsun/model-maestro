@@ -282,7 +282,7 @@ function LoadingSkeleton() {
 }
 
 export default function DashboardPage() {
-  const { data: stats, isLoading: statsLoading } = useQuery({
+  const { data: stats, isLoading: statsLoading, isError: statsError } = useQuery({
     queryKey: ['dashboard', 'stats'],
     queryFn: dashboardApi.getStats,
   });
@@ -306,6 +306,23 @@ export default function DashboardPage() {
     queryKey: ['dashboard', 'user-stats'],
     queryFn: () => dashboardApi.getUserStats(),
   });
+
+  if (statsError) {
+    return (
+      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-6 text-center space-y-3">
+        <p className="font-medium">Dashboard yüklenemedi</p>
+        <p className="text-sm text-muted-foreground">
+          Backend&apos;e ulaşılamıyor olabilir veya oturum geçersiz. Giriş sayfasını deneyin.
+        </p>
+        <a
+          href="/login"
+          className="inline-block text-sm text-primary underline underline-offset-4"
+        >
+          Giriş sayfasına git
+        </a>
+      </div>
+    );
+  }
 
   if (statsLoading || !stats) return <LoadingSkeleton />;
 
