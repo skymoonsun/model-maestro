@@ -306,18 +306,6 @@ async def list_models(username: str = Depends(get_current_user)):
                     if model_name not in models_dict:
                         models_dict[model_name] = model
 
-        # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
-        # This allows multiple display names to point to the same real model
-        for display_name, real_name in all_mappings.items():
-            if display_name not in models_dict:
-                # Create a synthetic model entry for this display name
-                # Use a template from Ollama models or create a minimal one
-                base_model = all_models_response["models"][0] if all_models_response["models"] else {}
-                model_entry = base_model.copy() if base_model else {}
-                model_entry["name"] = display_name
-                model_entry["model"] = display_name
-                models_dict[display_name] = model_entry
-
         mapped_models = list(models_dict.values())
 
         # Filter models based on user access (using display names)
@@ -747,9 +735,11 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         models_dict = {}
 
         # First, add all models from Ollama with reverse mapping
+        available_real_names: set[str] = set()
         for model in all_models_response["data"]:
             model_id = model.get("id")
             if model_id:
+                available_real_names.add(model_id)
                 # Get ALL display names for this real model
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
 
@@ -768,9 +758,9 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                     if model_id not in models_dict:
                         models_dict[model_id] = model
 
-        # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
+        # Second, add display names from mappings only if the real model is currently available
         for display_name, real_name in all_mappings.items():
-            if display_name not in models_dict:
+            if display_name not in models_dict and real_name in available_real_names:
                 # Create a synthetic model entry for this display name
                 base_model = all_models_response["data"][0] if all_models_response["data"] else {}
                 model_entry = base_model.copy() if base_model else {}

@@ -241,7 +241,7 @@ class NodeModelRepository:
             model.digest = digest
             model.modified_at = modified_dt
             model.last_seen = datetime.now(timezone.utc)
-            model.is_available = True
+            # is_available korunur — admin manuel set etmis olabilir
         else:
             # Create
             model = NodeModel(
@@ -278,6 +278,11 @@ class NodeModelRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_all_models(self) -> List[NodeModel]:
+        """Get all models from all nodes (including inactive)"""
+        result = await self.session.execute(select(NodeModel))
+        return list(result.scalars().all())
 
     async def get_all_available_models(self) -> List[NodeModel]:
         """Get all available models from all nodes"""
@@ -369,11 +374,32 @@ class NodeModelRepository:
         )
         await self.session.commit()
     
+    async def has_any_available(self, model_name: str) -> bool:
+        """Check if model_name exists with is_available=True on any node"""
+        from sqlalchemy import func
+        result = await self.session.execute(
+            select(func.count(NodeModel.id)).where(
+                and_(
+                    NodeModel.model_name == model_name,
+                    NodeModel.is_available == True
+                )
+            )
+        )
+        return (result.scalar() or 0) > 0
+
+    async def model_exists(self, model_name: str) -> bool:
+        """Check if model_name is registered in node_models (regardless of availability)"""
+        from sqlalchemy import func
+        result = await self.session.execute(
+            select(func.count(NodeModel.id)).where(NodeModel.model_name == model_name)
+        )
+        return (result.scalar() or 0) > 0
+
     async def get_model_distribution(self) -> List[Dict[str, Any]]:
         """Get distribution of models across nodes - for frontend"""
         from sqlalchemy import func
         from app.models_db import OllamaNode
-        
+
         # Get all unique models with their nodes
         result = await self.session.execute(
             select(
@@ -391,7 +417,7 @@ class NodeModelRepository:
             .group_by(NodeModel.model_name)
             .order_by(NodeModel.model_name)
         )
-        
+
         return [
             {
                 "model_name": row.model_name,

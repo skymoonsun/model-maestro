@@ -445,6 +445,7 @@ class OllamaModelListItem(BaseModel):
     # Enriched fields (from our DB)
     is_mapped: bool = False
     display_name: Optional[str] = None
+    is_available: bool = True
     # Which nodes have this model
     nodes: Optional[List[str]] = None
     context_length: Optional[int] = None
@@ -462,6 +463,7 @@ class VllmModelListItem(BaseModel):
     modified_at: Optional[str] = None
     is_mapped: bool = False
     display_name: Optional[str] = None
+    is_available: bool = True
     context_length: Optional[int] = None
     capabilities: Optional[List[str]] = None
     max_model_len: Optional[int] = None

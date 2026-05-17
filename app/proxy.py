@@ -1183,17 +1183,50 @@ class OllamaProxy:
             is_grouped = model_group_manager.is_group(model_name) if model_name else False
 
             if not nodes and not has_mapping and not is_grouped:
+                # Before falling back, check if model exists in DB but is deactivated
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeModelRepository
+                    async with async_session_maker() as session:
+                        model_repo = NodeModelRepository(session)
+                        if await model_repo.model_exists(model_name):
+                            if not await model_repo.has_any_available(model_name):
+                                logger.info(f"[LB] Unmapped model '{model_name}' exists but is deactivated in DB — refusing fallback")
+                                return "", None, 'ollama', None, False
+                except Exception:
+                    pass
+
                 logger.info(f"[LB] Model '{model_name}' is unmapped/ungrouped and not in any catalog. Falling back to all active nodes.")
                 nodes = await node_manager.get_all_active_healthy_nodes()
                 logger.info(f"[LB] Fallback returned {len(nodes)} active healthy node(s) for unmapped model '{model_name}'")
 
             if not nodes:
-                # No nodes have this model - use default (if not excluded)
+                # No nodes have this model
+                # For mapped/grouped models, don't fall back to default URL —
+                # the model is genuinely unavailable (is_available=False or no healthy node)
+                if has_mapping or is_grouped:
+                    logger.info(f"[LB] Mapped/grouped model '{model_name}' has no available nodes, refusing fallback")
+                    return "", None, 'ollama', None, False
+
+                # For unmapped models: if the model exists in DB but is marked unavailable,
+                # do NOT fall back to the default URL
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeModelRepository
+                    async with async_session_maker() as session:
+                        model_repo = NodeModelRepository(session)
+                        if await model_repo.model_exists(model_name):
+                            if not await model_repo.has_any_available(model_name):
+                                logger.info(f"[LB] Unmapped model '{model_name}' exists but is deactivated — refusing fallback")
+                                return "", None, 'ollama', None, False
+                except Exception:
+                    pass
+
                 if exclude_nodes and self.base_url in exclude_nodes:
                     logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
-                    return "", None, 'ollama', None
+                    return "", None, 'ollama', None, False
                 logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
-                return self.base_url, None, 'ollama', None
+                return self.base_url, None, 'ollama', None, False
 
             if allowed_node_ids:
                 allow = set(allowed_node_ids)
@@ -1234,9 +1267,9 @@ class OllamaProxy:
             if not nodes:
                 if exclude_nodes and self.base_url in exclude_nodes:
                     logger.info(f"[LB] No non-scoped nodes found for model {model_name} and default URL excluded")
-                    return "", None, 'ollama', None
+                    return "", None, 'ollama', None, False
                 logger.info(f"[LB] All nodes for model {model_name} are scoped, using default URL")
-                return self.base_url, None, 'ollama', None
+                return self.base_url, None, 'ollama', None, False
 
             # Filter out excluded nodes
             if exclude_nodes:
@@ -1254,9 +1287,9 @@ class OllamaProxy:
                     # All known nodes excluded, try default if not excluded
                     if self.base_url not in exclude_nodes:
                         logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
-                        return self.base_url, None, 'ollama', None
+                        return self.base_url, None, 'ollama', None, False
                     logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
-                    return "", None, 'ollama', None
+                    return "", None, 'ollama', None, False
 
             # Select best node using load balancer (Redis-first, no session)
             selected_node = await load_balancer.select_node(
@@ -2181,6 +2214,14 @@ class OllamaProxy:
             allowed_node_ids=routing_allowed_node_ids,
             routing_catalog_names=routing_catalog_names,
         )
+
+        # Block if no node found (model unavailable)
+        if not base_url:
+            logger.warning(f"[Proxy] No available node found for model '{model_name}' — model may be unavailable")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{model_name}' is not available"
+            )
 
         url = f"{base_url}{endpoint}"
         if base_url:

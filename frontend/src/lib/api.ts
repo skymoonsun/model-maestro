@@ -259,6 +259,11 @@ export const ollamaModelsApi = {
     adminFetch<ModelMapping>(`/admin/models/${encodeURIComponent(displayName)}/capabilities`, {
       method: 'PATCH', body: JSON.stringify({ capabilities }),
     }),
+  setAvailable: (name: string, isAvailable: boolean) =>
+    adminFetch<{ success: boolean; model_name: string; is_available: boolean; updated_nodes: number }>(
+      `/admin/models/${encodeURIComponent(name)}/available`,
+      { method: 'PATCH', body: JSON.stringify({ is_available: isAvailable }) }
+    ),
 };
 
 // ==================== vLLM Models ====================
@@ -390,6 +395,11 @@ export const nodesApi = {
     adminFetch<NodeSyncResponse[]>('/admin/nodes/sync-all', {
       method: 'POST',
     }),
+  toggleModelAvailable: (nodeId: number, modelName: string, isAvailable: boolean) =>
+    adminFetch<{ success: boolean; node_id: number; model_name: string; is_available: boolean }>(
+      `/admin/models/nodes/${nodeId}/${encodeURIComponent(modelName)}/available`,
+      { method: 'PATCH', body: JSON.stringify({ is_available: isAvailable }) }
+    ),
   getDistribution: () =>
     adminFetch<ModelDistribution[]>(`/admin/nodes/models/distribution`),
   getLoadStatus: () =>
@@ -678,6 +688,7 @@ export interface OllamaModel {
   details?: Record<string, unknown>;
   is_mapped: boolean;
   display_name: string | null;
+  is_available: boolean;
   nodes?: string[] | null;
   context_length: number | null;
   capabilities: string[] | null;
@@ -694,6 +705,7 @@ export interface VllmModel {
   modified_at: string | null;
   is_mapped: boolean;
   display_name: string | null;
+  is_available: boolean;
   context_length: number | null;
   capabilities: string[] | null;
   max_model_len: number | null;

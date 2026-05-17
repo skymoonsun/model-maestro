@@ -1,18 +1,20 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import { antigravityModelsApi } from '@/lib/api';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { antigravityModelsApi, nodesApi, type VllmModel } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import {
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { useState } from 'react';
 import { Search, HardDrive } from 'lucide-react';
 import Link from 'next/link';
-import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 
 function formatContextLen(n: number | null) {
     if (!n) return '—';
@@ -23,9 +25,21 @@ function formatContextLen(n: number | null) {
 
 export default function AntigravityModelsPage() {
     const [search, setSearch] = useState('');
+    const queryClient = useQueryClient();
     const { data: models, isLoading } = useQuery({
         queryKey: ['antigravity-models'],
         queryFn: antigravityModelsApi.list,
+    });
+
+    const toggleMutation = useMutation({
+        mutationFn: ({ nodeId, modelName, isAvailable }: { nodeId: number; modelName: string; isAvailable: boolean }) =>
+            nodesApi.toggleModelAvailable(nodeId, modelName, isAvailable),
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['antigravity-models'] });
+            queryClient.invalidateQueries({ queryKey: ['nodes'] });
+            toast.success(`${data.model_name} is now ${data.is_available ? 'active' : 'inactive'}`);
+        },
+        onError: (err: Error) => toast.error(err.message),
     });
 
     const filtered = models?.filter((m) =>
@@ -36,29 +50,31 @@ export default function AntigravityModelsPage() {
 
     const modelGroups = filtered.reduce<Record<string, {
         name: string;
+        node_id: number;
+        node_name: string;
         model_size: number | null;
         model_family: string | null;
         is_mapped: boolean;
         display_name: string | null;
+        is_available: boolean;
         nodes: string[];
         context_length: number | null;
         capabilities: string[] | null;
     }>>((acc, m) => {
-        if (!acc[m.name]) {
-            acc[m.name] = {
-                name: m.name,
-                model_size: m.model_size,
-                model_family: m.model_family,
-                is_mapped: m.is_mapped,
-                display_name: m.display_name,
-                nodes: [],
-                context_length: m.context_length,
-                capabilities: m.capabilities,
-            };
-        }
-        if (!acc[m.name].nodes.includes(m.node_name)) {
-            acc[m.name].nodes.push(m.node_name);
-        }
+        const key = `${m.name}-${m.node_id}`;
+        acc[key] = {
+            name: m.name,
+            node_id: m.node_id,
+            node_name: m.node_name,
+            model_size: m.model_size,
+            model_family: m.model_family,
+            is_mapped: m.is_mapped,
+            display_name: m.display_name,
+            is_available: m.is_available,
+            nodes: [m.node_name],
+            context_length: m.context_length,
+            capabilities: m.capabilities,
+        };
         return acc;
     }, {});
 
@@ -87,17 +103,19 @@ export default function AntigravityModelsPage() {
                             <TableHeader>
                                 <TableRow>
                                     <TableHead>Model</TableHead>
+                                    <TableHead>Node</TableHead>
                                     <TableHead>Status</TableHead>
                                     <TableHead>Display Name</TableHead>
-                                    <TableHead>Nodes</TableHead>
                                     <TableHead>Context Length</TableHead>
                                     <TableHead>Capabilities</TableHead>
+                                    <TableHead className="text-right">Available</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {groupedList.map((m) => (
-                                    <TableRow key={m.name}>
+                                    <TableRow key={`${m.name}-${m.node_id}`} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
                                         <TableCell className="font-mono text-sm">{m.name}</TableCell>
+                                        <TableCell className="text-sm">{m.node_name}</TableCell>
                                         <TableCell>
                                             {m.is_mapped ? (
                                                 <Badge variant="outline" className="text-emerald-400 border-emerald-400/30 bg-emerald-400/10">
@@ -118,13 +136,6 @@ export default function AntigravityModelsPage() {
                                                 </Link>
                                             )}
                                         </TableCell>
-                                        <TableCell>
-                                            {m.nodes && m.nodes.length > 0 ? (
-                                                <span className="text-xs text-muted-foreground">{m.nodes.join(', ')}</span>
-                                            ) : (
-                                                <span className="text-xs text-muted-foreground">—</span>
-                                            )}
-                                        </TableCell>
                                         <TableCell className="text-sm">{formatContextLen(m.context_length)}</TableCell>
                                         <TableCell>
                                             {m.capabilities && m.capabilities.length > 0 ? (
@@ -139,11 +150,25 @@ export default function AntigravityModelsPage() {
                                                 <span className="text-xs text-muted-foreground">—</span>
                                             )}
                                         </TableCell>
+                                        <TableCell className="text-right">
+                                            <Switch
+                                                checked={m.is_available}
+                                                onCheckedChange={(checked) => {
+                                                    toggleMutation.mutate({
+                                                        nodeId: m.node_id,
+                                                        modelName: m.name,
+                                                        isAvailable: checked,
+                                                    });
+                                                }}
+                                                disabled={toggleMutation.isPending}
+                                                aria-label="Toggle availability"
+                                            />
+                                        </TableCell>
                                     </TableRow>
                                 ))}
                                 {groupedList.length === 0 && (
                                     <TableRow>
-                                        <TableCell colSpan={6} className="text-center text-muted-foreground py-12">
+                                        <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
                                             {search ? 'No results found' : 'No antigravity models found. Add an antigravity node and run model sync to discover models.'}
                                         </TableCell>
                                     </TableRow>
