@@ -483,8 +483,11 @@ async def _stream_from_non_streaming(
     )
     if isinstance(response, dict):
         response_data = response
-    elif isinstance(response, str):
-        response_data = json.loads(response)
+    elif isinstance(response, str) and response.strip():
+        try:
+            response_data = json.loads(response)
+        except json.JSONDecodeError:
+            response_data = {}
     else:
         response_data = {}
 
