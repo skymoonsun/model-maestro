@@ -482,6 +482,107 @@ async def _handle_claude_non_streaming(
 
 
 # =============================================================================
+# POST /claude/v1/messages/count_tokens
+# =============================================================================
+
+@router.post("/v1/messages/count_tokens")
+async def claude_count_tokens(
+    request: Request,
+    username: str = Depends(get_claude_user),
+):
+    """
+    Anthropic count_tokens API compatible endpoint.
+    Claude Code calls this after compacting to check token usage.
+
+    Request body mirrors the Messages API:
+      {
+        "model": "claude-...",
+        "messages": [...],
+        "system": "..." | {"type":"text", "text":"..."} | [...],
+        "tools": [...],
+        "tool_choice": "auto" | "any" | "none" | {"type":"tool", "name":"..."},
+        "thinking": {"type": "enabled", "budget_tokens": 16000}
+      }
+
+    Response: {"input_tokens": <int>}
+    """
+    body = await request.json()
+    model_name = body.get("model", "")
+    messages = body.get("messages", [])
+    system = body.get("system")
+    tools = body.get("tools", [])
+    thinking = body.get("thinking")
+
+    # Strip claude- prefix if artificially added by our model list
+    if model_name.startswith("claude-"):
+        stripped = model_name[7:]
+        if model_mapper._mapping_lookup_key(stripped) is not None:
+            model_name = stripped
+
+    total_chars = 0
+
+    # --- system --------------------------------------------------------------
+    if system:
+        if isinstance(system, str):
+            total_chars += len(system)
+        elif isinstance(system, dict) and system.get("type") == "text":
+            total_chars += len(system.get("text", ""))
+        elif isinstance(system, list):
+            for s in system:
+                if isinstance(s, dict) and s.get("type") == "text":
+                    total_chars += len(s.get("text", ""))
+
+    # --- messages ------------------------------------------------------------
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                bt = block.get("type", "")
+                if bt == "text":
+                    total_chars += len(block.get("text", ""))
+                elif bt == "image":
+                    src = block.get("source", {})
+                    if src.get("type") == "base64":
+                        total_chars += len(src.get("data", "")) // 4
+                elif bt == "tool_use":
+                    total_chars += len(block.get("name", ""))
+                    total_chars += len(json.dumps(block.get("input", {})))
+                elif bt == "tool_result":
+                    tr_content = block.get("content", "")
+                    if isinstance(tr_content, str):
+                        total_chars += len(tr_content)
+                    elif isinstance(tr_content, list):
+                        for tc in tr_content:
+                            if isinstance(tc, dict) and tc.get("type") == "text":
+                                total_chars += len(tc.get("text", ""))
+
+    # --- tools ---------------------------------------------------------------
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        total_chars += len(tool.get("name", ""))
+        total_chars += len(tool.get("description", ""))
+        schema = tool.get("input_schema", tool.get("parameters", {}))
+        total_chars += len(json.dumps(schema))
+
+    # --- thinking ------------------------------------------------------------
+    if thinking and isinstance(thinking, dict):
+        if thinking.get("type") == "enabled":
+            # Anthropic charges the budget_tokens as part of the context
+            budget = thinking.get("budget_tokens", 0)
+            total_chars += budget // 4  # rough estimate
+
+    # Anthropic tokenizer ~3.5–4 chars per token; use 4 as conservative default
+    input_tokens = max(total_chars // 4, 1)
+
+    return {"input_tokens": input_tokens}
+
+
+# =============================================================================
 # Non-streaming -> Anthropic SSE (for tool_calls)
 # =============================================================================
 
