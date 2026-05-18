@@ -80,7 +80,19 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
                 if m.node_id not in healthy_node_ids:
                     continue
                 name = m.model_name
-                if not name or name in seen_names:
+                if not name:
+                    continue
+
+                # Always add the node to model_nodes_map, even for duplicate model names
+                node = next((n for n in healthy_nodes if n.id == m.node_id), None)
+                if node:
+                    if name not in model_nodes_map:
+                        model_nodes_map[name] = []
+                    if node.name not in model_nodes_map[name]:
+                        model_nodes_map[name].append(node.name)
+
+                # Only add to merged_models once — first occurrence wins for metadata
+                if name in seen_names:
                     continue
                 seen_names.add(name)
                 db_is_available[name] = bool(m.is_available)
@@ -92,14 +104,6 @@ async def list_ollama_models(admin: str = Depends(verify_admin)):
                     "details": m.model_capabilities or {},
                     "family": m.model_family,
                 })
-
-                # Build model->nodes map
-                node = next((n for n in healthy_nodes if n.id == m.node_id), None)
-                if node:
-                    if name not in model_nodes_map:
-                        model_nodes_map[name] = []
-                    if node.name not in model_nodes_map[name]:
-                        model_nodes_map[name].append(node.name)
     except Exception as e:
         logger.warning(f"[AdminModelList] Error reading models from DB: {e}")
 

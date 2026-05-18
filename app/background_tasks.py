@@ -471,15 +471,14 @@ async def model_warmup_task():
                     if not node.warmup_enabled:
                         continue
 
+                    if getattr(node, "node_type", "ollama") != "ollama":
+                        continue
+
                     if node.health_status not in ("healthy", "unknown"):
                         continue
 
-                    # Get models available on THIS node only
-                    models = await model_repo.get_models_for_node(node.id)
-                    if not models:
-                        continue
-
-                    available = [m for m in models if m.is_available]
+                    # Only models explicitly marked available (admin toggle)
+                    available = await model_repo.get_available_models_for_node(node.id)
                     if not available:
                         logger.debug(f"[WARMUP] No available models on '{node.name}', skipping")
                         continue
@@ -641,17 +640,28 @@ async def model_keep_warm_task():
     while not WARMUP_SHUTDOWN_EVENT.is_set():
         try:
             from app.config import model_mapper
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeModelRepository
 
-            # Determine target models
-            targets: list[str] = list(WARMUP_MODELS)
-            if not targets:
-                # Fall back to all configured real model names from mappings
+            async with async_session_maker() as session:
+                model_repo = NodeModelRepository(session)
+                db_available = set(await model_repo.get_distinct_available_model_names())
+
+            # Determine target models (must be marked available on at least one node)
+            targets: list[str] = [m for m in WARMUP_MODELS if m in db_available]
+            if not targets and WARMUP_MODELS:
+                logger.debug("[WARMUP] No WARMUP_MODELS entries marked available, skipping")
+            elif not targets:
+                # Fall back to mapped real names that are still available in node_models
                 await model_mapper.ensure_loaded()
                 seen: set[str] = set()
                 for real_name in model_mapper._mappings.values():
-                    if real_name and real_name not in seen:
-                        seen.add(real_name)
-                        targets.append(real_name)
+                    if not real_name or real_name in seen:
+                        continue
+                    if real_name not in db_available:
+                        continue
+                    seen.add(real_name)
+                    targets.append(real_name)
 
             if not targets:
                 logger.debug("[WARMUP] No models configured, skipping")

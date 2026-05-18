@@ -168,6 +168,32 @@ async def claude_list_models(
             if m["id"].removeprefix("claude-") in allowed
         ]
 
+    from app.model_list import get_visible_catalog_group_names
+
+    for group_name in await get_visible_catalog_group_names(user_models_data):
+        if any(m["display_name"] == group_name for m in models_list):
+            continue
+        ctx_len = get_context_length_for_model(group_name) or 131072
+        models_list.append({
+            "type": "model",
+            "id": group_name if group_name.startswith("claude-") else f"claude-{group_name}",
+            "display_name": group_name,
+            "created_at": _MODEL_LIST_TIMESTAMP,
+            "max_input_tokens": ctx_len,
+            "max_tokens": 8192,
+            "capabilities": {
+                "batch": {"supported": False},
+                "citations": {"supported": False},
+                "code_execution": {"supported": False},
+                "context_management": {"supported": False},
+                "effort": {"supported": False},
+                "image_input": {"supported": False},
+                "pdf_input": {"supported": False},
+                "structured_outputs": {"supported": True},
+                "thinking": {"supported": False},
+            },
+        })
+
     first_id = models_list[0]["id"] if models_list else None
     last_id = models_list[-1]["id"] if models_list else None
 
@@ -194,12 +220,11 @@ async def claude_messages(
     """
     body = await request.json()
     model_name = body.get("model", "")
-    # Strip claude- prefix only when it was artificially added by the model list.
-    # If the model's real name already starts with claude-, keep it.
+    # Strip claude- prefix unconditionally — we add it artificially in the model list
+    # (see GET /v1/models, line ~145). Claude Code sends it back, and the real
+    # model name (Ollama-side) never starts with "claude-".
     if model_name.startswith("claude-"):
-        stripped = model_name[7:]
-        if model_mapper._mapping_lookup_key(stripped) is not None:
-            model_name = stripped
+        model_name = model_name[7:]
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")

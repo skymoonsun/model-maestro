@@ -267,6 +267,28 @@ class NodeModelRepository:
         )
         return list(result.scalars().all())
 
+    async def get_available_models_for_node(self, node_id: int) -> List[NodeModel]:
+        """Get models on a node that are marked available (eligible for warmup/routing)."""
+        result = await self.session.execute(
+            select(NodeModel).where(
+                and_(
+                    NodeModel.node_id == node_id,
+                    NodeModel.is_available == True,
+                )
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_distinct_available_model_names(self) -> List[str]:
+        """Distinct model names marked available on at least one node."""
+        result = await self.session.execute(
+            select(NodeModel.model_name)
+            .where(NodeModel.is_available == True)
+            .distinct()
+            .order_by(NodeModel.model_name)
+        )
+        return [row[0] for row in result.all() if row[0]]
+
     async def get_by_node_and_name(self, node_id: int, model_name: str) -> Optional[NodeModel]:
         """Get a specific model by node_id and model_name"""
         result = await self.session.execute(

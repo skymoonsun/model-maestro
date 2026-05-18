@@ -929,6 +929,7 @@ export interface ModelGroupSummary {
   description: string | null;
   strategy: string;
   is_active: boolean;
+  list_in_catalog: boolean;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -947,6 +948,7 @@ export type ModelGroupCreate = {
   description?: string | null;
   strategy?: string;
   is_active?: boolean;
+  list_in_catalog?: boolean;
   members?: ModelGroupMemberCreate[];
 };
 

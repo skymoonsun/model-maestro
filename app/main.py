@@ -492,14 +492,21 @@ async def list_models(username: str = Depends(get_current_user)):
 
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
-            return {"models": mapped_models}
+            filtered_models = mapped_models
+        else:
+            allowed_models = set(user_models_data["models"])
+            filtered_models = [
+                model for model in mapped_models
+                if model.get("name") in allowed_models or model.get("model") in allowed_models
+            ]
 
-        allowed_models = set(user_models_data["models"])
-        filtered_models = [
-            model for model in mapped_models
-            if model.get("name") in allowed_models or model.get("model") in allowed_models
-        ]
-        return {"models": filtered_models}
+        from app.model_list import (
+            append_groups_to_ollama_models,
+            get_visible_catalog_group_names,
+        )
+
+        catalog_groups = await get_visible_catalog_group_names(user_models_data)
+        return {"models": append_groups_to_ollama_models(filtered_models, catalog_groups)}
 
     return all_models_response
 
@@ -971,19 +978,23 @@ async def openai_list_models(username: str = Depends(get_current_user)):
 
         # Filter models based on user access (using display names)
         if user_models_data["has_all_models"]:
-            return {
-                "object": all_models_response.get("object", "list"),
-                "data": mapped_models
-            }
+            filtered_models = mapped_models
+        else:
+            allowed_models = set(user_models_data["models"])
+            filtered_models = [
+                model for model in mapped_models
+                if model.get("id") in allowed_models
+            ]
 
-        allowed_models = set(user_models_data["models"])
-        filtered_models = [
-            model for model in mapped_models
-            if model.get("id") in allowed_models
-        ]
+        from app.model_list import (
+            append_groups_to_openai_models,
+            get_visible_catalog_group_names,
+        )
+
+        catalog_groups = await get_visible_catalog_group_names(user_models_data)
         return {
             "object": all_models_response.get("object", "list"),
-            "data": filtered_models
+            "data": append_groups_to_openai_models(filtered_models, catalog_groups),
         }
 
     return all_models_response

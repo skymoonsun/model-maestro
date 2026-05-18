@@ -24,9 +24,19 @@ from app.auth import verify_admin
 from app.config import model_group_manager
 from app.repositories.model_group_repository import ModelGroupRepository
 from app.database import async_session_maker
-from app.models_db import ModelGroupMember, model_group_member_nodes
+from app.models_db import ModelGroup, ModelGroupMember, model_group_member_nodes
 
 router = APIRouter(prefix="/admin/model-groups", tags=["Admin - Model Groups"])
+
+
+def _invalidate_public_models_cache() -> None:
+    """Refresh /api/tags and /v1/models after catalog visibility changes."""
+    try:
+        from app.admin_models import _invalidate_models_cache
+
+        _invalidate_models_cache()
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -75,6 +85,7 @@ async def create_model_group(
             description=request.description,
             strategy=request.strategy,
             is_active=request.is_active,
+            list_in_catalog=request.list_in_catalog,
         )
 
         # Add members if provided
@@ -94,22 +105,13 @@ async def create_model_group(
                 if member:
                     members.append(member)
 
+        response = await _build_group_detail_response(session, group, members)
         await session.commit()
 
         await model_group_manager.reload()
+        _invalidate_public_models_cache()
 
-        member_responses = await _members_to_response(session, members)
-
-        return ModelGroupDetailResponse(
-            id=group.id,
-            name=group.name,
-            description=group.description,
-            strategy=group.strategy,
-            is_active=group.is_active,
-            created_at=group.created_at.isoformat() if group.created_at else None,
-            updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=member_responses,
-        )
+        return response
 
 
 @router.get("", response_model=ModelGroupListResponse)
@@ -131,6 +133,7 @@ async def list_model_groups(admin: str = Depends(verify_admin)):
                     description=group.description,
                     strategy=group.strategy,
                     is_active=group.is_active,
+                    list_in_catalog=group.list_in_catalog,
                     created_at=group.created_at.isoformat() if group.created_at else None,
                     updated_at=group.updated_at.isoformat() if group.updated_at else None,
                 )
@@ -162,16 +165,7 @@ async def get_model_group(
 
         group, members = result
 
-        return ModelGroupDetailResponse(
-            id=group.id,
-            name=group.name,
-            description=group.description,
-            strategy=group.strategy,
-            is_active=group.is_active,
-            created_at=group.created_at.isoformat() if group.created_at else None,
-            updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=await _members_to_response(session, members),
-        )
+        return await _build_group_detail_response(session, group, members)
 
 
 @router.put("/{name}", response_model=ModelGroupDetailResponse)
@@ -201,6 +195,8 @@ async def update_model_group(
             update_data["strategy"] = request.strategy
         if request.is_active is not None:
             update_data["is_active"] = request.is_active
+        if request.list_in_catalog is not None:
+            update_data["list_in_catalog"] = request.list_in_catalog
 
         if not update_data:
             # No fields to update, return current state
@@ -211,17 +207,7 @@ async def update_model_group(
                     detail=f"Model group '{name}' not found"
                 )
             group, members = result
-            await session.commit()
-            return ModelGroupDetailResponse(
-                id=group.id,
-                name=group.name,
-                description=group.description,
-                strategy=group.strategy,
-                is_active=group.is_active,
-                created_at=group.created_at.isoformat() if group.created_at else None,
-                updated_at=group.updated_at.isoformat() if group.updated_at else None,
-                members=await _members_to_response(session, members),
-            )
+            return await _build_group_detail_response(session, group, members)
 
         group = await repo.update_group(name, **update_data)
 
@@ -231,23 +217,16 @@ async def update_model_group(
                 detail=f"Model group '{name}' not found"
             )
 
-        # Get members
         members = await repo.get_members_by_group_name(name)
+        await session.refresh(group)
 
+        response = await _build_group_detail_response(session, group, members)
         await session.commit()
 
         await model_group_manager.reload()
+        _invalidate_public_models_cache()
 
-        return ModelGroupDetailResponse(
-            id=group.id,
-            name=group.name,
-            description=group.description,
-            strategy=group.strategy,
-            is_active=group.is_active,
-            created_at=group.created_at.isoformat() if group.created_at else None,
-            updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=await _members_to_response(session, members),
-        )
+        return response
 
 
 @router.delete("/{name}", status_code=204)
@@ -272,6 +251,7 @@ async def delete_model_group(
         await session.commit()
 
     await model_group_manager.reload()
+    _invalidate_public_models_cache()
 
     return None
 
@@ -314,21 +294,14 @@ async def reorder_group_members(
         ]
 
         members = await repo.reorder_members(name, member_priorities)
+        await session.refresh(group)
 
+        response = await _build_group_detail_response(session, group, members)
         await session.commit()
 
         await model_group_manager.reload()
 
-        return ModelGroupDetailResponse(
-            id=group.id,
-            name=group.name,
-            description=group.description,
-            strategy=group.strategy,
-            is_active=group.is_active,
-            created_at=group.created_at.isoformat() if group.created_at else None,
-            updated_at=group.updated_at.isoformat() if group.updated_at else None,
-            members=await _members_to_response(session, members),
-        )
+        return response
 
 
 # ============================================================================
@@ -391,11 +364,12 @@ async def add_group_member(
                 detail="Failed to add member to group"
             )
 
+        response = await _member_to_response(session, member)
         await session.commit()
 
         await model_group_manager.reload()
 
-        return await _member_to_response(session, member)
+        return response
 
 
 @router.delete("/{name}/members/{member_id}", status_code=204)
@@ -442,6 +416,27 @@ async def remove_group_member(
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+async def _build_group_detail_response(
+    session: AsyncSession,
+    group: ModelGroup,
+    members: List[ModelGroupMember],
+) -> ModelGroupDetailResponse:
+    """Build detail response before commit to avoid async lazy-load after expire."""
+    created_at = group.created_at
+    updated_at = group.updated_at
+    return ModelGroupDetailResponse(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        strategy=group.strategy,
+        is_active=group.is_active,
+        list_in_catalog=group.list_in_catalog,
+        created_at=created_at.isoformat() if created_at else None,
+        updated_at=updated_at.isoformat() if updated_at else None,
+        members=await _members_to_response(session, members),
+    )
+
 
 async def _members_to_response(
     session: AsyncSession, members: List[ModelGroupMember]
