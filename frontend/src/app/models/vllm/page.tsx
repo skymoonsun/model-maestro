@@ -64,6 +64,46 @@ export default function VllmModelsPage() {
         (m.display_name && m.display_name.toLowerCase().includes(search.toLowerCase()))
     ) || [];
 
+    const modelGroups = filtered.reduce<Record<string, {
+        name: string;
+        node_ids: number[];
+        nodes: string[];
+        model_size: number | null;
+        model_family: string | null;
+        is_mapped: boolean;
+        display_name: string | null;
+        is_available: boolean;
+        context_length: number | null;
+        max_model_len: number | null;
+        capabilities: string[] | null;
+    }>>((acc, m) => {
+        const key = m.name;
+        if (acc[key]) {
+            if (!acc[key].nodes.includes(m.node_name)) {
+                acc[key].nodes.push(m.node_name);
+                acc[key].node_ids.push(m.node_id);
+            }
+            acc[key].is_available = acc[key].is_available || m.is_available;
+            return acc;
+        }
+        acc[key] = {
+            name: m.name,
+            node_ids: [m.node_id],
+            nodes: [m.node_name],
+            model_size: m.model_size,
+            model_family: m.model_family,
+            is_mapped: m.is_mapped,
+            display_name: m.display_name,
+            is_available: m.is_available,
+            context_length: m.context_length,
+            max_model_len: m.max_model_len,
+            capabilities: m.capabilities,
+        };
+        return acc;
+    }, {});
+
+    const groupedList = Object.values(modelGroups);
+
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between gap-4">
@@ -77,7 +117,7 @@ export default function VllmModelsPage() {
                         Sync Meta
                     </Button>
                     <Badge variant="outline" className="text-muted-foreground">
-                        <HardDrive className="h-3 w-3 mr-1" /> {models?.length || 0} models
+                        <HardDrive className="h-3 w-3 mr-1" /> {groupedList.length || 0} models
                     </Badge>
                 </div>
             </div>
@@ -91,7 +131,7 @@ export default function VllmModelsPage() {
                             <TableHeader>
                                 <TableRow>
                                     <TableHead>Model</TableHead>
-                                    <TableHead>Node</TableHead>
+                                    <TableHead>Nodes</TableHead>
                                     <TableHead>Size</TableHead>
                                     <TableHead>Status</TableHead>
                                     <TableHead>Display Name</TableHead>
@@ -102,10 +142,10 @@ export default function VllmModelsPage() {
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
-                                {filtered.map((m) => (
-                                    <TableRow key={`${m.name}-${m.node_id}`} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
+                                {groupedList.map((m) => (
+                                    <TableRow key={m.name} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
                                         <TableCell className="font-mono text-sm">{m.name}</TableCell>
-                                        <TableCell className="text-sm">{m.node_name}</TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">{m.nodes.join(', ')}</TableCell>
                                         <TableCell className="text-sm">{formatSize(m.model_size)}</TableCell>
                                         <TableCell>
                                             {m.is_mapped ? (
@@ -146,10 +186,12 @@ export default function VllmModelsPage() {
                                             <Switch
                                                 checked={m.is_available}
                                                 onCheckedChange={(checked) => {
-                                                    toggleMutation.mutate({
-                                                        nodeId: m.node_id,
-                                                        modelName: m.name,
-                                                        isAvailable: checked,
+                                                    m.node_ids.forEach((nodeId) => {
+                                                        toggleMutation.mutate({
+                                                            nodeId,
+                                                            modelName: m.name,
+                                                            isAvailable: checked,
+                                                        });
                                                     });
                                                 }}
                                                 disabled={toggleMutation.isPending}
@@ -158,7 +200,7 @@ export default function VllmModelsPage() {
                                         </TableCell>
                                     </TableRow>
                                 ))}
-                                {filtered.length === 0 && (
+                                {groupedList.length === 0 && (
                                     <TableRow>
                                         <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
                                             {search ? 'No results found' : 'No vLLM models found. Add a vLLM node and run model sync to discover models.'}

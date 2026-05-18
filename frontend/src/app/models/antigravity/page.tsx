@@ -50,28 +50,34 @@ export default function AntigravityModelsPage() {
 
     const modelGroups = filtered.reduce<Record<string, {
         name: string;
-        node_id: number;
-        node_name: string;
+        node_ids: number[];
+        nodes: string[];
         model_size: number | null;
         model_family: string | null;
         is_mapped: boolean;
         display_name: string | null;
         is_available: boolean;
-        nodes: string[];
         context_length: number | null;
         capabilities: string[] | null;
     }>>((acc, m) => {
-        const key = `${m.name}-${m.node_id}`;
+        const key = m.name;
+        if (acc[key]) {
+            if (!acc[key].nodes.includes(m.node_name)) {
+                acc[key].nodes.push(m.node_name);
+                acc[key].node_ids.push(m.node_id);
+            }
+            acc[key].is_available = acc[key].is_available || m.is_available;
+            return acc;
+        }
         acc[key] = {
             name: m.name,
-            node_id: m.node_id,
-            node_name: m.node_name,
+            node_ids: [m.node_id],
+            nodes: [m.node_name],
             model_size: m.model_size,
             model_family: m.model_family,
             is_mapped: m.is_mapped,
             display_name: m.display_name,
             is_available: m.is_available,
-            nodes: [m.node_name],
             context_length: m.context_length,
             capabilities: m.capabilities,
         };
@@ -103,7 +109,7 @@ export default function AntigravityModelsPage() {
                             <TableHeader>
                                 <TableRow>
                                     <TableHead>Model</TableHead>
-                                    <TableHead>Node</TableHead>
+                                    <TableHead>Nodes</TableHead>
                                     <TableHead>Status</TableHead>
                                     <TableHead>Display Name</TableHead>
                                     <TableHead>Context Length</TableHead>
@@ -113,9 +119,9 @@ export default function AntigravityModelsPage() {
                             </TableHeader>
                             <TableBody>
                                 {groupedList.map((m) => (
-                                    <TableRow key={`${m.name}-${m.node_id}`} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
+                                    <TableRow key={m.name} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
                                         <TableCell className="font-mono text-sm">{m.name}</TableCell>
-                                        <TableCell className="text-sm">{m.node_name}</TableCell>
+                                        <TableCell className="text-xs text-muted-foreground">{m.nodes.join(', ')}</TableCell>
                                         <TableCell>
                                             {m.is_mapped ? (
                                                 <Badge variant="outline" className="text-emerald-400 border-emerald-400/30 bg-emerald-400/10">
@@ -154,10 +160,12 @@ export default function AntigravityModelsPage() {
                                             <Switch
                                                 checked={m.is_available}
                                                 onCheckedChange={(checked) => {
-                                                    toggleMutation.mutate({
-                                                        nodeId: m.node_id,
-                                                        modelName: m.name,
-                                                        isAvailable: checked,
+                                                    m.node_ids.forEach((nodeId) => {
+                                                        toggleMutation.mutate({
+                                                            nodeId,
+                                                            modelName: m.name,
+                                                            isAvailable: checked,
+                                                        });
                                                     });
                                                 }}
                                                 disabled={toggleMutation.isPending}
