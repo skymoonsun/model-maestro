@@ -318,13 +318,20 @@ async def proxy_bedrock_request(
     if stream:
         # Streaming path
         try:
+            kwargs = {
+                "modelId": model_name,
+                "messages": bedrock_request.get("messages", []),
+            }
+            if "inferenceConfig" in bedrock_request:
+                kwargs["inferenceConfig"] = bedrock_request["inferenceConfig"]
+            if "system" in bedrock_request:
+                kwargs["system"] = bedrock_request["system"]
+            if "toolConfig" in bedrock_request:
+                kwargs["toolConfig"] = bedrock_request["toolConfig"]
+
             response = await asyncio.to_thread(
                 client.converse_stream,
-                modelId=model_name,
-                messages=bedrock_request.get("messages", []),
-                inferenceConfig=bedrock_request.get("inferenceConfig"),
-                system=bedrock_request.get("system"),
-                toolConfig=bedrock_request.get("toolConfig"),
+                **kwargs,
             )
             stream_events = response.get("stream", [])
 
@@ -349,13 +356,20 @@ async def proxy_bedrock_request(
     else:
         # Non-streaming path
         try:
+            kwargs = {
+                "modelId": model_name,
+                "messages": bedrock_request.get("messages", []),
+            }
+            if "inferenceConfig" in bedrock_request:
+                kwargs["inferenceConfig"] = bedrock_request["inferenceConfig"]
+            if "system" in bedrock_request:
+                kwargs["system"] = bedrock_request["system"]
+            if "toolConfig" in bedrock_request:
+                kwargs["toolConfig"] = bedrock_request["toolConfig"]
+
             response = await asyncio.to_thread(
                 client.converse,
-                modelId=model_name,
-                messages=bedrock_request.get("messages", []),
-                inferenceConfig=bedrock_request.get("inferenceConfig"),
-                system=bedrock_request.get("system"),
-                toolConfig=bedrock_request.get("toolConfig"),
+                **kwargs,
             )
 
             openai_response = _bedrock_response_to_openai(
