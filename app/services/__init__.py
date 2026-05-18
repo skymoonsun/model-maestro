@@ -31,6 +31,7 @@ DEFAULT_SYSTEM_CONFIG = {
     "defaults.log_level": "INFO",
     "search.web_search_url": "https://ollama.com/api/web_search",
     "search.web_search_api_key": "",
+    "claude.streaming_enabled": "false",
 }
 
 # Default ollama unsupported params
@@ -181,7 +182,14 @@ class ConfigManager:
             return float(self._config_cache.get(key, str(default)))
         except (ValueError, TypeError):
             return default
-    
+
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        """Get a system config value as boolean"""
+        value = self._config_cache.get(key)
+        if value is None:
+            return default
+        return value.lower() in ("true", "1", "yes", "on")
+
     def get_list(self, key: str, default: Optional[List[str]] = None) -> List[str]:
         """Get a system config value as list (stored as JSON)"""
         try:
@@ -200,20 +208,25 @@ class ConfigManager:
             "defaults": {},
             "search": {},
             "tunnel": {},
+            "claude": {},
             "ollama_unsupported_params": self.get_ollama_unsupported_params(),
         }
 
         for key, value in self._config_cache.items():
             parts = key.split(".", 1)
             if len(parts) == 2 and parts[0] in result:
-                # Try to convert to number
+                # Try int -> float -> bool -> str
                 try:
                     converted = int(value)
                 except ValueError:
                     try:
                         converted = float(value)
                     except ValueError:
-                        converted = value
+                        lv = value.lower()
+                        if lv in ("true", "false"):
+                            converted = lv == "true"
+                        else:
+                            converted = value
                 result[parts[0]][parts[1]] = converted
 
         return result
