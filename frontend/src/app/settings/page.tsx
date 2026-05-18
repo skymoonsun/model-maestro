@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { useState, useEffect } from 'react';
 import { Save, Settings, Globe, Play, Square } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 
 export default function SettingsPage() {
     const queryClient = useQueryClient();
@@ -24,7 +25,7 @@ export default function SettingsPage() {
         refetchInterval: 5000,
     });
 
-    const [editValues, setEditValues] = useState<Record<string, Record<string, string>>>({});
+    const [editValues, setEditValues] = useState<Record<string, Record<string, any>>>({});
 
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -234,6 +235,36 @@ export default function SettingsPage() {
                         >
                             <Square className="h-4 w-4 mr-1" /> Stop
                         </Button>
+                    </div>
+                </CardContent>
+            </Card>
+
+            {/* Claude Config Card */}
+            <Card>
+                <CardHeader className="pb-3">
+                    <CardTitle className="text-sm flex items-center gap-2 capitalize">
+                        <Settings className="h-4 w-4" />
+                        Claude
+                    </CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <p className="text-sm font-medium">Streaming Enabled</p>
+                            <p className="text-xs text-muted-foreground">
+                                When enabled, Claude requests with stream=true will use SSE streaming.
+                                When disabled, all requests behave as stream=false.
+                            </p>
+                        </div>
+                        <Switch
+                            checked={Boolean(editValues.claude?.streaming_enabled)}
+                            onCheckedChange={(checked) => {
+                                setEditValues((prev) => ({
+                                    ...prev,
+                                    claude: { ...prev.claude, streaming_enabled: checked },
+                                }));
+                            }}
+                        />
                     </div>
                 </CardContent>
             </Card>

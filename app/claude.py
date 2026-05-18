@@ -202,6 +202,13 @@ async def claude_messages(
     top_k = body.get("top_k")
     metadata = body.get("metadata")
 
+    # Check Claude streaming toggle from system config
+    from app.services import config_manager
+    streaming_enabled = config_manager.get_bool("claude.streaming_enabled", False)
+    if not streaming_enabled and stream:
+        logger.info(f"[Claude] Streaming disabled by config; forcing stream=False for user={username}")
+        stream = False
+
     logger.info(
         f"[Claude] User {username} messages: model={model_name}, stream={stream}, "
         f"msg_count={len(messages)}, max_tokens={max_tokens}"
