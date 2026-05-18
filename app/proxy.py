@@ -2847,12 +2847,12 @@ class OllamaProxy:
                                                     combined_for_detection = content + reasoning
 
                                                     if content:
-                                                        logger.info(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
+                                                        logger.debug(f"[KIMI DEBUG] Received content chunk: {content[:100]!r}")
                                                     if reasoning:
-                                                        logger.info(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
+                                                        logger.debug(f"[KIMI DEBUG] Received reasoning chunk: {reasoning[:100]!r}")
 
                                                     if kimi_suspicion_buffer:
-                                                        logger.info(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
+                                                        logger.debug(f"[KIMI DEBUG] Appending suspicion buffer: {kimi_suspicion_buffer!r} to current combined")
                                                         combined_for_detection = kimi_suspicion_buffer + combined_for_detection
                                                         kimi_suspicion_buffer = ""
 
@@ -2942,7 +2942,7 @@ class OllamaProxy:
                                                                 break
 
                                                     if is_suspicious:
-                                                        logger.info(f"[KIMI DEBUG] Combined content is suspicious, buffering: {combined_for_detection!r}")
+                                                        logger.debug(f"[KIMI DEBUG] Combined content is suspicious, buffering: {combined_for_detection!r}")
                                                         kimi_suspicion_buffer = combined_for_detection
                                                         continue
 
