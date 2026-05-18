@@ -168,6 +168,32 @@ async def claude_list_models(
             if m["id"].removeprefix("claude-") in allowed
         ]
 
+    from app.model_list import get_visible_catalog_group_names
+
+    for group_name in await get_visible_catalog_group_names(user_models_data):
+        if any(m["display_name"] == group_name for m in models_list):
+            continue
+        ctx_len = get_context_length_for_model(group_name) or 131072
+        models_list.append({
+            "type": "model",
+            "id": group_name if group_name.startswith("claude-") else f"claude-{group_name}",
+            "display_name": group_name,
+            "created_at": _MODEL_LIST_TIMESTAMP,
+            "max_input_tokens": ctx_len,
+            "max_tokens": 8192,
+            "capabilities": {
+                "batch": {"supported": False},
+                "citations": {"supported": False},
+                "code_execution": {"supported": False},
+                "context_management": {"supported": False},
+                "effort": {"supported": False},
+                "image_input": {"supported": False},
+                "pdf_input": {"supported": False},
+                "structured_outputs": {"supported": True},
+                "thinking": {"supported": False},
+            },
+        })
+
     first_id = models_list[0]["id"] if models_list else None
     last_id = models_list[-1]["id"] if models_list else None
 

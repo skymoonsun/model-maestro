@@ -184,6 +184,7 @@ function GroupDetail({
         description: group.description || '',
         strategy: group.strategy,
         is_active: group.is_active,
+        list_in_catalog: group.list_in_catalog,
     });
 
     const sensors = useSensors(
@@ -285,6 +286,11 @@ function GroupDetail({
                         {group.is_active ? 'Active' : 'Inactive'}
                     </Badge>
                     <Badge variant="secondary">{group.strategy}</Badge>
+                    {group.list_in_catalog && (
+                        <Badge variant="outline" className="text-emerald-600 border-emerald-600/40">
+                            In catalog
+                        </Badge>
+                    )}
                 </div>
                 <div className="flex items-center gap-2">
                     <Button
@@ -331,6 +337,13 @@ function GroupDetail({
                                 onCheckedChange={(v) => setEditForm((f) => ({ ...f, is_active: v }))}
                             />
                             <Label>Active</Label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Switch
+                                checked={editForm.list_in_catalog}
+                                onCheckedChange={(v) => setEditForm((f) => ({ ...f, list_in_catalog: v }))}
+                            />
+                            <Label>Show in catalog</Label>
                         </div>
                     </div>
                     <DialogFooter>
@@ -485,6 +498,7 @@ export default function ModelGroupsPage() {
         description: '',
         strategy: 'priority',
         is_active: true,
+        list_in_catalog: false,
     });
     const [deleteGroup, setDeleteGroup] = useState<string | null>(null);
 
@@ -505,7 +519,7 @@ export default function ModelGroupsPage() {
             qc.invalidateQueries({ queryKey: ['model-groups'] });
             toast.success('Group created');
             setCreateOpen(false);
-            setCreateForm({ name: '', description: '', strategy: 'priority', is_active: true });
+            setCreateForm({ name: '', description: '', strategy: 'priority', is_active: true, list_in_catalog: false });
         },
         onError: (e) => toast.error(e.message),
     });
@@ -516,6 +530,16 @@ export default function ModelGroupsPage() {
             qc.invalidateQueries({ queryKey: ['model-groups'] });
             toast.success('Group deleted');
             setDeleteGroup(null);
+        },
+        onError: (e) => toast.error(e.message),
+    });
+
+    const listCatalogMut = useMutation({
+        mutationFn: ({ name, list_in_catalog }: { name: string; list_in_catalog: boolean }) =>
+            modelGroupsApi.update(name, { list_in_catalog }),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['model-groups'] });
+            toast.success('Catalog visibility updated');
         },
         onError: (e) => toast.error(e.message),
     });
@@ -579,6 +603,13 @@ export default function ModelGroupsPage() {
                                 />
                                 <Label>Active</Label>
                             </div>
+                            <div className="flex items-center gap-2">
+                                <Switch
+                                    checked={createForm.list_in_catalog}
+                                    onCheckedChange={(v) => setCreateForm((f) => ({ ...f, list_in_catalog: v }))}
+                                />
+                                <Label>Show in catalog</Label>
+                            </div>
                         </div>
                         <DialogFooter>
                             <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -621,7 +652,24 @@ export default function ModelGroupsPage() {
                                             {group.is_active ? 'Active' : 'Inactive'}
                                         </Badge>
                                         <Badge variant="secondary">{group.strategy}</Badge>
+                                        {group.list_in_catalog && (
+                                            <Badge variant="outline" className="text-emerald-600 border-emerald-600/40">
+                                                In catalog
+                                            </Badge>
+                                        )}
                                     </div>
+                                    <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                                        <Label htmlFor={`list-${group.id}`} className="text-xs text-muted-foreground whitespace-nowrap">
+                                            Show in catalog
+                                        </Label>
+                                        <Switch
+                                            id={`list-${group.id}`}
+                                            checked={group.list_in_catalog ?? false}
+                                            disabled={listCatalogMut.isPending}
+                                            onCheckedChange={(v) =>
+                                                listCatalogMut.mutate({ name: group.name, list_in_catalog: v })
+                                            }
+                                        />
                                     <Dialog>
                                         <DialogTrigger asChild>
                                             <Button
@@ -646,6 +694,7 @@ export default function ModelGroupsPage() {
                                             </DialogFooter>
                                         </DialogContent>
                                     </Dialog>
+                                    </div>
                                 </div>
                             </CardHeader>
                             {group.description && (

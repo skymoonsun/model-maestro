@@ -835,6 +835,7 @@ class ModelGroupCreateRequest(BaseModel):
     description: Optional[str] = None
     strategy: str = "round_robin"  # round_robin, weighted, priority
     is_active: bool = True
+    list_in_catalog: bool = False
     members: Optional[List[ModelGroupMemberRequest]] = None
 
 
@@ -843,6 +844,7 @@ class ModelGroupUpdateRequest(BaseModel):
     description: Optional[str] = None
     strategy: Optional[str] = None
     is_active: Optional[bool] = None
+    list_in_catalog: Optional[bool] = None
 
 
 class ModelGroupMemberResponse(BaseModel):
@@ -864,6 +866,7 @@ class ModelGroupResponse(BaseModel):
     description: Optional[str] = None
     strategy: str = "round_robin"
     is_active: bool = True
+    list_in_catalog: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -875,6 +878,7 @@ class ModelGroupDetailResponse(BaseModel):
     description: Optional[str] = None
     strategy: str = "round_robin"
     is_active: bool = True
+    list_in_catalog: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     members: List[ModelGroupMemberResponse] = []

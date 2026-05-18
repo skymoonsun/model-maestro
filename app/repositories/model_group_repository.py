@@ -25,6 +25,7 @@ class ModelGroupRepository:
         description: Optional[str] = None,
         strategy: str = "round_robin",
         is_active: bool = True,
+        list_in_catalog: bool = False,
     ) -> ModelGroup:
         """Create a new model group"""
         group = ModelGroup(
@@ -32,6 +33,7 @@ class ModelGroupRepository:
             description=description,
             strategy=strategy,
             is_active=is_active,
+            list_in_catalog=list_in_catalog,
         )
         self.session.add(group)
         await self.session.flush()

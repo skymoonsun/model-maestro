@@ -183,14 +183,21 @@ async def openclaw_list_models(username: str = Depends(get_openclaw_user)):
 
         # Filter by user access
         if user_models_data["has_all_models"]:
-            return {"models": mapped_models}
+            filtered = mapped_models
+        else:
+            allowed = set(user_models_data["models"])
+            filtered = [
+                m for m in mapped_models
+                if m.get("name") in allowed or m.get("model") in allowed
+            ]
 
-        allowed = set(user_models_data["models"])
-        filtered = [
-            m for m in mapped_models
-            if m.get("name") in allowed or m.get("model") in allowed
-        ]
-        return {"models": filtered}
+        from app.model_list import (
+            append_groups_to_ollama_models,
+            get_visible_catalog_group_names,
+        )
+
+        catalog_groups = await get_visible_catalog_group_names(user_models_data)
+        return {"models": append_groups_to_ollama_models(filtered, catalog_groups)}
 
     return all_models_response
 
@@ -531,11 +538,21 @@ async def openclaw_v1_models(username: str = Depends(get_openclaw_user)):
                     })
 
     if user_models_data["has_all_models"]:
-        return {"object": "list", "data": openai_models}
+        filtered = openai_models
+    else:
+        allowed = set(user_models_data["models"])
+        filtered = [m for m in openai_models if m["id"] in allowed]
 
-    allowed = set(user_models_data["models"])
-    filtered = [m for m in openai_models if m["id"] in allowed]
-    return {"object": "list", "data": filtered}
+    from app.model_list import (
+        append_groups_to_openai_models,
+        get_visible_catalog_group_names,
+    )
+
+    catalog_groups = await get_visible_catalog_group_names(user_models_data)
+    return {
+        "object": "list",
+        "data": append_groups_to_openai_models(filtered, catalog_groups),
+    }
 
 
 @router.post("/chat/completions")
