@@ -38,6 +38,15 @@ _MODEL_LIST_TIMESTAMP = "2024-01-01T00:00:00Z"
 router = APIRouter(prefix="/claude", tags=["Claude API"])
 
 
+def _map_finish_reason(finish_reason: str | None) -> str:
+    """Map OpenAI finish_reason to Anthropic stop_reason."""
+    if finish_reason == "tool_calls":
+        return "tool_use"
+    if finish_reason in ("end_turn", "max_tokens", "stop_sequence"):
+        return finish_reason
+    return "end_turn"
+
+
 # =============================================================================
 # HEAD /claude/ — Connectivity check for Claude Code extension
 # =============================================================================
@@ -530,11 +539,7 @@ async def _stream_from_non_streaming(
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
 
-    stop_reason = choice.get("finish_reason", "end_turn")
-    if stop_reason == "tool_calls":
-        stop_reason = "tool_use"
-    elif stop_reason not in ("end_turn", "max_tokens", "stop_sequence"):
-        stop_reason = "end_turn"
+    stop_reason = _map_finish_reason(choice.get("finish_reason"))
 
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     anthropic_msg = {
@@ -680,7 +685,13 @@ async def _handle_claude_streaming(
         buffer = b""
         text_so_far = ""
         usage_stats: Dict[str, int] = {}
-        has_started_content = False
+        finish_reason = None
+
+        # Block indices: 0 = thinking, 1 = text
+        thinking_index = 0
+        text_index = 1
+        thinking_started = False
+        text_started = False
 
         # message_start
         yield (
@@ -702,23 +713,12 @@ async def _handle_claude_streaming(
             + "\n\n"
         )
 
-        # content_block_start (text)
-        yield (
-            f"event: content_block_start\ndata: "
-            + json.dumps(
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                }
-            )
-            + "\n\n"
-        )
-
         try:
             # Consume Ollama SSE stream via body_iterator
             async for chunk in proxy_response.body_iterator:
                 buffer += chunk
+                # Normalize \r\n -> \n for consistent SSE parsing
+                buffer = buffer.replace(b"\r\n", b"\n")
                 while b"\n\n" in buffer:
                     line, buffer = buffer.split(b"\n\n", 1)
                     line = line.strip()
@@ -741,35 +741,73 @@ async def _handle_claude_streaming(
                     if not choices:
                         continue
 
-                    delta = choices[0].get("delta", {})
-                    # OpenAI delta may contain content, reasoning, or tool_calls
-                    delta_content = delta.get("content", "")
+                    choice = choices[0]
+
+                    # Capture finish_reason from the final chunk
+                    fr = choice.get("finish_reason")
+                    if fr is not None:
+                        finish_reason = fr
+
+                    delta = choice.get("delta", {})
+                    delta_content = delta.get("content")
                     delta_thinking = delta.get("reasoning") or delta.get("thinking")
 
-                    if delta_thinking and not has_started_content:
-                        # Claude thinking block
+                    # Emit thinking block (separate content block)
+                    if delta_thinking:
+                        if not thinking_started:
+                            thinking_started = True
+                            yield (
+                                f"event: content_block_start\ndata: "
+                                + json.dumps(
+                                    {
+                                        "type": "content_block_start",
+                                        "index": thinking_index,
+                                        "content_block": {"type": "thinking", "thinking": ""},
+                                    }
+                                )
+                                + "\n\n"
+                            )
                         yield (
                             f"event: content_block_delta\ndata: "
                             + json.dumps(
                                 {
                                     "type": "content_block_delta",
-                                    "index": 0,
-                                    "delta": {"type": "thinking_delta", "thinking": delta_thinking},
+                                    "index": thinking_index,
+                                    "delta": {
+                                        "type": "thinking_delta",
+                                        "thinking": delta_thinking,
+                                    },
                                 }
                             )
                             + "\n\n"
                         )
 
+                    # Emit text block (separate content block)
                     if delta_content is not None:
-                        has_started_content = True
+                        if not text_started:
+                            text_started = True
+                            yield (
+                                f"event: content_block_start\ndata: "
+                                + json.dumps(
+                                    {
+                                        "type": "content_block_start",
+                                        "index": text_index,
+                                        "content_block": {"type": "text", "text": ""},
+                                    }
+                                )
+                                + "\n\n"
+                            )
                         text_so_far += str(delta_content)
                         yield (
                             f"event: content_block_delta\ndata: "
                             + json.dumps(
                                 {
                                     "type": "content_block_delta",
-                                    "index": 0,
-                                    "delta": {"type": "text_delta", "text": str(delta_content)},
+                                    "index": text_index,
+                                    "delta": {
+                                        "type": "text_delta",
+                                        "text": str(delta_content),
+                                    },
                                 }
                             )
                             + "\n\n"
@@ -785,21 +823,46 @@ async def _handle_claude_streaming(
                 + "\n\n"
             )
 
-        # content_block_stop
-        yield (
-            f"event: content_block_stop\ndata: "
-            + json.dumps({"type": "content_block_stop", "index": 0})
-            + "\n\n"
-        )
+        # Ensure at least an empty text block exists for empty responses
+        if not text_started:
+            text_started = True
+            yield (
+                f"event: content_block_start\ndata: "
+                + json.dumps(
+                    {
+                        "type": "content_block_start",
+                        "index": text_index,
+                        "content_block": {"type": "text", "text": ""},
+                    }
+                )
+                + "\n\n"
+            )
 
-        # message_delta
+        # content_block_stop for thinking
+        if thinking_started:
+            yield (
+                f"event: content_block_stop\ndata: "
+                + json.dumps({"type": "content_block_stop", "index": thinking_index})
+                + "\n\n"
+            )
+
+        # content_block_stop for text
+        if text_started:
+            yield (
+                f"event: content_block_stop\ndata: "
+                + json.dumps({"type": "content_block_stop", "index": text_index})
+                + "\n\n"
+            )
+
+        # message_delta with mapped finish_reason
         out_tokens = usage_stats.get("completion_tokens", len(text_so_far) // 4)
+        anthropic_stop = _map_finish_reason(finish_reason)
         yield (
             f"event: message_delta\ndata: "
             + json.dumps(
                 {
                     "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn"},
+                    "delta": {"stop_reason": anthropic_stop},
                     "usage": {"output_tokens": out_tokens},
                 }
             )
