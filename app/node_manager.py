@@ -338,22 +338,21 @@ class NodeManager:
     ) -> Dict[str, Any]:
         """
         Sync models from a specific node to database.
-        
+
         Returns:
             Dict with sync statistics
         """
         node_repo = NodeRepository(session)
         model_repo = NodeModelRepository(session)
-        
+
         # Get node info
         node = await node_repo.get_by_id(node_id)
         if not node:
             return {"success": False, "error": "Node not found"}
-        
-        # Mark all existing models as unavailable (will be re-activated if still present)
-        await model_repo.mark_all_unavailable_for_node(node_id)
-        
-        # Discover models
+
+        # Discover models (is_available is preserved by upsert;
+        # models removed from the node are NOT marked unavailable —
+        # the admin may have intentionally disabled a model.)
         success, models, error, updated_headers = await self.discover_models_from_node(
             node.base_url,
             node.api_key,
@@ -380,11 +379,11 @@ class NodeManager:
                 "node_name": node.name,
                 "error": error
             }
-        
+
         # Update node health status
         await node_repo.update_health_status(node_id, "healthy")
-        
-        # Upsert models
+
+        # Upsert models (metadata only — is_available is never touched)
         synced_models = []
         for model_data in models:
             model = await model_repo.upsert(
@@ -397,7 +396,7 @@ class NodeManager:
                 modified_at=model_data.get("modified_at")
             )
             synced_models.append(model_data["name"])
-        
+
         # Invalidate cache (Redis + memory)
         await self.invalidate_cache()
 

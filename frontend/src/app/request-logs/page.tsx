@@ -60,8 +60,8 @@ export default function RequestLogsPage() {
       offset,
       username: username || undefined,
       model_name: modelFilter || undefined,
-      status_category: statusFilter === 'all' ? undefined : statusFilter === 'success' ? 'success' : statusFilter === 'error' ? 'error' : undefined,
-      status_code: (statusFilter !== 'all' && statusFilter !== 'success' && statusFilter !== 'error') ? Number(statusFilter) : undefined,
+      status_category: statusFilter === 'all' ? undefined : statusFilter === 'success' ? 'success' : statusFilter === 'error' ? 'error' : statusFilter === '4xx' ? '4xx' : undefined,
+      status_code: (statusFilter === 'all' || statusFilter === 'success' || statusFilter === 'error' || statusFilter === '4xx' || isNaN(Number(statusFilter))) ? undefined : Number(statusFilter),
       source: sourceFilter === 'all' ? undefined : sourceFilter,
       start_date: dateFrom || undefined,
       end_date: dateTo || undefined,
@@ -113,8 +113,11 @@ export default function RequestLogsPage() {
               <option value="all">All Status</option>
               <option value="success">Success (2xx)</option>
               <option value="error">Error (5xx)</option>
+              <option value="4xx">4xx (Client Error)</option>
               <option value="400">400</option>
               <option value="401">401</option>
+              <option value="403">403</option>
+              <option value="404">404</option>
               <option value="429">429</option>
               <option value="500">500</option>
               <option value="503">503</option>

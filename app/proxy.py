@@ -1088,7 +1088,7 @@ class OllamaProxy:
         """Strip internal preferred-node keys from request body and compute LB restriction."""
         if not isinstance(data, dict):
             mmap = model_mapper.get_restricted_node_ids(model_name) if model_name else None
-            logger.info(f"[LB][RoutingDebug] data is not dict, model={model_name}, mapping_restrict={mmap}")
+            logger.debug(f"[LB][RoutingDebug] data is not dict, model={model_name}, mapping_restrict={mmap}")
             return mmap
         legacy = data.pop('_preferred_node_id', None)
         pids = data.pop('_preferred_node_ids', None)
@@ -1183,24 +1183,57 @@ class OllamaProxy:
             is_grouped = model_group_manager.is_group(model_name) if model_name else False
 
             if not nodes and not has_mapping and not is_grouped:
-                logger.info(f"[LB] Model '{model_name}' is unmapped/ungrouped and not in any catalog. Falling back to all active nodes.")
+                # Before falling back, check if model exists in DB but is deactivated
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeModelRepository
+                    async with async_session_maker() as session:
+                        model_repo = NodeModelRepository(session)
+                        if await model_repo.model_exists(model_name):
+                            if not await model_repo.has_any_available(model_name):
+                                logger.debug(f"[LB] Unmapped model '{model_name}' exists but is deactivated in DB — refusing fallback")
+                                return "", None, 'ollama', None, False
+                except Exception:
+                    pass
+
+                logger.debug(f"[LB] Model '{model_name}' is unmapped/ungrouped and not in any catalog. Falling back to all active nodes.")
                 nodes = await node_manager.get_all_active_healthy_nodes()
-                logger.info(f"[LB] Fallback returned {len(nodes)} active healthy node(s) for unmapped model '{model_name}'")
+                logger.debug(f"[LB] Fallback returned {len(nodes)} active healthy node(s) for unmapped model '{model_name}'")
 
             if not nodes:
-                # No nodes have this model - use default (if not excluded)
+                # No nodes have this model
+                # For mapped/grouped models, don't fall back to default URL —
+                # the model is genuinely unavailable (is_available=False or no healthy node)
+                if has_mapping or is_grouped:
+                    logger.debug(f"[LB] Mapped/grouped model '{model_name}' has no available nodes, refusing fallback")
+                    return "", None, 'ollama', None, False
+
+                # For unmapped models: if the model exists in DB but is marked unavailable,
+                # do NOT fall back to the default URL
+                try:
+                    from app.database import async_session_maker
+                    from app.repositories.node_repository import NodeModelRepository
+                    async with async_session_maker() as session:
+                        model_repo = NodeModelRepository(session)
+                        if await model_repo.model_exists(model_name):
+                            if not await model_repo.has_any_available(model_name):
+                                logger.debug(f"[LB] Unmapped model '{model_name}' exists but is deactivated — refusing fallback")
+                                return "", None, 'ollama', None, False
+                except Exception:
+                    pass
+
                 if exclude_nodes and self.base_url in exclude_nodes:
-                    logger.info(f"[LB] No nodes found for model {model_name} and default URL excluded")
-                    return "", None, 'ollama', None
-                logger.info(f"[LB] No nodes found for model {model_name}, using default URL")
-                return self.base_url, None, 'ollama', None
+                    logger.debug(f"[LB] No nodes found for model {model_name} and default URL excluded")
+                    return "", None, 'ollama', None, False
+                logger.debug(f"[LB] No nodes found for model {model_name}, using default URL")
+                return self.base_url, None, 'ollama', None, False
 
             if allowed_node_ids:
                 allow = set(allowed_node_ids)
                 filtered_allow = [n for n in nodes if n.get('node_id') in allow]
                 if filtered_allow:
                     nodes = filtered_allow
-                    logger.info(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
+                    logger.debug(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
                 else:
                     # For unmapped/ungrouped models, don't 503; widen the pool instead
                     if not has_mapping and not is_grouped:
@@ -1229,14 +1262,14 @@ class OllamaProxy:
                 nodes = [n for n in nodes if not n.get('scoped_models')]
                 filtered_count = before_count - len(nodes)
                 if filtered_count:
-                    logger.info(f"[LB] Filtered out {filtered_count} scoped nodes for model {model_name}")
+                    logger.debug(f"[LB] Filtered out {filtered_count} scoped nodes for model {model_name}")
 
             if not nodes:
                 if exclude_nodes and self.base_url in exclude_nodes:
-                    logger.info(f"[LB] No non-scoped nodes found for model {model_name} and default URL excluded")
-                    return "", None, 'ollama', None
-                logger.info(f"[LB] All nodes for model {model_name} are scoped, using default URL")
-                return self.base_url, None, 'ollama', None
+                    logger.debug(f"[LB] No non-scoped nodes found for model {model_name} and default URL excluded")
+                    return "", None, 'ollama', None, False
+                logger.debug(f"[LB] All nodes for model {model_name} are scoped, using default URL")
+                return self.base_url, None, 'ollama', None, False
 
             # Filter out excluded nodes
             if exclude_nodes:
@@ -1253,10 +1286,10 @@ class OllamaProxy:
                 else:
                     # All known nodes excluded, try default if not excluded
                     if self.base_url not in exclude_nodes:
-                        logger.info(f"[LB] All nodes excluded for model {model_name}, trying default URL")
-                        return self.base_url, None, 'ollama', None
-                    logger.info(f"[LB] All nodes excluded for model {model_name}, no alternatives")
-                    return "", None, 'ollama', None
+                        logger.debug(f"[LB] All nodes excluded for model {model_name}, trying default URL")
+                        return self.base_url, None, 'ollama', None, False
+                    logger.debug(f"[LB] All nodes excluded for model {model_name}, no alternatives")
+                    return "", None, 'ollama', None, False
 
             # Select best node using load balancer (Redis-first, no session)
             selected_node = await load_balancer.select_node(
@@ -1270,7 +1303,7 @@ class OllamaProxy:
                 node_type = selected_node.get('node_type', 'ollama')
                 node_headers = selected_node.get('headers')
                 node_auto_cookie_refresh = selected_node.get('auto_cookie_refresh', False)
-                logger.info(f"[LB] Selected node {node_name} ({node_type}) for model {model_name}")
+                logger.debug(f"[LB] Selected node {node_name} ({node_type}) for model {model_name}")
                 if node_base_url:
                     return node_base_url, node_api_key, node_type, node_headers, node_auto_cookie_refresh
 
@@ -1939,6 +1972,8 @@ class OllamaProxy:
         """Detect request source/client from endpoint path."""
         if endpoint.startswith('/openclaw'):
             return 'OpenClaw'
+        if endpoint.startswith('/claude'):
+            return 'Claude'
         if endpoint.startswith('/grafana'):
             return 'Grafana'
         if endpoint.startswith('/api/'):
@@ -2057,7 +2092,9 @@ class OllamaProxy:
         data: Optional[Dict[str, Any]] = None,
         stream: bool = False,
         username: Optional[str] = None,
-        client_headers: Optional[Dict[str, str]] = None
+        client_headers: Optional[Dict[str, str]] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
     ):
         """
         Proxy request to Ollama with automatic failover.
@@ -2088,11 +2125,11 @@ class OllamaProxy:
             for key in ("reasoning", "reasoning_effort"):
                 if data.get(key) == "minimal":
                     data[key] = "low"
-                    logger.info(f"[Normalize] {key} 'minimal' -> 'low' in request body")
+                    logger.debug(f"[Normalize] {key} 'minimal' -> 'low' in request body")
                 options = data.get("options")
                 if isinstance(options, dict) and options.get(key) == "minimal":
                     options[key] = "low"
-                    logger.info(f"[Normalize] {key} 'minimal' -> 'low' in options")
+                    logger.debug(f"[Normalize] {key} 'minimal' -> 'low' in options")
 
         # Track original model name and group for failover
         original_model = None
@@ -2151,7 +2188,7 @@ class OllamaProxy:
                         node_scoped_model = actual_model
                         tried_models.discard(f"node:{node_code}:{actual_model}")
                         tried_models.add(actual_model)
-                        logger.info(f"[LB] Node-scoped routing: code='{node_code}' -> node='{node.name}', model='{actual_model}'")
+                        logger.debug(f"[LB] Node-scoped routing: code='{node_code}' -> node='{node.name}', model='{actual_model}'")
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -2181,6 +2218,26 @@ class OllamaProxy:
             allowed_node_ids=routing_allowed_node_ids,
             routing_catalog_names=routing_catalog_names,
         )
+
+        # Block if no node found (model unavailable)
+        if not base_url:
+            logger.warning(f"[Proxy] No available node found for model '{model_name}' — model may be unavailable")
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            if username and model_name:
+                await self._log_user_activity(
+                    username=username,
+                    model_name=model_name,
+                    request_type=endpoint.replace('/api/', '').replace('/v1/', '') if endpoint != '/api/chat' else 'chat/completions',
+                    status_code=404,
+                    duration_ms=duration_ms,
+                    error_message=f"Model '{model_name}' is not available",
+                    source=source or self._detect_request_source(endpoint),
+                    url_path=url_path or endpoint
+                )
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{model_name}' is not available"
+            )
 
         url = f"{base_url}{endpoint}"
         if base_url:
@@ -2404,6 +2461,8 @@ class OllamaProxy:
                     allowed_node_ids=routing_allowed_node_ids,
                     routing_snapshot=routing_snapshot,
                     routing_catalog_names=routing_catalog_names,
+                    source=source,
+                    url_path=url_path,
                 )
 
             # Non-streaming requests with failover support
@@ -2429,6 +2488,8 @@ class OllamaProxy:
                 allowed_node_ids=routing_allowed_node_ids,
                 routing_snapshot=routing_snapshot,
                 routing_catalog_names=routing_catalog_names,
+                source=source,
+                url_path=url_path,
             )
 
         except HTTPException:
@@ -2467,6 +2528,8 @@ class OllamaProxy:
         allowed_node_ids: Optional[List[int]] = None,
         routing_snapshot: Optional[Dict[str, str]] = None,
         routing_catalog_names: Optional[List[str]] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2513,13 +2576,13 @@ class OllamaProxy:
                 client = await self._get_http_client()
                 current_model = current_data.get('model', 'unknown')
 
-                logger.info(f"[STREAM START] Attempt {attempt + 1}: Sending streaming request to {current_url}")
-                logger.info(f"[STREAM START] Model: {current_model}, OpenAI endpoint: {is_openai_endpoint}")
-                logger.info(f"[STREAM START] max_tokens: {current_data.get('max_tokens', 'not set')}, temperature: {current_data.get('temperature', 'not set')}")
+                logger.debug(f"[STREAM START] Attempt {attempt + 1}: Sending streaming request to {current_url}")
+                logger.debug(f"[STREAM START] Model: {current_model}, OpenAI endpoint: {is_openai_endpoint}")
+                logger.debug(f"[STREAM START] max_tokens: {current_data.get('max_tokens', 'not set')}, temperature: {current_data.get('temperature', 'not set')}")
 
                 try:
                     if current_data.get("tools"):
-                        logger.info(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in current_data.get('tools', [])]}")
+                        logger.debug(f"[STREAM START] Tools provided: {[t.get('function', {}).get('name') for t in current_data.get('tools', [])]}")
 
                     request_headers = {}
                     if client_headers:
@@ -2535,15 +2598,18 @@ class OllamaProxy:
                     if current_api_key:
                         request_headers["Authorization"] = f"Bearer {current_api_key}"
 
-                    # Log full outgoing request body and headers for debugging
+                    # Log full outgoing request body and headers for debugging (debug level only)
                     if current_data:
                         _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                        logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
-                    logger.info(f"[OUTGOING] request headers: {request_headers}")
+                        logger.debug(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
+                    logger.debug(f"[OUTGOING] request headers: {request_headers}")
 
                     async with client.stream("POST", current_url, json=current_data, headers=request_headers) as resp:
                         provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                        logger.info(f"[STREAM] {provider_label} response status: {resp.status_code}")
+                        if resp.status_code >= 400:
+                            logger.warning(f"[STREAM] {provider_label} response status: {resp.status_code}")
+                        else:
+                            logger.debug(f"[STREAM] {provider_label} response status: {resp.status_code}")
 
                         # Check status code before streaming
                         if resp.status_code != 200:
@@ -2744,13 +2810,13 @@ class OllamaProxy:
                             total_bytes += len(chunk)
 
                             if chunk_count <= 3:
-                                logger.info(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
+                                logger.debug(f"[STREAM CHUNK {chunk_count}] Received {len(chunk)} bytes: {chunk[:200]!r}")
 
                             buffer += chunk
 
                             # Guard against unbounded buffer growth from malformed upstream
                             if len(buffer) > 1024 * 1024:
-                                logger.warning(f"[STREAM] Buffer exceeded 1MB, discarding {len(buffer)} bytes")
+                                logger.debug(f"[STREAM] Buffer exceeded 1MB, discarding {len(buffer)} bytes")
                                 buffer = b""
                                 continue
 
@@ -2761,7 +2827,7 @@ class OllamaProxy:
                                         if line.startswith(b'data: '):
                                             json_str = line[6:].decode('utf-8').strip()
                                             if json_str and json_str != '[DONE]':
-                                                logger.info(f"[OLLAMA IN] {json_str}")
+                                                logger.debug(f"[OLLAMA IN] {json_str}")
                                                 json_data = _json_loads(json_str)
 
                                                 # Kimi tool call handling
@@ -3145,7 +3211,7 @@ class OllamaProxy:
                                                     first_chunk_sent = True
 
                                             elif line == b'data: [DONE]':
-                                                logger.info(f"[STREAM] Received [DONE] marker")
+                                                logger.debug(f"[STREAM] Received [DONE] marker")
                                                 yield b'data: [DONE]\n\n'
                                                 done_marker_sent = True
                                             else:
@@ -3177,8 +3243,8 @@ class OllamaProxy:
                                 total_tokens=prompt_tokens + completion_tokens,
                                 status_code=200,
                                 duration_ms=duration_ms,
-                                source=self._detect_request_source(endpoint),
-                                url_path=endpoint
+                                source=source or self._detect_request_source(endpoint),
+                                url_path=url_path or endpoint
                             )
 
                         # Send [DONE] if not already sent
@@ -3238,10 +3304,10 @@ class OllamaProxy:
                                 yield b'data: ' + _json_dumps(text_chunk) + b'\n\n'
                                 deepseek_suspicion_buffer = ""
 
-                            logger.info(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
+                            logger.debug(f"[STREAM END] Sending [DONE] marker (not received from upstream)")
                             yield b'data: [DONE]\n\n'
 
-                        logger.info(f"[STREAM END] Stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
+                        logger.debug(f"[STREAM END] Stream complete. Total chunks: {chunk_count}, bytes: {total_bytes}")
                         return  # Successfully completed
 
                 except httpx.RequestError as e:
@@ -3386,6 +3452,8 @@ class OllamaProxy:
         allowed_node_ids: Optional[List[int]] = None,
         routing_snapshot: Optional[Dict[str, str]] = None,
         routing_catalog_names: Optional[List[str]] = None,
+        source: Optional[str] = None,
+        url_path: Optional[str] = None,
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -3437,11 +3505,11 @@ class OllamaProxy:
                 if current_api_key:
                     request_headers["Authorization"] = f"Bearer {current_api_key}"
 
-                # Log full outgoing request body and headers for debugging
+                # Log full outgoing request body and headers for debugging (debug level only)
                 if current_data:
                     _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                    logger.info(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
-                logger.info(f"[OUTGOING] request headers: {request_headers}")
+                    logger.debug(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
+                logger.debug(f"[OUTGOING] request headers: {request_headers}")
 
                 if method.upper() == "GET":
                     response = await client.get(current_url, headers=request_headers)
@@ -3585,8 +3653,8 @@ class OllamaProxy:
                             prompt_tokens=0,
                             completion_tokens=0,
                             total_tokens=0,
-                            source=self._detect_request_source(endpoint),
-                            url_path=endpoint
+                            source=source or self._detect_request_source(endpoint),
+                            url_path=url_path or endpoint
                         )
                     return response.text
 
@@ -3631,8 +3699,8 @@ class OllamaProxy:
                         total_tokens=total_tokens or (prompt_tokens + completion_tokens),
                         status_code=200,
                         duration_ms=duration_ms,
-                        source=self._detect_request_source(endpoint),
-                        url_path=endpoint
+                        source=source or self._detect_request_source(endpoint),
+                        url_path=url_path or endpoint
                     )
 
                 return response_data
@@ -3743,8 +3811,8 @@ class OllamaProxy:
                 status_code=error_status,
                 duration_ms=duration_ms,
                 error_message=error_msg[:500],
-                source=self._detect_request_source(endpoint),
-                url_path=endpoint
+                source=source or self._detect_request_source(endpoint),
+                url_path=url_path or endpoint
             )
         if last_error:
             raise last_error

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import {
     Select,
     SelectContent,
@@ -193,7 +194,7 @@ export default function OllamaModelsPage() {
             queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
             toast.success(`${name} deleted`);
         },
-        onError: (err) => toast.error(err.message),
+        onError: (err: Error) => toast.error(err.message),
     });
 
     const syncMutation = useMutation({
@@ -203,7 +204,18 @@ export default function OllamaModelsPage() {
             queryClient.invalidateQueries({ queryKey: ['model-mappings'] });
             toast.success(`${result.synced} models synchronized`);
         },
-        onError: (err) => toast.error(err.message),
+        onError: (err: Error) => toast.error(err.message),
+    });
+
+    const toggleMutation = useMutation({
+        mutationFn: ({ modelName, isAvailable }: { modelName: string; isAvailable: boolean }) =>
+            ollamaModelsApi.setAvailable(modelName, isAvailable),
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['ollama-models'] });
+            queryClient.invalidateQueries({ queryKey: ['nodes'] });
+            toast.success(`${data.model_name} updated on ${data.updated_nodes} node(s)`);
+        },
+        onError: (err: Error) => toast.error(err.message),
     });
 
     const filtered = models?.filter((m) =>
@@ -246,12 +258,13 @@ export default function OllamaModelsPage() {
                                     <TableHead>Nodes</TableHead>
                                     <TableHead>Context Length</TableHead>
                                     <TableHead>Capabilities</TableHead>
+                                    <TableHead className="text-right">Available</TableHead>
                                     <TableHead className="text-right">Action</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {filtered.map((m) => (
-                                    <TableRow key={m.name}>
+                                    <TableRow key={m.name} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
                                         <TableCell className="font-mono text-sm">{m.name}</TableCell>
                                         <TableCell className="text-sm">{formatSize(m.size)}</TableCell>
                                         <TableCell>
@@ -292,6 +305,19 @@ export default function OllamaModelsPage() {
                                             )}
                                         </TableCell>
                                         <TableCell className="text-right">
+                                            <Switch
+                                                checked={m.is_available}
+                                                onCheckedChange={(checked) => {
+                                                    toggleMutation.mutate({
+                                                        modelName: m.name,
+                                                        isAvailable: checked,
+                                                    });
+                                                }}
+                                                disabled={toggleMutation.isPending}
+                                                aria-label="Toggle availability"
+                                            />
+                                        </TableCell>
+                                        <TableCell className="text-right">
                                             <Dialog>
                                                 <DialogTrigger asChild>
                                                     <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive">
@@ -316,7 +342,7 @@ export default function OllamaModelsPage() {
                                 ))}
                                 {filtered.length === 0 && (
                                     <TableRow>
-                                        <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
+                                        <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
                                             {search ? 'No results found' : 'No models found on Ollama server'}
                                         </TableCell>
                                     </TableRow>

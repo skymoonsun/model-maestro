@@ -174,9 +174,6 @@ async def process_batch(batch: List[Dict[str, Any]]):
             for log in batch:
                 username = log['username']
                 user_id = username_to_id.get(username)
-                if not user_id:
-                    logger.warning(f"User not found for activity log: {username}")
-                    continue
 
                 logs_to_insert.append({
                     "user_id": user_id,
@@ -193,7 +190,8 @@ async def process_batch(batch: List[Dict[str, Any]]):
                 })
 
                 # Aggregate tokens per user for a single cache update per user
-                tokens_per_user[username] = tokens_per_user.get(username, 0) + (log.get('total_tokens', 0) or 0)
+                if user_id:
+                    tokens_per_user[username] = tokens_per_user.get(username, 0) + (log.get('total_tokens', 0) or 0)
 
             # 3. Bulk insert all activity logs (single INSERT)
             if logs_to_insert:
@@ -433,13 +431,13 @@ async def _warmup_model_on_node(
     try:
         resp = await client.post(url, json=payload, headers=headers, timeout=30.0)
         if resp.status_code == 200:
-            logger.info(f"[WARMUP] Warmed up '{model_name}' on {node_base_url}")
+            logger.debug(f"[WARMUP] Warmed up '{model_name}' on {node_base_url}")
             return True
         else:
-            logger.warning(f"[WARMUP] Unexpected status {resp.status_code} for '{model_name}' on {node_base_url}")
+            logger.debug(f"[WARMUP] Unexpected status {resp.status_code} for '{model_name}' on {node_base_url}")
             return False
     except Exception as e:
-        logger.warning(f"[WARMUP] Failed to warm up '{model_name}' on {node_base_url}: {e}")
+        logger.debug(f"[WARMUP] Failed to warm up '{model_name}' on {node_base_url}: {e}")
         return False
 
 
@@ -482,6 +480,9 @@ async def model_warmup_task():
                         continue
 
                     available = [m for m in models if m.is_available]
+                    if not available:
+                        logger.debug(f"[WARMUP] No available models on '{node.name}', skipping")
+                        continue
                     logger.info(f"[WARMUP] Warming up {len(available)} models on node '{node.name}'")
 
                     # Re-check node is still active before starting batch
@@ -497,17 +498,19 @@ async def model_warmup_task():
                     ) as client:
                         semaphore = asyncio.Semaphore(5)
 
-                        async def _warmup_with_limit(model_name: str) -> None:
+                        async def _warmup_with_limit(name: str) -> bool:
                             async with semaphore:
-                                await _warmup_model_on_node(
-                                    client, node.base_url, node.api_key, model_name,
+                                return await _warmup_model_on_node(
+                                    client, node.base_url, node.api_key, name,
                                     node_headers=getattr(node, 'headers', None)
                                 )
 
-                        await asyncio.gather(
+                        results = await asyncio.gather(
                             *[_warmup_with_limit(m.model_name) for m in available],
                             return_exceptions=True
                         )
+                        ok_count = sum(1 for r in results if r is True)
+                        logger.info(f"[WARMUP] Node '{node.name}' — {ok_count}/{len(available)} models warmed up")
 
         except Exception as e:
             logger.error(f"Error in model warmup task: {e}")
@@ -617,11 +620,11 @@ async def _warmup_model(real_name: str):
                 json=payload,
             )
             if resp.status_code == 200:
-                logger.info(f"[WARMUP] ✅ Model '{real_name}' loaded and kept warm")
+                logger.debug(f"[WARMUP] ✅ Model '{real_name}' loaded and kept warm")
             else:
-                logger.warning(f"[WARMUP] ⚠️ Unexpected status {resp.status_code} for '{real_name}'")
+                logger.debug(f"[WARMUP] ⚠️ Unexpected status {resp.status_code} for '{real_name}'")
     except Exception as e:
-        logger.warning(f"[WARMUP] ⚠️ Failed to warm '{real_name}': {e}")
+        logger.debug(f"[WARMUP] ⚠️ Failed to warm '{real_name}': {e}")
 
 
 async def model_keep_warm_task():

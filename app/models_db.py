@@ -127,9 +127,9 @@ class UserNodeModel(Base):
 class UserActivityLog(Base):
     """User activity log for tracking token usage and model access"""
     __tablename__ = "user_activity_logs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     model_name = Column(String(255), nullable=False)
     prompt_tokens = Column(Integer, default=0, nullable=False)
     completion_tokens = Column(Integer, default=0, nullable=False)

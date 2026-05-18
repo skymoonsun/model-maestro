@@ -405,6 +405,8 @@ async def _handle_claude_non_streaming(
         data=ollama_body,
         stream=False,
         username=username,
+        source="Claude",
+        url_path="/claude/v1/messages",
     )
 
     # Parse response
@@ -480,6 +482,8 @@ async def _stream_from_non_streaming(
         data=ns_body,
         stream=False,
         username=username,
+        source="Claude",
+        url_path="/claude/v1/messages",
     )
     if isinstance(response, dict):
         response_data = response
@@ -650,6 +654,8 @@ async def _handle_claude_streaming(
         data=ollama_body,
         stream=True,
         username=username,
+        source="Claude",
+        url_path="/claude/v1/messages",
     )
 
     if not isinstance(proxy_response, StreamingResponse):

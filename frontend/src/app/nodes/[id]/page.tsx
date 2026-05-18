@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import {
     Table,
     TableBody,
@@ -400,7 +401,7 @@ export default function NodeDetailPage() {
                                 <TableHead>Model</TableHead>
                                 <TableHead>Size</TableHead>
                                 <TableHead>Family</TableHead>
-                                <TableHead>Available</TableHead>
+                                <TableHead className="text-right">Available</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -412,22 +413,25 @@ export default function NodeDetailPage() {
                                 </TableRow>
                             ) : (
                                 node.models?.map((m) => (
-                                    <TableRow key={m.model_name}>
+                                    <TableRow key={m.model_name} className={m.is_available ? '' : 'opacity-50 bg-muted/20'}>
                                         <TableCell className="font-mono text-sm">{m.model_name}</TableCell>
                                         <TableCell>{formatSize(m.model_size)}</TableCell>
                                         <TableCell className="text-muted-foreground">
                                             {m.model_family || '—'}
                                         </TableCell>
-                                        <TableCell>
-                                            {m.is_available ? (
-                                                <Badge variant="outline" className="text-emerald-400">
-                                                    Yes
-                                                </Badge>
-                                            ) : (
-                                                <Badge variant="outline" className="text-muted-foreground">
-                                                    No
-                                                </Badge>
-                                            )}
+                                        <TableCell className="text-right">
+                                            <Switch
+                                                checked={m.is_available}
+                                                onCheckedChange={(checked) => {
+                                                    nodesApi.toggleModelAvailable(nodeId, m.model_name, checked)
+                                                        .then((data) => {
+                                                            toast.success(`${data.model_name} is now ${data.is_available ? 'active' : 'inactive'}`);
+                                                            qc.invalidateQueries({ queryKey: ['nodes', nodeId] });
+                                                        })
+                                                        .catch((err: Error) => toast.error(err.message));
+                                                }}
+                                                aria-label="Toggle availability"
+                                            />
                                         </TableCell>
                                     </TableRow>
                                 ))

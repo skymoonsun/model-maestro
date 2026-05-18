@@ -1,6 +1,16 @@
 """Model Maestro - Unified LLM Gateway with JWT Authentication"""
 
-from typing import Any, Dict, Optional
+import logging
+import secrets
+import time
+import asyncio
+from typing import Any, Dict, List, Optional
+
+# Disable uvicorn access logs immediately
+for uv_name in ("uvicorn.access", "uvicorn"):
+    logging.getLogger(uv_name).handlers = []
+    logging.getLogger(uv_name).propagate = False
+
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, Depends, Request, HTTPException, status, Query
 from fastapi.responses import JSONResponse
@@ -8,8 +18,6 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
-import secrets
-import logging
 import httpx
 import json
 
@@ -72,11 +80,183 @@ app = FastAPI(
 # CORS middleware (frontend panel için)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Production'da frontend URL'i ile sınırlandırılmalı
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ==================== Error-Only Request Log Middleware ====================
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+
+
+class ErrorOnlyLogMiddleware(BaseHTTPMiddleware):
+    """Log only 4xx/5xx requests -- include a short body preview."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
+        start = time.monotonic()
+        receive = request.receive
+        buffered_messages: List[dict] = []
+
+        async def receive_with_buffer():
+            # Buffer every ASGI message so downstream request.json()
+            # still works, while also collecting body bytes for logging.
+            msg = await receive()
+            buffered_messages.append(msg)
+            return msg
+
+        request._receive = receive_with_buffer
+        try:
+            response = await call_next(request)
+        except HTTPException as exc:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            self._emit(
+                request=request,
+                status_code=exc.status_code,
+                duration_ms=duration_ms,
+                buffered_messages=buffered_messages,
+                detail=exc.detail,
+            )
+            raise
+        except Exception:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            self._emit(
+                request=request,
+                status_code=500,
+                duration_ms=duration_ms,
+                buffered_messages=buffered_messages,
+            )
+            raise
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        if response.status_code >= 400:
+            self._emit(
+                request=request,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                buffered_messages=buffered_messages,
+            )
+        return response
+
+    @staticmethod
+    def _resolve_username_from_request(request: Request) -> Optional[str]:
+        auth = request.headers.get("authorization", "")
+        if len(auth) > 7 and auth[:7].lower() == "bearer ":
+            token = auth[7:]
+            try:
+                import jwt as _jwt
+                payload = _jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
+                return payload.get("sub")
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _infer_source_from_request(request: Request) -> Optional[str]:
+        agent = request.headers.get("user-agent", "")
+        path = request.url.path.lower()
+        if "cursor" in agent.lower():
+            return "Cursor"
+        if "antigravity" in agent.lower():
+            return "Antigravity"
+        if "openclaw" in agent.lower():
+            return "OpenClaw"
+        if "claude" in agent.lower():
+            return "Claude"
+        if "/openclaw/" in path:
+            return "OpenClaw"
+        if "/claude/" in path:
+            return "Claude"
+        if "/api/chat" in path or "/v1/chat/completions" in path:
+            return "OpenAI-Compatible"
+        if "/api/generate" in path:
+            return "Ollama Native"
+        return None
+
+    @staticmethod
+    def _infer_request_type(url_path: str) -> str:
+        if "/chat/completions" in url_path:
+            return "chat"
+        if "/completions" in url_path:
+            return "completions"
+        if "/embeddings" in url_path or "/embed" in url_path:
+            return "embeddings"
+        if "/generate" in url_path:
+            return "generate"
+        if "/api/tags" in url_path:
+            return "tags"
+        if "/api/ps" in url_path:
+            return "ps"
+        return url_path
+
+    def _emit(
+        self,
+        request: Request,
+        status_code: int,
+        duration_ms: int,
+        buffered_messages: List[dict],
+        detail: str = "",
+    ):
+        # Reassemble body from buffered ASGI messages
+        body_parts: List[bytes] = []
+        for msg in buffered_messages:
+            if msg.get("type") == "http.request":
+                chunk = msg.get("body", b"")
+                if chunk:
+                    body_parts.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+                if not msg.get("more_body", False):
+                    break
+        body_bytes = b"".join(body_parts)
+        body_preview = body_bytes[:2000].decode("utf-8", errors="replace")[:500]
+
+        # Extract model name from body if available
+        body_json: Optional[Dict[str, Any]] = None
+        if body_bytes:
+            try:
+                body_json = json.loads(body_bytes)
+            except Exception:
+                body_json = None
+
+        msg_lines = [
+            f"Error {status_code} {request.method} {request.url.path}",
+            f"  duration={duration_ms}ms",
+            f"  client={request.client}",
+        ]
+        if body_preview:
+            msg_lines.append(f"  body={body_preview!r}")
+        if detail:
+            msg_lines.append(f"  detail={detail[:200]!r}")
+        if status_code >= 500:
+            logger.error("\n".join(msg_lines))
+        else:
+            logger.warning("\n".join(msg_lines))
+
+        # Persist to Request Logs (async fire-and-forget)
+        username = self._resolve_username_from_request(request)
+        model_name = body_json.get("model") if body_json else None
+        source = self._infer_source_from_request(request)
+        request_type = self._infer_request_type(str(request.url.path))
+        try:
+            from app.background_tasks import queue_activity_log_async
+            asyncio.create_task(
+                queue_activity_log_async(
+                    username=username or "anonymous",
+                    model_name=model_name or "unknown",
+                    request_type=request_type,
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                    error_message=detail or f"HTTP {status_code}",
+                    source=source,
+                    url_path=str(request.url.path),
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Failed to queue error activity log: {e}")
+
+
+app.add_middleware(ErrorOnlyLogMiddleware)
+
 
 # Include admin routers (auth first - login has no auth)
 app.include_router(admin_auth_router)
@@ -267,7 +447,9 @@ async def list_models(username: str = Depends(get_current_user)):
         all_models_response = await ollama_proxy.proxy_request(
             method="GET",
             endpoint="/api/tags",
-            username=username
+            username=username,
+            source="Ollama Native",
+            url_path="/api/tags"
         )
 
     # Get user's model access
@@ -305,18 +487,6 @@ async def list_models(username: str = Depends(get_current_user)):
                     # No mapping for this model – add with its original name
                     if model_name not in models_dict:
                         models_dict[model_name] = model
-
-        # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
-        # This allows multiple display names to point to the same real model
-        for display_name, real_name in all_mappings.items():
-            if display_name not in models_dict:
-                # Create a synthetic model entry for this display name
-                # Use a template from Ollama models or create a minimal one
-                base_model = all_models_response["models"][0] if all_models_response["models"] else {}
-                model_entry = base_model.copy() if base_model else {}
-                model_entry["name"] = display_name
-                model_entry["model"] = display_name
-                models_dict[display_name] = model_entry
 
         mapped_models = list(models_dict.values())
 
@@ -367,7 +537,9 @@ async def generate(
         endpoint="/api/generate",
         data=request.model_dump(exclude_none=True),
         stream=request.stream or False,
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/generate"
     )
 
 
@@ -404,7 +576,9 @@ async def chat(
         endpoint="/api/chat",
         data=request.model_dump(exclude_none=True),
         stream=request.stream or False,
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/chat"
     )
 
 
@@ -440,7 +614,9 @@ async def embeddings(
         method="POST",
         endpoint="/api/embeddings",
         data=request.model_dump(exclude_none=True),
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/embeddings"
     )
 
 
@@ -478,7 +654,9 @@ async def embed(
         method="POST",
         endpoint="/api/embed",
         data=request.model_dump(exclude_none=True),
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/embed"
     )
 
 
@@ -515,7 +693,9 @@ async def openai_embeddings(
         method="POST",
         endpoint="/v1/embeddings",
         data=request.model_dump(exclude_none=True),
-        username=username
+        username=username,
+        source="OpenAI-Compatible",
+        url_path="/v1/embeddings"
     )
 
     return response
@@ -550,7 +730,9 @@ async def show_model(
         method="POST",
         endpoint="/api/show",
         data=data,
-        username=username
+        username=username,
+        source="Ollama Native",
+        url_path="/api/show"
     )
 
 
@@ -706,7 +888,9 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         native_models_response = await ollama_proxy.proxy_request(
             method="GET",
             endpoint="/api/tags",
-            username=username
+            username=username,
+            source="OpenAI-Compatible",
+            url_path="/v1/models",
         )
 
     # Convert Ollama native format to OpenAI format
@@ -747,9 +931,11 @@ async def openai_list_models(username: str = Depends(get_current_user)):
         models_dict = {}
 
         # First, add all models from Ollama with reverse mapping
+        available_real_names: set[str] = set()
         for model in all_models_response["data"]:
             model_id = model.get("id")
             if model_id:
+                available_real_names.add(model_id)
                 # Get ALL display names for this real model
                 display_names = model_mapper.get_all_display_names_for_real_name(model_id)
 
@@ -768,9 +954,9 @@ async def openai_list_models(username: str = Depends(get_current_user)):
                     if model_id not in models_dict:
                         models_dict[model_id] = model
 
-        # Second, add all display names from mappings (even if real model doesn't exist in Ollama)
+        # Second, add display names from mappings only if the real model is currently available
         for display_name, real_name in all_mappings.items():
-            if display_name not in models_dict:
+            if display_name not in models_dict and real_name in available_real_names:
                 # Create a synthetic model entry for this display name
                 base_model = all_models_response["data"][0] if all_models_response["data"] else {}
                 model_entry = base_model.copy() if base_model else {}
@@ -921,7 +1107,9 @@ async def openai_chat_completions(
         data=data,
         stream=stream,
         username=username,
-        client_headers=client_headers
+        client_headers=client_headers,
+        source="OpenAI-Compatible",
+        url_path="/v1/chat/completions"
     )
 
 
@@ -964,7 +1152,9 @@ async def openai_completions(
         endpoint="/v1/completions",
         data=data,
         stream=data.get("stream", False),
-        username=username
+        username=username,
+        source="OpenAI-Compatible",
+        url_path="/v1/completions"
     )
 
 
@@ -1106,7 +1296,9 @@ async def cursor_chat_completions(
         endpoint="/v1/chat/completions",
         data=data,
         stream=stream,
-        username=username
+        username=username,
+        source="Cursor",
+        url_path="/cursor/chat/completions"
     )
 
 

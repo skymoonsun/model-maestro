@@ -146,11 +146,13 @@ async def openclaw_list_models(username: str = Depends(get_openclaw_user)):
 
     if isinstance(all_models_response, dict) and "models" in all_models_response:
         models_dict = {}
+        available_real_names: set[str] = set()
 
         # Add all models from Ollama with display name mapping
         for model in all_models_response["models"]:
             model_name = model.get("name") or model.get("model")
             if model_name:
+                available_real_names.add(model_name)
                 display_names = model_mapper.get_all_display_names_for_real_name(model_name)
                 if display_names:
                     for display_name in display_names:
@@ -168,7 +170,7 @@ async def openclaw_list_models(username: str = Depends(get_openclaw_user)):
 
         # Add mappings that don't have a real Ollama model entry yet
         for display_name, real_name in all_mappings.items():
-            if display_name not in models_dict:
+            if display_name not in models_dict and real_name in available_real_names:
                 base = all_models_response["models"][0] if all_models_response["models"] else {}
                 model_entry = base.copy() if base else {}
                 model_entry["name"] = display_name
@@ -229,6 +231,8 @@ async def openclaw_show_model(
             endpoint="/api/show",
             data=ollama_body,
             username=username,
+            source="OpenClaw",
+            url_path="/openclaw/api/show",
         )
     except HTTPException as e:
         # If Ollama doesn't have this model (e.g. cloud model), build a synthetic response
@@ -437,6 +441,8 @@ async def openclaw_chat(
         data=body,
         stream=stream,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/api/chat",
     )
 
 
@@ -478,6 +484,8 @@ async def openclaw_embed(
         data=body,
         stream=False,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/api/embed",
     )
 
 
@@ -571,6 +579,8 @@ async def openclaw_v1_chat_completions(
         data=body,
         stream=stream,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/chat/completions",
     )
 
 
@@ -610,6 +620,8 @@ async def openclaw_v1_embeddings(
         data=ollama_body,
         stream=False,
         username=username,
+        source="OpenClaw",
+        url_path="/openclaw/embeddings",
     )
 
     if isinstance(response, dict):
