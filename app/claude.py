@@ -194,12 +194,11 @@ async def claude_messages(
     """
     body = await request.json()
     model_name = body.get("model", "")
-    # Strip claude- prefix only when it was artificially added by the model list.
-    # If the model's real name already starts with claude-, keep it.
+    # Strip claude- prefix unconditionally — we add it artificially in the model list
+    # (see GET /v1/models, line ~145). Claude Code sends it back, and the real
+    # model name (Ollama-side) never starts with "claude-".
     if model_name.startswith("claude-"):
-        stripped = model_name[7:]
-        if model_mapper._mapping_lookup_key(stripped) is not None:
-            model_name = stripped
+        model_name = model_name[7:]
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")
