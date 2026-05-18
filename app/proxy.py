@@ -1024,7 +1024,7 @@ class OllamaProxy:
     
     # HTTP status codes that should trigger a retry on another node
     # (model might be available on a different node)
-    NODE_RETRYABLE_STATUS_CODES = {404, 423, 429, 500, 502, 503, 504}
+    NODE_RETRYABLE_STATUS_CODES = {400, 404, 408, 423, 429, 500, 502, 503, 504}
 
     async def _resolve_node_id_by_url(self, base_url: str) -> Optional[int]:
         """Look up node_id from base_url using an in-memory cache."""
