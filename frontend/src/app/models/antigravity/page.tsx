@@ -15,6 +15,7 @@ import { useState } from 'react';
 import { Search, HardDrive } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import { BulkAvailableSwitch } from '@/components/models/bulk-available-switch';
 
 function formatContextLen(n: number | null) {
     if (!n) return '—';
@@ -114,7 +115,18 @@ export default function AntigravityModelsPage() {
                                     <TableHead>Display Name</TableHead>
                                     <TableHead>Context Length</TableHead>
                                     <TableHead>Capabilities</TableHead>
-                                    <TableHead className="text-right">Available</TableHead>
+                                    <TableHead className="text-right">
+                                        <div className="inline-flex items-center justify-end gap-2 w-full">
+                                            <span>Available</span>
+                                            <BulkAvailableSwitch
+                                                models={groupedList.map((m) => ({
+                                                    name: m.name,
+                                                    is_available: m.is_available,
+                                                }))}
+                                                invalidateQueryKeys={[['antigravity-models'], ['nodes']]}
+                                            />
+                                        </div>
+                                    </TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>

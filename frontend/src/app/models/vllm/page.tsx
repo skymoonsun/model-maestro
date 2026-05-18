@@ -15,6 +15,7 @@ import { useState } from 'react';
 import { Search, HardDrive, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import { BulkAvailableSwitch } from '@/components/models/bulk-available-switch';
 
 function formatSize(bytes: number | null) {
     if (!bytes) return '—';
@@ -138,7 +139,18 @@ export default function VllmModelsPage() {
                                     <TableHead>Context Length</TableHead>
                                     <TableHead>Max Model Len</TableHead>
                                     <TableHead>Capabilities</TableHead>
-                                    <TableHead className="text-right">Available</TableHead>
+                                    <TableHead className="text-right">
+                                        <div className="inline-flex items-center justify-end gap-2 w-full">
+                                            <span>Available</span>
+                                            <BulkAvailableSwitch
+                                                models={groupedList.map((m) => ({
+                                                    name: m.name,
+                                                    is_available: m.is_available,
+                                                }))}
+                                                invalidateQueryKeys={[['vllm-models'], ['nodes']]}
+                                            />
+                                        </div>
+                                    </TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
