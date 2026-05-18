@@ -1080,6 +1080,45 @@ class OllamaProxy:
 
         return list(dict.fromkeys(inter))
 
+    @staticmethod
+    def _node_dict_from_orm(node: Any) -> Dict[str, Any]:
+        """Build load-balancer node dict from ``OllamaNode`` ORM row."""
+        return {
+            "node_id": node.id,
+            "node_name": node.name,
+            "base_url": node.base_url,
+            "api_key": node.api_key,
+            "node_type": node.node_type,
+            "priority": node.priority,
+            "weight": node.weight,
+            "health_status": node.health_status,
+            "headers": node.headers,
+            "oauth_tokens": node.oauth_tokens,
+            "project_id": node.project_id,
+            "scoped_models": node.scoped_models,
+            "auto_cookie_refresh": getattr(node, "auto_cookie_refresh", False),
+        }
+
+    async def _fetch_nodes_by_ids(self, node_ids: List[int]) -> List[Dict[str, Any]]:
+        """Load active nodes by primary key (for ``node:code:model`` routing)."""
+        if not node_ids:
+            return []
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository
+
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                out: List[Dict[str, Any]] = []
+                for nid in dict.fromkeys(node_ids):
+                    node = await node_repo.get_by_id(nid)
+                    if node and node.is_active:
+                        out.append(self._node_dict_from_orm(node))
+                return out
+        except Exception as e:
+            logger.warning(f"[LB] Error loading nodes by id {node_ids}: {e}")
+            return []
+
     def _prepare_routing_allowed(
         self,
         data: Optional[Dict[str, Any]],
@@ -1156,6 +1195,7 @@ class OllamaProxy:
         exclude_scoped: bool = False,
         allowed_node_ids: Optional[List[int]] = None,
         routing_catalog_names: Optional[List[str]] = None,
+        strict_allowed_nodes: bool = False,
     ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]], bool]:
         """
         Select the best node URL for a model using load balancing.
@@ -1234,6 +1274,26 @@ class OllamaProxy:
                 if filtered_allow:
                     nodes = filtered_allow
                     logger.debug(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
+                elif strict_allowed_nodes:
+                    # node:code:model — pin to requested node even if catalog sync missed the model
+                    pinned = await self._fetch_nodes_by_ids(allowed_node_ids)
+                    if pinned:
+                        nodes = pinned
+                        logger.info(
+                            f"[LB] Node-scoped routing: using pinned node(s) {allowed_node_ids} for model "
+                            f"'{model_name}' (not in catalog on those nodes)"
+                        )
+                    else:
+                        logger.error(
+                            f"[LB] Node-scoped routing: pinned node(s) {allowed_node_ids} not found or inactive"
+                        )
+                        raise HTTPException(
+                            status_code=404,
+                            detail=(
+                                f"Requested node is not available (ids={allowed_node_ids}). "
+                                "Check that the node exists, is active, and healthy."
+                            ),
+                        )
                 else:
                     # For unmapped/ungrouped models, don't 503; widen the pool instead
                     if not has_mapping and not is_grouped:
@@ -2217,6 +2277,7 @@ class OllamaProxy:
             exclude_scoped=not is_node_scoped and not is_group_request,
             allowed_node_ids=routing_allowed_node_ids,
             routing_catalog_names=routing_catalog_names,
+            strict_allowed_nodes=is_node_scoped,
         )
 
         # Block if no node found (model unavailable)
@@ -2459,6 +2520,7 @@ class OllamaProxy:
                     bypass_node_access=is_group_request,
                     client_headers=client_headers,
                     allowed_node_ids=routing_allowed_node_ids,
+                    strict_allowed_nodes=is_node_scoped,
                     routing_snapshot=routing_snapshot,
                     routing_catalog_names=routing_catalog_names,
                     source=source,
@@ -2486,6 +2548,7 @@ class OllamaProxy:
                 bypass_node_access=is_group_request,
                 client_headers=client_headers,
                 allowed_node_ids=routing_allowed_node_ids,
+                strict_allowed_nodes=is_node_scoped,
                 routing_snapshot=routing_snapshot,
                 routing_catalog_names=routing_catalog_names,
                 source=source,
@@ -2526,6 +2589,7 @@ class OllamaProxy:
         bypass_node_access: bool = False,
         client_headers: Optional[Dict[str, str]] = None,
         allowed_node_ids: Optional[List[int]] = None,
+        strict_allowed_nodes: bool = False,
         routing_snapshot: Optional[Dict[str, str]] = None,
         routing_catalog_names: Optional[List[str]] = None,
         source: Optional[str] = None,
@@ -2652,7 +2716,11 @@ class OllamaProxy:
 
                             # === NODE-LEVEL RETRY ===
                             # Try the same model on a different node first
-                            if resp.status_code in self.NODE_RETRYABLE_STATUS_CODES and attempt < MAX_FAILOVER_RETRIES:
+                            if (
+                                not strict_allowed_nodes
+                                and resp.status_code in self.NODE_RETRYABLE_STATUS_CODES
+                                and attempt < MAX_FAILOVER_RETRIES
+                            ):
                                 # Add current node to tried list
                                 current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                                 tried_nodes.add(current_base_url)
@@ -2662,6 +2730,7 @@ class OllamaProxy:
                                     exclude_scoped=exclude_scoped,
                                     allowed_node_ids=allowed_node_ids,
                                     routing_catalog_names=routing_catalog_names,
+                                    strict_allowed_nodes=strict_allowed_nodes,
                                 )
                                 if new_base_url:
                                     # Check node access for failover node
@@ -3316,7 +3385,7 @@ class OllamaProxy:
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first
-                    if attempt < MAX_FAILOVER_RETRIES:
+                    if not strict_allowed_nodes and attempt < MAX_FAILOVER_RETRIES:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                         tried_nodes.add(current_base_url)
 
@@ -3325,6 +3394,7 @@ class OllamaProxy:
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
                             routing_catalog_names=routing_catalog_names,
+                            strict_allowed_nodes=strict_allowed_nodes,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3450,6 +3520,7 @@ class OllamaProxy:
         bypass_node_access: bool = False,
         client_headers: Optional[Dict[str, str]] = None,
         allowed_node_ids: Optional[List[int]] = None,
+        strict_allowed_nodes: bool = False,
         routing_snapshot: Optional[Dict[str, str]] = None,
         routing_catalog_names: Optional[List[str]] = None,
         source: Optional[str] = None,
@@ -3549,7 +3620,11 @@ class OllamaProxy:
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first
-                    if response.status_code in self.NODE_RETRYABLE_STATUS_CODES and attempt < MAX_FAILOVER_RETRIES:
+                    if (
+                        not strict_allowed_nodes
+                        and response.status_code in self.NODE_RETRYABLE_STATUS_CODES
+                        and attempt < MAX_FAILOVER_RETRIES
+                    ):
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                         tried_nodes.add(current_base_url)
 
@@ -3558,6 +3633,7 @@ class OllamaProxy:
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
                             routing_catalog_names=routing_catalog_names,
+                            strict_allowed_nodes=strict_allowed_nodes,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3710,7 +3786,7 @@ class OllamaProxy:
 
                 # === NODE-LEVEL RETRY ===
                 # Try the same model on a different node first
-                if attempt < MAX_FAILOVER_RETRIES:
+                if not strict_allowed_nodes and attempt < MAX_FAILOVER_RETRIES:
                     current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                     tried_nodes.add(current_base_url)
 
@@ -3719,6 +3795,7 @@ class OllamaProxy:
                         exclude_scoped=exclude_scoped,
                         allowed_node_ids=allowed_node_ids,
                         routing_catalog_names=routing_catalog_names,
+                        strict_allowed_nodes=strict_allowed_nodes,
                     )
                     if new_base_url:
                         if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
