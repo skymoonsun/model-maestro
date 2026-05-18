@@ -26,6 +26,7 @@ import { toast } from 'sonner';
 import { useState, useCallback } from 'react';
 import { Download, Trash2, Search, HardDrive, Server, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
+import { BulkAvailableSwitch } from '@/components/models/bulk-available-switch';
 
 function formatSize(bytes: number) {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -258,7 +259,18 @@ export default function OllamaModelsPage() {
                                     <TableHead>Nodes</TableHead>
                                     <TableHead>Context Length</TableHead>
                                     <TableHead>Capabilities</TableHead>
-                                    <TableHead className="text-right">Available</TableHead>
+                                    <TableHead className="text-right">
+                                        <div className="inline-flex items-center justify-end gap-2 w-full">
+                                            <span>Available</span>
+                                            <BulkAvailableSwitch
+                                                models={filtered.map((m) => ({
+                                                    name: m.name,
+                                                    is_available: m.is_available,
+                                                }))}
+                                                invalidateQueryKeys={[['ollama-models'], ['nodes']]}
+                                            />
+                                        </div>
+                                    </TableHead>
                                     <TableHead className="text-right">Action</TableHead>
                                 </TableRow>
                             </TableHeader>
