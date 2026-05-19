@@ -620,8 +620,84 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
 
     cleaned = _deep_clean_undefined(result)
     if isinstance(cleaned, dict):
-        return cleaned
+        return finalize_v1internal_inner_request(cleaned, model_name)
     return result
+
+
+def finalize_v1internal_inner_request(body: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    """Second pass on inner request before v1internal wrap (Antigravity wrap_request parity)."""
+    model_lower = (model_name or "").lower()
+
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for tool_group in tools:
+            if not isinstance(tool_group, dict):
+                continue
+            decls = tool_group.get("functionDeclarations")
+            if not isinstance(decls, list):
+                continue
+            for decl in decls:
+                if not isinstance(decl, dict):
+                    continue
+                for bad_key in (
+                    "type",
+                    "strict",
+                    "format",
+                    "additionalProperties",
+                    "external_web_access",
+                ):
+                    decl.pop(bad_key, None)
+                if "parametersJsonSchema" in decl:
+                    decl["parameters"] = decl.pop("parametersJsonSchema")
+                name = decl.get("name", "")
+                if name == "local_shell_call":
+                    decl["name"] = "shell"
+                params = decl.get("parameters")
+                decl["parameters"] = clean_json_schema_for_gemini(params if params is not None else {})
+
+    gen_config = body.get("generationConfig")
+    if isinstance(gen_config, dict):
+        thinking = gen_config.get("thinkingConfig")
+        if isinstance(thinking, dict):
+            level = thinking.pop("thinkingLevel", None)
+            if level is not None and thinking.get("thinkingBudget") is None:
+                level_str = str(level).upper()
+                cap = _get_thinking_budget(model_name)
+                budget_map = {
+                    "NONE": 0,
+                    "LOW": max(cap // 4, 4096),
+                    "MEDIUM": max(cap // 2, 8192),
+                    "HIGH": cap,
+                }
+                thinking["thinkingBudget"] = budget_map.get(level_str, max(cap // 2, 8192))
+
+            budget = thinking.get("thinkingBudget")
+            max_out = gen_config.get("maxOutputTokens")
+            try:
+                budget_i = int(budget) if budget is not None else 0
+            except (TypeError, ValueError):
+                budget_i = 0
+            try:
+                max_i = int(max_out) if max_out is not None else 0
+            except (TypeError, ValueError):
+                max_i = 0
+            if budget_i > 0 and max_i <= budget_i:
+                gen_config["maxOutputTokens"] = min(budget_i + 8192, 65536)
+
+        max_out = gen_config.get("maxOutputTokens")
+        if max_out is not None:
+            try:
+                if int(max_out) > 65536:
+                    gen_config["maxOutputTokens"] = 65536
+            except (TypeError, ValueError):
+                gen_config.pop("maxOutputTokens", None)
+
+        if "claude-opus-4-6-thinking" in model_lower and isinstance(thinking, dict):
+            thinking["thinkingBudget"] = 24576
+            gen_config["maxOutputTokens"] = 57344
+            gen_config.pop("stopSequences", None)
+
+    return body
 
 
 def wrap_v1internal_request(

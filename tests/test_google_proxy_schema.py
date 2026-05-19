@@ -13,6 +13,7 @@ from app.google_proxy import (
     _extract_generation_limits,
     _finalize_gemini_tool_parameters,
     _requires_thought_signature,
+    finalize_v1internal_inner_request,
     resolve_antigravity_model_name,
     transform_openai_to_google,
 )
@@ -69,6 +70,35 @@ def test_clean_json_schema_inlines_ref_defs() -> None:
     assert "command" in inner["properties"]
 
 
+def test_clean_json_schema_fixes_object_with_items() -> None:
+    schema = {
+        "type": "object",
+        "items": {"type": "object", "properties": {"nested": {"type": "string"}}},
+        "properties": {"a": {"type": "string"}},
+    }
+    cleaned = clean_json_schema_for_gemini(schema)
+    assert "items" not in cleaned
+    assert "nested" in cleaned["properties"]
+
+
+def test_clean_json_schema_wraps_shorthand_root() -> None:
+    schema = {
+        "path": {"type": "string"},
+        "recursive": {"$ref": "#/$defs/Node"},
+        "$defs": {"Node": {"type": "object", "properties": {"p": {"type": "string"}}}},
+    }
+    cleaned = clean_json_schema_for_gemini(schema)
+    assert cleaned["type"] == "OBJECT"
+    assert "path" in cleaned["properties"]
+    assert cleaned["properties"]["recursive"]["type"] == "OBJECT"
+
+
+def test_clean_json_schema_coerces_enum_values_to_strings() -> None:
+    schema = {"type": "string", "enum": [1, True, "ok"]}
+    cleaned = clean_json_schema_for_gemini(schema)
+    assert cleaned["enum"] == ["1", "True", "ok"]
+
+
 def test_clean_json_schema_simplifies_anyof_nullable() -> None:
     schema = {
         "type": "object",
@@ -117,6 +147,23 @@ def test_transform_openai_to_google_tools_use_validated_mode() -> None:
     # maxOutputTokens must exceed thinkingBudget for v1internal
     assert body["generationConfig"]["maxOutputTokens"] == 57344
     assert body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 49152
+
+
+def test_finalize_v1internal_strips_thinking_level() -> None:
+    body = {
+        "generationConfig": {
+            "maxOutputTokens": 32000,
+            "thinkingConfig": {
+                "includeThoughts": True,
+                "thinkingLevel": "HIGH",
+            },
+        },
+    }
+    out = finalize_v1internal_inner_request(body, "gemini-3.1-pro-high")
+    thinking = out["generationConfig"]["thinkingConfig"]
+    assert "thinkingLevel" not in thinking
+    assert thinking["thinkingBudget"] == 49152
+    assert out["generationConfig"]["maxOutputTokens"] == 57344
 
 
 def test_transform_adaptive_thinking_uses_safe_budget() -> None:

@@ -21,6 +21,17 @@ _ALLOWED_SCHEMA_FIELDS = frozenset({
     "title",
 })
 
+_CONSTRAINT_FIELDS = (
+    ("minLength", "minLen"),
+    ("maxLength", "maxLen"),
+    ("pattern", "pattern"),
+    ("minimum", "min"),
+    ("maximum", "max"),
+    ("minItems", "minItems"),
+    ("maxItems", "maxItems"),
+    ("format", "format"),
+)
+
 
 def _collect_all_defs(value: Any, defs: Dict[str, Any]) -> None:
     if isinstance(value, dict):
@@ -131,6 +142,67 @@ def _merge_simple_allof(obj: Dict[str, Any]) -> None:
                 obj[key] = copy.deepcopy(val)
 
 
+def _normalize_object_items_conflict(obj: Dict[str, Any]) -> None:
+    """Move mistaken ``items`` on object nodes into ``properties`` (MCP pencil-style)."""
+    type_val = str(obj.get("type", "")).lower()
+    if type_val != "object" and "properties" not in obj:
+        return
+    items = obj.pop("items", None)
+    if not isinstance(items, dict):
+        return
+    props = obj.setdefault("properties", {})
+    if not isinstance(props, dict):
+        return
+    nested_props = items.get("properties")
+    if isinstance(nested_props, dict):
+        for key, val in nested_props.items():
+            props.setdefault(key, copy.deepcopy(val))
+
+
+def _coerce_shorthand_schema_node(obj: Dict[str, Any]) -> None:
+    """Wrap bare property maps into ``{type: object, properties: ...}``."""
+    if "functionCall" in obj or "functionResponse" in obj:
+        return
+    if any(k in obj for k in _ALLOWED_SCHEMA_FIELDS):
+        return
+    if not obj:
+        return
+    props: Dict[str, Any] = {}
+    for key in list(obj.keys()):
+        props[key] = obj.pop(key)
+    obj["type"] = "object"
+    obj["properties"] = props
+
+
+def _move_constraints_to_description(obj: Dict[str, Any]) -> None:
+    hints: List[str] = []
+    for field, label in _CONSTRAINT_FIELDS:
+        if field not in obj:
+            continue
+        hints.append(f"{label}={obj.pop(field)}")
+    if not hints:
+        return
+    hint_text = f"Constraints: {', '.join(hints)}"
+    desc = obj.get("description", "")
+    if isinstance(desc, str) and hint_text not in desc:
+        obj["description"] = f"{desc} {hint_text}".strip() if desc else hint_text
+
+
+def _coerce_enum_values_to_strings(obj: Dict[str, Any]) -> None:
+    enum_vals = obj.get("enum")
+    if not isinstance(enum_vals, list):
+        return
+    coerced: List[str] = []
+    for item in enum_vals:
+        if item is None:
+            coerced.append("null")
+        elif isinstance(item, str):
+            coerced.append(item)
+        else:
+            coerced.append(str(item))
+    obj["enum"] = coerced
+
+
 def _looks_like_schema(obj: Dict[str, Any]) -> bool:
     if "functionCall" in obj or "functionResponse" in obj:
         return False
@@ -138,6 +210,9 @@ def _looks_like_schema(obj: Dict[str, Any]) -> bool:
 
 
 def _whitelist_schema_node(obj: Dict[str, Any]) -> None:
+    _move_constraints_to_description(obj)
+    _coerce_enum_values_to_strings(obj)
+
     if obj.get("type") in ("object", "OBJECT") and "properties" not in obj:
         obj["properties"] = {}
     props = obj.get("properties")
@@ -177,6 +252,10 @@ def _clean_schema_recursive(value: Any, is_schema_node: bool, depth: int = 0) ->
 
     _apply_union_simplification(value)
     _merge_simple_allof(value)
+    _normalize_object_items_conflict(value)
+    if is_schema_node:
+        _coerce_shorthand_schema_node(value)
+
     nullable = _normalize_type_field(value)
 
     props = value.get("properties")
@@ -228,6 +307,21 @@ def _uppercase_types(value: Any) -> Any:
     return out
 
 
+def _ensure_root_object_schema(obj: Dict[str, Any]) -> None:
+    """FunctionDeclaration.parameters root must be type OBJECT with properties."""
+    if obj.get("type") in ("OBJECT", "object") and isinstance(obj.get("properties"), dict):
+        return
+    if isinstance(obj.get("properties"), dict):
+        obj["type"] = "OBJECT"
+        return
+    if any(k in obj for k in ("type", "properties", "items", "enum")):
+        return
+    wrapped = {key: copy.deepcopy(val) for key, val in obj.items()}
+    obj.clear()
+    obj["type"] = "OBJECT"
+    obj["properties"] = wrapped
+
+
 def clean_json_schema_for_gemini(schema: Any) -> Dict[str, Any]:
     """Full schema pipeline: inline refs, simplify unions, Gemini-safe whitelist."""
     if not isinstance(schema, dict) or not schema:
@@ -251,5 +345,6 @@ def clean_json_schema_for_gemini(schema: Any) -> Dict[str, Any]:
     _clean_schema_recursive(root, True, 0)
     finalized = _uppercase_types(root)
     if isinstance(finalized, dict):
+        _ensure_root_object_schema(finalized)
         return finalized
     return {"type": "OBJECT", "properties": {}}
