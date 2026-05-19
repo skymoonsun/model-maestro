@@ -63,14 +63,23 @@ const ideIntegrations = [
             'Set environment variables before launching.',
             'ANTHROPIC_BASE_URL must end with /claude/.',
             'ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY should both contain your Maestro JWT token.',
+            'Pin Opus, Sonnet, Haiku, and subagent tiers to Maestro-mapped model names (see env vars below).',
+            'ANTHROPIC_SMALL_FAST_MODEL is deprecated — use ANTHROPIC_DEFAULT_HAIKU_MODEL instead.',
         ],
         code: `export ANTHROPIC_BASE_URL=https://maestro.example.com/claude/
 export ANTHROPIC_AUTH_TOKEN=<your-maestro-jwt-token>
 export ANTHROPIC_API_KEY=<your-maestro-jwt-token>
-export ANTHROPIC_MODEL=<mapped-model-name>
-export ANTHROPIC_SMALL_FAST_MODEL=<fast-model-name>
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+
+# Pin every tier to a model Maestro routes (mapping + node catalog)
+export ANTHROPIC_DEFAULT_OPUS_MODEL=<maestro-mapped-model>
+export ANTHROPIC_DEFAULT_SONNET_MODEL=<maestro-mapped-model>
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=<maestro-mapped-model>
+export CLAUDE_CODE_SUBAGENT_MODEL=<maestro-mapped-model>
+export ANTHROPIC_MODEL=<maestro-mapped-model>
 
 claude`,
+        note: 'Maestro forwards the model id Claude Code sends; it does not guess unknown names. Subagents and background tasks use Haiku/subagent env vars — configure them or requests may fail with 404.',
     },
     {
         id: 'openclaw',
@@ -160,6 +169,7 @@ API Token:     <your-maestro-jwt-token>`,
                     'Add claudeCode.environmentVariables array with your Maestro endpoint.',
                     'Set ANTHROPIC_BASE_URL to end with /claude/.',
                     'Enable CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY for auto model listing.',
+                    'Set ANTHROPIC_DEFAULT_* and CLAUDE_CODE_SUBAGENT_MODEL to Maestro-mapped model names.',
                 ],
                 extCode: `{
     "claudeCode.environmentVariables": [
@@ -178,10 +188,22 @@ API Token:     <your-maestro-jwt-token>`,
         {
             "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
             "value": "1"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "value": "<maestro-mapped-model>"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "value": "<maestro-mapped-model>"
+        },
+        {
+            "name": "CLAUDE_CODE_SUBAGENT_MODEL",
+            "value": "<maestro-mapped-model>"
         }
     ]
 }`,
-                extNote: 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY enables automatic model discovery from Maestro. ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN should both contain your Maestro JWT token.',
+                extNote: 'Pin Haiku and subagent models to names Maestro routes. ANTHROPIC_SMALL_FAST_MODEL is deprecated; use ANTHROPIC_DEFAULT_HAIKU_MODEL.',
             },
             {
                 extId: 'kilo-code-ext',

@@ -1,6 +1,7 @@
 """Tests for Google v1internal tool parameter schema sanitization."""
 
 import pytest
+from fastapi import HTTPException
 
 from app.google_proxy import (
     _antigravity_model_variants,
@@ -67,7 +68,7 @@ def test_antigravity_model_variants_adds_claude_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_antigravity_model_from_catalog() -> None:
+async def test_resolve_antigravity_model_exact_catalog_match() -> None:
     resolved = await resolve_antigravity_model_name(
         "opus-4-6-thinking",
         known_model_names=["claude-opus-4-6-thinking", "gemini-3-flash"],
@@ -76,6 +77,16 @@ async def test_resolve_antigravity_model_from_catalog() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_antigravity_model_heuristic_without_catalog() -> None:
+async def test_resolve_antigravity_passes_through_when_catalog_empty() -> None:
     resolved = await resolve_antigravity_model_name("opus-4-6-thinking")
-    assert resolved == "claude-opus-4-6-thinking"
+    assert resolved == "opus-4-6-thinking"
+
+
+@pytest.mark.asyncio
+async def test_resolve_raises_when_catalog_has_no_exact_match() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_antigravity_model_name(
+            "haiku-4-5-20251001",
+            known_model_names=["claude-opus-4-6-thinking"],
+        )
+    assert exc_info.value.status_code == 404

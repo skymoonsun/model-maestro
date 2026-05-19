@@ -14,17 +14,65 @@ Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide cove
 
 ## Claude Code
 
-Claude Code supports custom base URLs via environment variables.
+Claude Code supports custom base URLs via environment variables. Official reference: [Claude Code environment variables](https://code.claude.com/docs/en/env-vars) and [Model configuration](https://code.claude.com/docs/en/model-config).
 
-### Environment Variables
+### Minimum setup (Maestro gateway)
 
 ```bash
 export ANTHROPIC_BASE_URL=https://maestro.example.com/claude/
 export ANTHROPIC_AUTH_TOKEN=<your-maestro-jwt-token>
 export ANTHROPIC_API_KEY=<your-maestro-jwt-token>
-export ANTHROPIC_MODEL=<mapped-model-name>
-export ANTHROPIC_SMALL_FAST_MODEL=<fast-model-name>
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
 ```
+
+### Pin models per tier (recommended)
+
+Claude Code uses **different models for different jobs**. Maestro forwards the model id the client sends; it does **not** guess or remap unknown names. Configure the client so every tier uses a name that exists in Maestro (model mapping + node catalog after sync).
+
+| Job | What triggers it | Env to control |
+|-----|------------------|----------------|
+| Main chat (`/model opus`) | `ANTHROPIC_MODEL` or `/model` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
+| Sonnet alias | `sonnet` in picker | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
+| **Background / fast tasks** | Haiku alias, lightweight tools | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
+| **Subagents** (Explore, Plan, “summarize project”, etc.) | Spawns separate agent | `CLAUDE_CODE_SUBAGENT_MODEL` |
+
+If you only configure Opus but leave Haiku/subagent defaults, Claude Code may send Anthropic-native ids (e.g. `haiku-4-5-20251001`) that your gateway nodes do not expose — you will see 404 or upstream errors until you pin those env vars.
+
+Example (replace with names from **Admin → Models** / your mappings and synced node catalogs):
+
+```bash
+export ANTHROPIC_DEFAULT_OPUS_MODEL=<maestro-mapped-model>
+export ANTHROPIC_DEFAULT_SONNET_MODEL=<maestro-mapped-model>
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=<maestro-mapped-model>
+export CLAUDE_CODE_SUBAGENT_MODEL=<maestro-mapped-model>
+
+# Optional: default for new sessions (overridden by /model for that session)
+export ANTHROPIC_MODEL=<maestro-mapped-model>
+```
+
+Maestro’s `/claude/v1/messages` handler strips the `claude-` prefix before routing. Use the same spelling as in your Maestro mapping and provider node catalog.
+
+`ANTHROPIC_SMALL_FAST_MODEL` is **deprecated**; use `ANTHROPIC_DEFAULT_HAIKU_MODEL` instead.
+
+This applies regardless of backend (Ollama, vLLM, Bedrock, Antigravity, etc.): the client must request model ids Maestro knows how to route.
+
+### VS Code / settings.json example
+
+```json
+{
+  "claudeCode.environmentVariables": [
+    { "name": "ANTHROPIC_BASE_URL", "value": "https://maestro.example.com/claude/" },
+    { "name": "ANTHROPIC_API_KEY", "value": "<your-maestro-jwt-token>" },
+    { "name": "ANTHROPIC_AUTH_TOKEN", "value": "<your-maestro-jwt-token>" },
+    { "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "value": "1" },
+    { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "<maestro-mapped-model>" },
+    { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "value": "<maestro-mapped-model>" },
+    { "name": "CLAUDE_CODE_SUBAGENT_MODEL", "value": "<maestro-mapped-model>" }
+  ]
+}
+```
+
+Optional: restrict the picker with `availableModels` in `~/.claude/settings.json` (aliases `opus`, `sonnet`, `haiku` — see [Model configuration](https://code.claude.com/docs/en/model-config#restrict-model-selection)).
 
 ### Launch
 
@@ -36,7 +84,8 @@ claude
 
 - `ANTHROPIC_BASE_URL` must end with `/claude/` to hit the Claude-compatible proxy endpoint.
 - Both `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` should contain your Maestro JWT token.
-- `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` should be **display names** from your model mappings (e.g. `kimi-k2.6:latest`).
+- `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` fills the `/model` picker from Maestro’s model list (`GET /claude/v1/models`). Only models you expose there (and grant to the user) should be selected.
+- **Do not rely on Maestro to invent model ids** — configure `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` to mapped names your nodes actually serve.
 - Create a user token via the admin panel (`/users`) if you do not have one.
 
 ---
@@ -67,6 +116,18 @@ Open your VS Code user settings JSON (macOS: `~/Library/Application\ Support/Cod
         {
             "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
             "value": "1"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "value": "<maestro-mapped-model>"
+        },
+        {
+            "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "value": "<maestro-mapped-model>"
+        },
+        {
+            "name": "CLAUDE_CODE_SUBAGENT_MODEL",
+            "value": "<maestro-mapped-model>"
         }
     ]
 }
@@ -77,6 +138,7 @@ Open your VS Code user settings JSON (macOS: `~/Library/Application\ Support/Cod
 - `ANTHROPIC_BASE_URL` must end with `/claude/` to hit the Claude-compatible proxy endpoint.
 - Both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` should contain your Maestro JWT token.
 - `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` enables automatic model discovery from the Maestro gateway — models mapped in Maestro will appear in the extension's model picker.
+- Pin `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` like the CLI section above; subagents and background tasks use those tiers.
 - The Claude Code extension in VS Code uses the same `/claude/` endpoint as the CLI tool.
 - Create a user token via the admin panel (`/users`) if you do not have one.
 
@@ -284,4 +346,6 @@ Then fill the Connection form manually with:
 | Model not listed | No mapping created | Create a model mapping in the admin panel (AI Models > Mappings) |
 | Connection refused (Cursor) | Localhost not reachable from Cursor cloud | Expose Maestro via public URL or tunnel |
 | Empty model list in Cursor | `/cursor` endpoint not returning models | Check Maestro logs; ensure model discovery succeeded for at least one node |
+| Main chat works, “summarize” / subagent fails | Claude Code uses Haiku/subagent model, not main Opus | Set `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` to a synced Antigravity model id |
+| `haiku-4-5-…` 404 on Antigravity | ID is Claude Code default, not in your sync catalog | Pin Haiku/subagent env vars; run **Sync Models**; add Maestro mapping if display name differs |
 | Grafana "Domain not allowed" | Backend URL does not end with `.grafana.net` | Use the bypass script (Method 1) or reverse proxy with `.grafana.net` domain (Method 2) |
