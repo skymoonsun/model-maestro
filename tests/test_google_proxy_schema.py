@@ -9,8 +9,11 @@ from app.google_proxy import (
     _clean_json_schema,
     _convert_messages_to_contents,
     _convert_tools_to_gemini,
+    _extract_generation_limits,
+    _finalize_gemini_tool_parameters,
     _requires_thought_signature,
     resolve_antigravity_model_name,
+    transform_openai_to_google,
 )
 
 
@@ -41,6 +44,46 @@ def test_clean_json_schema_strips_gemini_incompatible_fields() -> None:
     assert "const" not in props["path"]
     assert props["path"]["enum"] == ["/tmp"]
     assert "propertyNames" not in props["meta"]
+
+
+def test_finalize_gemini_tool_parameters_uppercases_types() -> None:
+    params = _finalize_gemini_tool_parameters({
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+    })
+    assert params["type"] == "OBJECT"
+    assert params["properties"]["path"]["type"] == "STRING"
+
+
+def test_extract_generation_limits_reads_options_num_predict() -> None:
+    max_tokens, gen_fields = _extract_generation_limits({
+        "options": {"num_predict": 32000, "temperature": 0.2},
+    })
+    assert max_tokens == 32000
+    assert gen_fields["temperature"] == 0.2
+
+
+def test_transform_openai_to_google_tools_use_validated_mode() -> None:
+    body = transform_openai_to_google({
+        "model": "gemini-3.1-pro-high",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 32000,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Skill",
+                    "description": "Run a skill",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    })
+    assert body["toolConfig"]["functionCallingConfig"]["mode"] == "VALIDATED"
+    # maxOutputTokens must exceed thinkingBudget for v1internal
+    assert body["generationConfig"]["maxOutputTokens"] == 57344
+    assert body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 49152
+    assert body["safetySettings"]
 
 
 def test_convert_tools_to_gemini_sanitizes_parameters() -> None:

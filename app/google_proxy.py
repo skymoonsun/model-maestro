@@ -79,6 +79,132 @@ def _ensure_thought_signatures_on_contents(
                 part["thoughtSignature"] = GEMINI_SKIP_THOUGHT_SIGNATURE
 
 
+def _is_gemini_thinking_model(model_name: str) -> bool:
+    """Whether to inject generationConfig.thinkingConfig for this mapped model."""
+    m = (model_name or "").lower()
+    if "claude" in m:
+        return m.endswith("-thinking")
+    return (
+        "-thinking" in m
+        or "gemini-2.0-pro" in m
+        or "gemini-3-pro" in m
+        or "gemini-3.1-pro" in m
+        or "gemini-3-flash" in m
+        or "gemini-3.1-flash" in m
+    )
+
+
+def _get_thinking_budget(model_name: str) -> int:
+    """Model-specific thinking budget caps (Antigravity model_specs defaults)."""
+    m = (model_name or "").lower()
+    if "gemini-3.1-pro" in m or "gemini-3-pro-high" in m:
+        return 49152
+    if "gemini-3-flash" in m or "gemini-3.1-flash" in m or "gemini-2.5" in m:
+        return 32768
+    return 24576
+
+
+def _extract_generation_limits(data: Dict[str, Any]) -> Tuple[Optional[int], Dict[str, Any]]:
+    """Read max_tokens and generation knobs from OpenAI body or Ollama-style options."""
+    options = data.get("options") if isinstance(data.get("options"), dict) else {}
+
+    max_tokens = data.get("max_tokens") or data.get("max_completion_tokens")
+    if max_tokens is None and isinstance(options, dict):
+        max_tokens = options.get("num_predict")
+
+    gen_fields: Dict[str, Any] = {}
+    for src_key, dst_key in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("top_k", "top_k"),
+    ):
+        val = data.get(src_key)
+        if val is None and isinstance(options, dict):
+            val = options.get(src_key)
+        if val is not None:
+            gen_fields[dst_key] = val
+
+    return (int(max_tokens) if max_tokens is not None else None), gen_fields
+
+
+def _enforce_uppercase_schema_types(schema: Any) -> Any:
+    """Gemini v1internal expects protobuf-style type names (OBJECT, STRING, ...)."""
+    if isinstance(schema, list):
+        return [_enforce_uppercase_schema_types(item) for item in schema]
+
+    if not isinstance(schema, dict):
+        return schema
+
+    out: Dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "type" and isinstance(value, str):
+            out[key] = value.upper()
+        elif isinstance(value, dict):
+            out[key] = _enforce_uppercase_schema_types(value)
+        elif isinstance(value, list):
+            out[key] = [_enforce_uppercase_schema_types(item) for item in value]
+        else:
+            out[key] = value
+
+    if "properties" in out and "type" not in out:
+        out["type"] = "OBJECT"
+    return out
+
+
+def _finalize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
+    """Sanitize Anthropic/OpenAI JSON Schema for Gemini functionDeclarations."""
+    if not isinstance(parameters, dict) or not parameters:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "content": {
+                    "type": "STRING",
+                    "description": "The raw content or arguments for the tool",
+                }
+            },
+            "required": ["content"],
+        }
+
+    cleaned = _clean_json_schema(parameters.copy())
+    if isinstance(cleaned, dict):
+        cleaned.pop("additionalProperties", None)
+        cleaned.pop("strict", None)
+    finalized = _enforce_uppercase_schema_types(cleaned)
+    if isinstance(finalized, dict):
+        return finalized
+    return {"type": "OBJECT", "properties": {}}
+
+
+def _deep_clean_undefined(value: Any) -> Any:
+    """Remove Cherry Studio / client placeholders that break v1internal JSON."""
+    if isinstance(value, str):
+        return None if value == "[undefined]" else value
+    if isinstance(value, list):
+        cleaned_list = []
+        for item in value:
+            cleaned = _deep_clean_undefined(item)
+            if cleaned is not None:
+                cleaned_list.append(cleaned)
+        return cleaned_list
+    if isinstance(value, dict):
+        cleaned_dict: Dict[str, Any] = {}
+        for key, item in value.items():
+            cleaned = _deep_clean_undefined(item)
+            if cleaned is not None:
+                cleaned_dict[key] = cleaned
+        return cleaned_dict
+    return value
+
+
+_V1INTERNAL_SAFETY_SETTINGS: List[Dict[str, str]] = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "OFF"},
+]
+
+
 # =============================================================================
 # Request Transformation: OpenAI -> Google v1internal
 # =============================================================================
@@ -303,6 +429,12 @@ def _convert_messages_to_contents(
 def _convert_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert OpenAI tools to Gemini functionDeclarations format."""
     result: List[Dict[str, Any]] = []
+    skip_names = frozenset({
+        "web_search",
+        "google_search",
+        "web_search_20250305",
+        "builtin_web_search",
+    })
 
     for tool in tools:
         if not isinstance(tool, dict):
@@ -310,24 +442,25 @@ def _convert_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
         func = tool.get("function", {})
         if not isinstance(func, dict):
-            # Handle nested format
             func_name = tool.get("name", "")
             func_params = tool.get("parameters", {})
             if func_name:
-                func = {"name": func_name, "parameters": func_params, "description": tool.get("description", "")}
+                func = {
+                    "name": func_name,
+                    "parameters": func_params,
+                    "description": tool.get("description", ""),
+                }
             else:
                 continue
 
         name = func.get("name", "")
-        parameters = func.get("parameters", {})
-        description = func.get("description", "")
-
-        if not name:
+        if not name or name in skip_names:
             continue
+        if name == "local_shell_call":
+            name = "shell"
 
-        # Clean forbidden schema fields
-        if isinstance(parameters, dict):
-            parameters = _clean_json_schema(parameters.copy())
+        parameters = _finalize_gemini_tool_parameters(func.get("parameters"))
+        description = func.get("description", "") or ""
 
         result.append({
             "name": name,
@@ -412,39 +545,45 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
     model_name = (data.get("model") or "").lower()
     contents, system_instructions = _convert_messages_to_contents(messages, model_name=model_name)
 
+    max_tokens, gen_fields = _extract_generation_limits(data)
+
     # Build generationConfig
     gen_config: Dict[str, Any] = {
-        "temperature": data.get("temperature", 1.0),
-        "topP": data.get("top_p", 1.0),
-        "topK": 40,
+        "temperature": gen_fields.get("temperature", data.get("temperature", 1.0)),
+        "topP": gen_fields.get("top_p", data.get("top_p", 1.0)),
+        "topK": gen_fields.get("top_k", data.get("top_k", 40)),
     }
 
-    max_tokens = data.get("max_tokens") or data.get("max_completion_tokens")
-    if max_tokens:
+    if max_tokens is not None:
         gen_config["maxOutputTokens"] = max_tokens
 
-    # Handle thinking models
-    is_thinking_model = (
-        "-thinking" in model_name
-        or "gemini-2.0-pro" in model_name
-        or "gemini-3-pro" in model_name
-        or "gemini-3.1-pro" in model_name
-        or "gemini-3-flash" in model_name
-        or "gemini-3.1-flash" in model_name
-    ) and "claude" not in model_name
+    user_thinking_budget: Optional[int] = None
+    thinking_cfg = data.get("thinking")
+    if isinstance(thinking_cfg, dict):
+        raw_budget = thinking_cfg.get("budget_tokens") or thinking_cfg.get("budgetTokens")
+        if raw_budget is not None:
+            try:
+                user_thinking_budget = int(raw_budget)
+            except (TypeError, ValueError):
+                user_thinking_budget = None
 
-    is_claude_thinking = model_name.endswith("-thinking")
+    if _is_gemini_thinking_model(model_name):
+        thinking_budget = user_thinking_budget or _get_thinking_budget(model_name)
+        spec_cap = _get_thinking_budget(model_name)
+        if thinking_budget > spec_cap:
+            thinking_budget = spec_cap
 
-    if is_thinking_model or is_claude_thinking:
-        thinking_budget = 24576
         gen_config["thinkingConfig"] = {
             "includeThoughts": True,
             "thinkingBudget": thinking_budget,
         }
-        # Claude thinking requires max_tokens > thinking.budget_tokens
-        current_max = gen_config.get("maxOutputTokens", 0)
-        if not current_max or current_max <= thinking_budget:
-            gen_config["maxOutputTokens"] = thinking_budget + 4096
+
+        current_max = int(gen_config.get("maxOutputTokens") or 0)
+        min_overhead = 8192
+        if current_max <= thinking_budget:
+            gen_config["maxOutputTokens"] = min(thinking_budget + min_overhead, 65536)
+        elif current_max > 65536:
+            gen_config["maxOutputTokens"] = 65536
 
     # Handle n -> candidateCount
     n = data.get("n")
@@ -454,6 +593,7 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "contents": contents,
         "generationConfig": gen_config,
+        "safetySettings": _V1INTERNAL_SAFETY_SETTINGS,
     }
 
     # System instruction
@@ -469,6 +609,9 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
         gemini_tools = _convert_tools_to_gemini(tools)
         if gemini_tools:
             result["tools"] = gemini_tools
+            result["toolConfig"] = {
+                "functionCallingConfig": {"mode": "VALIDATED"},
+            }
 
     # Tool choice
     tool_choice = data.get("tool_choice")
@@ -476,9 +619,12 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
         pass  # Default
     elif tool_choice == "none":
         result.pop("tools", None)
+        result.pop("toolConfig", None)
     elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
         func_name = tool_choice.get("function", {}).get("name", "")
         if func_name:
+            if func_name == "local_shell_call":
+                func_name = "shell"
             result["toolConfig"] = {
                 "functionCallingConfig": {
                     "mode": "ANY",
@@ -486,6 +632,9 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
                 }
             }
 
+    cleaned = _deep_clean_undefined(result)
+    if isinstance(cleaned, dict):
+        return cleaned
     return result
 
 
