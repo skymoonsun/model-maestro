@@ -142,6 +142,7 @@ function NodeCard({
         is_active: node.is_active,
         node_type: node.node_type,
         warmup_enabled: node.warmup_enabled,
+        auto_sync_enabled: node.auto_sync_enabled,
         code: node.code,
         headers: node.headers ?? undefined,
         aws_secret_key: node.aws_secret_key ?? undefined,
@@ -184,6 +185,7 @@ function NodeCard({
                 is_active: node.is_active,
                 node_type: node.node_type,
                 warmup_enabled: node.warmup_enabled,
+                auto_sync_enabled: node.auto_sync_enabled,
                 code: node.code,
                 headers: node.headers ?? undefined,
                 aws_secret_key: node.aws_secret_key ?? undefined,
@@ -194,7 +196,7 @@ function NodeCard({
             });
             setHeadersStr(node.headers ? JSON.stringify(node.headers, null, 2) : '');
         }
-    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.scoped_models, node.auto_cookie_refresh]);
+    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.auto_sync_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.scoped_models, node.auto_cookie_refresh]);
 
     const isInactive = !node.is_active;
 
@@ -240,6 +242,11 @@ function NodeCard({
                             {!node.warmup_enabled && (
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-400 border-amber-400/30 bg-amber-400/10">
                                     Warmup Off
+                                </Badge>
+                            )}
+                            {!node.auto_sync_enabled && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-sky-400 border-sky-400/30 bg-sky-400/10">
+                                    Auto Sync Off
                                 </Badge>
                             )}
                             {node.scoped_models && (
@@ -460,6 +467,16 @@ function NodeCard({
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <Switch
+                                        checked={form.auto_sync_enabled}
+                                        onCheckedChange={(v) => setForm((f) => ({ ...f, auto_sync_enabled: v }))}
+                                    />
+                                    <Label>Auto Sync Enabled</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        When off, periodic model discovery skips this node.
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Switch
                                         checked={form.is_active}
                                         onCheckedChange={(v) => setForm((f) => ({ ...f, is_active: v }))}
                                     />
@@ -557,6 +574,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         is_active: true,
         node_type: 'ollama',
         warmup_enabled: true,
+        auto_sync_enabled: true,
         code: null,
         aws_secret_key: undefined,
         aws_region: undefined,
@@ -571,7 +589,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['nodes'] });
             setOpen(false);
-            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, code: null, headers: undefined, aws_secret_key: undefined, aws_region: undefined, aws_session_token: undefined, scoped_models: false, auto_cookie_refresh: false });
+            setForm({ name: '', base_url: 'http://localhost:11434', priority: 0, weight: 100, is_active: true, node_type: 'ollama', warmup_enabled: true, auto_sync_enabled: true, code: null, headers: undefined, aws_secret_key: undefined, aws_region: undefined, aws_session_token: undefined, scoped_models: false, auto_cookie_refresh: false });
             setHeadersStr('');
             toast.success('Node created');
             onSuccess();
@@ -733,6 +751,16 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             onCheckedChange={(v) => setForm((f) => ({ ...f, warmup_enabled: v }))}
                         />
                         <Label>Warmup Enabled</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            checked={form.auto_sync_enabled}
+                            onCheckedChange={(v) => setForm((f) => ({ ...f, auto_sync_enabled: v }))}
+                        />
+                        <Label>Auto Sync Enabled</Label>
+                        <p className="text-xs text-muted-foreground">
+                            When off, periodic model discovery skips this node.
+                        </p>
                     </div>
                     <div className="flex items-center gap-2">
                         <Switch

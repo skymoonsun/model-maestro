@@ -518,6 +518,7 @@ class OllamaNodeCreate(BaseModel):
     is_active: Optional[bool] = True
     node_type: Optional[str] = "ollama"
     warmup_enabled: Optional[bool] = True
+    auto_sync_enabled: Optional[bool] = True
     health_check_url: Optional[str] = None
     code: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
@@ -540,6 +541,7 @@ class OllamaNodeUpdate(BaseModel):
     is_active: Optional[bool] = None
     node_type: Optional[str] = None
     warmup_enabled: Optional[bool] = None
+    auto_sync_enabled: Optional[bool] = None
     health_check_url: Optional[str] = None
     code: Optional[str] = None
     headers: Optional[Dict[str, str]] = None
@@ -564,6 +566,7 @@ class OllamaNodeResponse(BaseModel):
     is_active: bool = True
     node_type: str = "ollama"
     warmup_enabled: bool = True
+    auto_sync_enabled: bool = True
     code: Optional[str] = None
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
@@ -599,6 +602,7 @@ class OllamaNodeDetailResponse(BaseModel):
     is_active: bool = True
     node_type: str = "ollama"
     warmup_enabled: bool = True
+    auto_sync_enabled: bool = True
     code: Optional[str] = None
     health_status: str = "unknown"
     last_health_check: Optional[str] = None
