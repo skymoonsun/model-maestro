@@ -623,6 +623,36 @@ class ModelDistributionResponse(BaseModel):
     nodes: List[str]
 
 
+class AntigravityModelQuota(BaseModel):
+    """Per-model quota from Google fetchAvailableModels."""
+    name: str
+    percentage: int
+    reset_time: str = ""
+    display_name: Optional[str] = None
+    supports_images: Optional[bool] = None
+    supports_thinking: Optional[bool] = None
+    recommended: Optional[bool] = None
+
+
+class AntigravityQuotaData(BaseModel):
+    """Antigravity account quota snapshot."""
+    models: List[AntigravityModelQuota] = []
+    last_updated: int
+    is_forbidden: bool = False
+    forbidden_reason: Optional[str] = None
+    subscription_tier: Optional[str] = None
+    model_forwarding_rules: Dict[str, str] = {}
+
+
+class AntigravityQuotaResponse(BaseModel):
+    """Admin API response for Antigravity node quota."""
+    success: bool
+    node_id: int
+    node_name: str
+    project_id: Optional[str] = None
+    quota: AntigravityQuotaData
+
+
 class NodeSyncResponse(BaseModel):
     """Response from node model sync"""
     success: bool

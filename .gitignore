@@ -45,6 +45,9 @@ data/users.json
 .DS_Store
 Thumbs.db
 
+# Local research clones (not part of the project)
+.research/
+
 # Cursor
 .cursor/plans/
 .specstory/
