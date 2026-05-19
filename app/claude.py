@@ -358,6 +358,7 @@ async def claude_messages(
 def _normalize_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert Anthropic message format to OpenAI/Ollama message format."""
     normalized: List[Dict[str, Any]] = []
+    tool_use_names: Dict[str, str] = {}
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content")
@@ -389,11 +390,15 @@ def _normalize_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
         if role == "assistant" and tool_uses:
             openai_tool_calls = []
             for tu in tool_uses:
+                tu_id = tu.get("id", "")
+                tu_name = tu.get("name", "")
+                if tu_id:
+                    tool_use_names[tu_id] = tu_name
                 openai_tool_calls.append({
-                    "id": tu.get("id", ""),
+                    "id": tu_id,
                     "type": "function",
                     "function": {
-                        "name": tu.get("name", ""),
+                        "name": tu_name,
                         "arguments": json.dumps(tu.get("input", {})),
                     },
                 })
@@ -414,9 +419,11 @@ def _normalize_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
                         if isinstance(b, dict) and b.get("type") == "text"
                     ]
                     tr_content = "\n".join(tr_texts) if tr_texts else ""
+                tool_use_id = tr.get("tool_use_id", "")
                 normalized.append({
                     "role": "tool",
-                    "tool_call_id": tr.get("tool_use_id", ""),
+                    "tool_call_id": tool_use_id,
+                    "name": tool_use_names.get(tool_use_id, ""),
                     "content": tr_content,
                 })
         else:
