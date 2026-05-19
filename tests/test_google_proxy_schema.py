@@ -3,6 +3,7 @@
 import pytest
 from fastapi import HTTPException
 
+from app.gemini_schema import clean_json_schema_for_gemini
 from app.google_proxy import (
     GEMINI_SKIP_THOUGHT_SIGNATURE,
     _antigravity_model_variants,
@@ -46,6 +47,39 @@ def test_clean_json_schema_strips_gemini_incompatible_fields() -> None:
     assert "propertyNames" not in props["meta"]
 
 
+def test_clean_json_schema_inlines_ref_defs() -> None:
+    schema = {
+        "$defs": {
+            "SkillInput": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            }
+        },
+        "type": "object",
+        "properties": {
+            "input": {"$ref": "#/$defs/SkillInput"},
+        },
+    }
+    cleaned = clean_json_schema_for_gemini(schema)
+    assert cleaned["type"] == "OBJECT"
+    assert "input" in cleaned["properties"]
+    inner = cleaned["properties"]["input"]
+    assert inner["type"] == "OBJECT"
+    assert "command" in inner["properties"]
+
+
+def test_clean_json_schema_simplifies_anyof_nullable() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "value": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        },
+    }
+    cleaned = clean_json_schema_for_gemini(schema)
+    assert cleaned["properties"]["value"]["type"] == "STRING"
+
+
 def test_finalize_gemini_tool_parameters_uppercases_types() -> None:
     params = _finalize_gemini_tool_parameters({
         "type": "object",
@@ -83,6 +117,26 @@ def test_transform_openai_to_google_tools_use_validated_mode() -> None:
     # maxOutputTokens must exceed thinkingBudget for v1internal
     assert body["generationConfig"]["maxOutputTokens"] == 57344
     assert body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 49152
+
+
+def test_transform_adaptive_thinking_uses_safe_budget() -> None:
+    body = transform_openai_to_google({
+        "model": "gemini-3.1-pro-high",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 32000,
+        "thinking": {"type": "adaptive"},
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "Read",
+                    "description": "Read file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    })
+    assert body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 24576
     assert body["safetySettings"]
 
 

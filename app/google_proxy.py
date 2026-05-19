@@ -19,6 +19,7 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.gemini_schema import clean_json_schema_for_gemini
 from app.google_auth import (
     V1_INTERNAL_BASE_URLS,
     build_v1internal_headers,
@@ -153,26 +154,7 @@ def _enforce_uppercase_schema_types(schema: Any) -> Any:
 
 def _finalize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
     """Sanitize Anthropic/OpenAI JSON Schema for Gemini functionDeclarations."""
-    if not isinstance(parameters, dict) or not parameters:
-        return {
-            "type": "OBJECT",
-            "properties": {
-                "content": {
-                    "type": "STRING",
-                    "description": "The raw content or arguments for the tool",
-                }
-            },
-            "required": ["content"],
-        }
-
-    cleaned = _clean_json_schema(parameters.copy())
-    if isinstance(cleaned, dict):
-        cleaned.pop("additionalProperties", None)
-        cleaned.pop("strict", None)
-    finalized = _enforce_uppercase_schema_types(cleaned)
-    if isinstance(finalized, dict):
-        return finalized
-    return {"type": "OBJECT", "properties": {}}
+    return clean_json_schema_for_gemini(parameters)
 
 
 def _deep_clean_undefined(value: Any) -> Any:
@@ -568,10 +550,14 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
                 user_thinking_budget = None
 
     if _is_gemini_thinking_model(model_name):
-        thinking_budget = user_thinking_budget or _get_thinking_budget(model_name)
-        spec_cap = _get_thinking_budget(model_name)
-        if thinking_budget > spec_cap:
-            thinking_budget = spec_cap
+        thinking_budget = _get_thinking_budget(model_name)
+        if isinstance(thinking_cfg, dict):
+            thinking_type = thinking_cfg.get("type")
+            # Gemini v1internal: adaptive maps to fixed budget (not thinkingLevel)
+            if thinking_type == "adaptive":
+                thinking_budget = 24576
+            elif thinking_type == "enabled" and user_thinking_budget is not None:
+                thinking_budget = min(user_thinking_budget, thinking_budget)
 
         gen_config["thinkingConfig"] = {
             "includeThoughts": True,
@@ -1292,7 +1278,10 @@ async def proxy_antigravity_request(
                                 except (json.JSONDecodeError, ValueError):
                                     error_detail = error_text.decode("utf-8", errors="replace")
 
-                                logger.error(f"[Antigravity] Upstream error {resp.status_code}: {error_detail}")
+                                logger.error(
+                                    f"[Antigravity] Upstream error {resp.status_code}: {error_detail} "
+                                    f"(model={model_name}, tools={len(data.get('tools') or [])})"
+                                )
                                 error_chunk = {
                                     "error": {
                                         "message": f"Google v1internal error: {error_detail}",
