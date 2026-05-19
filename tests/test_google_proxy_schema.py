@@ -1,6 +1,13 @@
 """Tests for Google v1internal tool parameter schema sanitization."""
 
-from app.google_proxy import _clean_json_schema, _convert_tools_to_gemini
+import pytest
+
+from app.google_proxy import (
+    _antigravity_model_variants,
+    _clean_json_schema,
+    _convert_tools_to_gemini,
+    resolve_antigravity_model_name,
+)
 
 
 def test_clean_json_schema_strips_gemini_incompatible_fields() -> None:
@@ -51,3 +58,24 @@ def test_convert_tools_to_gemini_sanitizes_parameters() -> None:
     params = gemini[0]["functionDeclarations"][0]["parameters"]
     assert "$schema" not in params
     assert params["properties"]["x"]["enum"] == ["y"]
+
+
+def test_antigravity_model_variants_adds_claude_prefix() -> None:
+    variants = _antigravity_model_variants("opus-4-6-thinking")
+    assert "opus-4-6-thinking" in variants
+    assert "claude-opus-4-6-thinking" in variants
+
+
+@pytest.mark.asyncio
+async def test_resolve_antigravity_model_from_catalog() -> None:
+    resolved = await resolve_antigravity_model_name(
+        "opus-4-6-thinking",
+        known_model_names=["claude-opus-4-6-thinking", "gemini-3-flash"],
+    )
+    assert resolved == "claude-opus-4-6-thinking"
+
+
+@pytest.mark.asyncio
+async def test_resolve_antigravity_model_heuristic_without_catalog() -> None:
+    resolved = await resolve_antigravity_model_name("opus-4-6-thinking")
+    assert resolved == "claude-opus-4-6-thinking"

@@ -12,7 +12,7 @@ Handles:
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, AsyncGenerator
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, AsyncGenerator
 from datetime import datetime
 
 import httpx
@@ -28,6 +28,10 @@ from app.google_auth import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Retry alternate Google hosts only for these statuses. Do not fall through on 429
+# (quota exhausted) — that hammers prod and hides the real error.
+_V1INTERNAL_ENDPOINT_FALLBACK_CODES = frozenset({408, 404, 500, 502, 503, 504})
 
 
 # =============================================================================
@@ -376,6 +380,92 @@ def wrap_v1internal_request(
     }
 
 
+def _normalize_model_key(name: str) -> str:
+    """Normalize model IDs for fuzzy matching (case, dots vs dashes)."""
+    return name.lower().replace(".", "-").strip()
+
+
+def _antigravity_model_variants(requested: str) -> List[str]:
+    """Candidate v1internal model IDs for a client-visible name."""
+    if not requested:
+        return []
+    variants: List[str] = []
+    seen: Set[str] = set()
+
+    def add(value: str) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            variants.append(value)
+
+    add(requested)
+    if requested.startswith("claude-"):
+        add(requested[7:])
+    else:
+        add(f"claude-{requested}")
+    return variants
+
+
+async def resolve_antigravity_model_name(
+    requested: str,
+    node_id: Optional[int] = None,
+    known_model_names: Optional[Iterable[str]] = None,
+) -> str:
+    """Map client/alias model names to Google v1internal model IDs.
+
+    Claude API strips the ``claude-`` prefix before routing; Google often expects
+    the full ID (e.g. ``claude-opus-4-6-thinking``). Prefer names synced on the node.
+    """
+    if not requested:
+        return requested
+
+    catalog: Set[str] = set()
+    if known_model_names is not None:
+        catalog.update(known_model_names)
+    elif node_id is not None:
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeModelRepository
+
+            async with async_session_maker() as session:
+                repo = NodeModelRepository(session)
+                for row in await repo.get_models_for_node(node_id):
+                    if row.model_name:
+                        catalog.add(row.model_name)
+        except Exception as e:
+            logger.warning(f"[Antigravity] Could not load node model catalog: {e}")
+
+    if catalog:
+        norm_requested = _normalize_model_key(requested)
+        for candidate in _antigravity_model_variants(requested):
+            if candidate in catalog:
+                if candidate != requested:
+                    logger.info(
+                        f"[Antigravity] Resolved model '{requested}' -> '{candidate}' (catalog)"
+                    )
+                return candidate
+            norm_candidate = _normalize_model_key(candidate)
+            for catalog_name in catalog:
+                if _normalize_model_key(catalog_name) == norm_candidate:
+                    if catalog_name != requested:
+                        logger.info(
+                            f"[Antigravity] Resolved model '{requested}' -> '{catalog_name}' (fuzzy)"
+                        )
+                    return catalog_name
+
+    # Heuristic when sync catalog is empty or has no match
+    if not requested.startswith("claude-") and (
+        requested.startswith(("opus-", "sonnet-", "haiku-"))
+        or requested.endswith("-thinking")
+    ):
+        prefixed = f"claude-{requested}"
+        logger.info(
+            f"[Antigravity] Guessing model '{requested}' -> '{prefixed}' (no catalog match)"
+        )
+        return prefixed
+
+    return requested
+
+
 # =============================================================================
 # Response Transformation: Google -> OpenAI
 # =============================================================================
@@ -597,7 +687,7 @@ async def call_v1internal(
                         break  # Restart from first endpoint
 
                     # Retryable status codes
-                    if has_next and response.status_code in (429, 408, 404, 500, 502, 503, 504):
+                    if has_next and response.status_code in _V1INTERNAL_ENDPOINT_FALLBACK_CODES:
                         err_msg = f"Upstream {url} returned {response.status_code}"
                         logger.warning(err_msg)
                         last_err = err_msg
@@ -817,6 +907,7 @@ async def proxy_antigravity_request(
     node_headers: Optional[Dict[str, Any]],
     model_name: str,
     username: Optional[str],
+    node_id: Optional[int] = None,
 ) -> Any:
     """Proxy a request to Google v1internal API (Antigravity node).
 
@@ -838,6 +929,11 @@ async def proxy_antigravity_request(
 
     if not project_id:
         logger.warning("[Antigravity] No project_id configured for node; will attempt without x-goog-user-project header")
+
+    requested_model = (data.get("model") if isinstance(data, dict) else None) or model_name
+    model_name = await resolve_antigravity_model_name(requested_model, node_id=node_id)
+    if isinstance(data, dict):
+        data = {**data, "model": model_name}
 
     # Transform OpenAI -> Google
     google_body = transform_openai_to_google(data)
@@ -909,7 +1005,7 @@ async def proxy_antigravity_request(
                                     header_removed_for_403 = True
                                     break
 
-                                if has_next and resp.status_code in (429, 408, 404, 500, 502, 503, 504):
+                                if has_next and resp.status_code in _V1INTERNAL_ENDPOINT_FALLBACK_CODES:
                                     err_msg = f"Upstream {url} returned {resp.status_code}"
                                     logger.warning(f"[Antigravity] {err_msg}")
                                     last_err = err_msg
