@@ -302,9 +302,10 @@ async def claude_messages(
     else:
         ollama_body["messages"] = normalized_messages
 
-    # Thinking / reasoning mapping: Anthropic -> Ollama
+    # Thinking / reasoning mapping: Anthropic -> Ollama (+ pass-through for Antigravity)
     thinking = body.get("thinking")
     if thinking and isinstance(thinking, dict):
+        ollama_body["thinking"] = thinking
         if thinking.get("type") == "enabled":
             budget_tokens = thinking.get("budget_tokens", 16000)
             # Ollama expects reasoning_effort for kimi / thinking models
@@ -326,8 +327,9 @@ async def claude_messages(
             ollama_body["tool_choice"] = _convert_tool_choice(tool_choice)
             logger.info(f"[Claude] Converted {len(openai_tools)} Anthropic tools to OpenAI format")
 
-    # Max tokens mapping
+    # Max tokens mapping (top-level for Antigravity/google_proxy; options for Ollama)
     if max_tokens:
+        ollama_body["max_tokens"] = max_tokens
         ollama_body["options"]["num_predict"] = max_tokens
 
     # Temperature / top_p / top_k
