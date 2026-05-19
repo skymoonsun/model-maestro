@@ -103,6 +103,50 @@ def test_convert_messages_does_not_merge_consecutive_model_turns() -> None:
     )
 
 
+def test_tool_role_has_only_function_response_part() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tu_1",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tu_1", "name": "Read", "content": "result body"},
+    ]
+    contents, _ = _convert_messages_to_contents(messages)
+    user_parts = [c for c in contents if c["role"] == "user"][0]["parts"]
+    assert len(user_parts) == 1
+    assert "functionResponse" in user_parts[0]
+    assert user_parts[0]["functionResponse"]["response"]["result"] == "result body"
+
+
+def test_user_turn_orders_function_response_before_text() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tu_1",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tu_1", "name": "Read", "content": "data"},
+        {"role": "user", "content": "continue"},
+    ]
+    contents, _ = _convert_messages_to_contents(messages)
+    user_parts = [c for c in contents if c["role"] == "user"][0]["parts"]
+    assert "functionResponse" in user_parts[0]
+    assert "text" in user_parts[-1]
+
+
 def test_convert_messages_merges_consecutive_user_tool_results() -> None:
     messages = [
         {"role": "user", "content": "run tools"},

@@ -408,8 +408,7 @@ def _normalize_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
                 "tool_calls": openai_tool_calls,
             })
         elif role == "user" and tool_results:
-            if text_parts:
-                normalized.append({"role": "user", "content": "\n".join(text_parts)})
+            # Tool results first so Google/Anthropic sees them immediately after assistant tool_use.
             for tr in tool_results:
                 tr_content = tr.get("content", "")
                 if isinstance(tr_content, list):
@@ -426,6 +425,8 @@ def _normalize_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[s
                     "name": tool_use_names.get(tool_use_id, ""),
                     "content": tr_content,
                 })
+            if text_parts:
+                normalized.append({"role": "user", "content": "\n".join(text_parts)})
         else:
             normalized.append({
                 "role": role,
@@ -486,9 +487,10 @@ async def _handle_claude_non_streaming(
                 tool_input = json.loads(tool_args)
             except json.JSONDecodeError:
                 tool_input = {}
+            tu_id = tc.get("id") or f"tu_{uuid.uuid4().hex[:20]}"
             content.append({
                 "type": "tool_use",
-                "id": f"tu_{uuid.uuid4().hex[:20]}",
+                "id": tu_id,
                 "name": tool_name,
                 "input": tool_input,
             })
@@ -661,9 +663,10 @@ async def _stream_from_non_streaming(
             tool_input = json.loads(tool_args)
         except json.JSONDecodeError:
             tool_input = {}
+        tu_id = tc.get("id") or f"tu_{uuid.uuid4().hex[:20]}"
         content.append({
             "type": "tool_use",
-            "id": f"tu_{uuid.uuid4().hex[:20]}",
+            "id": tu_id,
             "name": tool_name,
             "input": tool_input,
         })
