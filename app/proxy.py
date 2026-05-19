@@ -1277,6 +1277,8 @@ class OllamaProxy:
         merged: Dict[int, Dict[str, Any]] = {}
         seen_strings: set[str] = set()
         primary_real = model_mapper.get_real_model_name(model_name)
+        # Group routing may target catalog-unavailable members; include synced nodes.
+        include_unavailable = bool(routing_catalog_names)
 
         for label in ordered:
             real_label = model_mapper.get_real_model_name(label)
@@ -1284,7 +1286,10 @@ class OllamaProxy:
                 if not v or v in seen_strings:
                     continue
                 seen_strings.add(v)
-                batch = await node_manager.get_nodes_for_model(v)
+                batch = await node_manager.get_nodes_for_model(
+                    v,
+                    include_unavailable=include_unavailable,
+                )
                 for n in batch:
                     nid = n.get("node_id")
                     if nid is None:
