@@ -313,16 +313,40 @@ class NodeModelRepository:
         )
         return list(result.scalars().all())
 
+    @staticmethod
+    def _model_lookup_variants(model_name: str) -> List[str]:
+        """Names to match in node_models (Claude API strips ``claude-`` prefix)."""
+        if not model_name:
+            return []
+        variants: List[str] = []
+        seen: set[str] = set()
+
+        def add(value: str) -> None:
+            if value and value not in seen:
+                seen.add(value)
+                variants.append(value)
+
+        add(model_name)
+        if model_name.startswith("claude-"):
+            add(model_name[7:])
+        else:
+            add(f"claude-{model_name}")
+        return variants
+
     async def get_nodes_for_model(self, model_name: str) -> List[Dict[str, Any]]:
-        """Get all nodes that have a specific model"""
+        """Get all nodes that have a specific model (includes claude- alias variants)."""
         from app.models_db import OllamaNode
-        
+
+        lookup_names = self._model_lookup_variants(model_name)
+        if not lookup_names:
+            return []
+
         result = await self.session.execute(
             select(NodeModel, OllamaNode)
             .join(OllamaNode, NodeModel.node_id == OllamaNode.id)
             .where(
                 and_(
-                    NodeModel.model_name == model_name,
+                    NodeModel.model_name.in_(lookup_names),
                     NodeModel.is_available == True,
                     OllamaNode.is_active == True,
                     OllamaNode.health_status == 'healthy'
@@ -331,23 +355,29 @@ class NodeModelRepository:
             .order_by(OllamaNode.priority.desc())
         )
         
-        return [
-            {
-                "node_id": node.id,
-                "node_name": node.name,
-                "base_url": node.base_url,
-                "api_key": node.api_key,
-                "node_type": node.node_type,
-                "priority": node.priority,
-                "weight": node.weight,
-                "health_status": node.health_status,
-                "headers": node.headers,
-                "oauth_tokens": node.oauth_tokens,
-                "project_id": node.project_id,
-                "scoped_models": node.scoped_models
-            }
-            for model, node in result.all()
-        ]
+        nodes_out: List[Dict[str, Any]] = []
+        seen_node_ids: set[int] = set()
+        for _model, node in result.all():
+            if node.id in seen_node_ids:
+                continue
+            seen_node_ids.add(node.id)
+            nodes_out.append(
+                {
+                    "node_id": node.id,
+                    "node_name": node.name,
+                    "base_url": node.base_url,
+                    "api_key": node.api_key,
+                    "node_type": node.node_type,
+                    "priority": node.priority,
+                    "weight": node.weight,
+                    "health_status": node.health_status,
+                    "headers": node.headers,
+                    "oauth_tokens": node.oauth_tokens,
+                    "project_id": node.project_id,
+                    "scoped_models": node.scoped_models,
+                }
+            )
+        return nodes_out
     
     async def mark_unavailable(self, node_id: int, model_name: str) -> bool:
         """Mark a model as unavailable on a node"""

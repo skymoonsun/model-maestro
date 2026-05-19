@@ -1026,6 +1026,111 @@ class OllamaProxy:
     # (model might be available on a different node)
     NODE_RETRYABLE_STATUS_CODES = {400, 404, 408, 423, 429, 500, 502, 503, 504}
 
+    _CHAT_COMPLETION_ENDPOINTS = (
+        "/v1/chat/completions",
+        "/cursor/chat/completions",
+        "/v1/completions",
+    )
+
+    @staticmethod
+    def _base_url_from_request_url(request_url: str, endpoint: str, fallback: str = "") -> str:
+        if endpoint and endpoint in request_url:
+            return request_url.rsplit(endpoint, 1)[0]
+        return fallback
+
+    @staticmethod
+    def _short_upstream_error(
+        provider: str,
+        status_code: int,
+        host: str,
+        model: str,
+        detail: str,
+        *,
+        will_retry: bool = False,
+    ) -> None:
+        host_short = (host or "?").split("://", 1)[-1].rstrip("/")
+        msg = (detail or "").replace("\n", " ")[:200]
+        suffix = " → trying next node" if will_retry else ""
+        logger.warning(
+            f"[{provider}] {status_code} model={model} host={host_short}{suffix}: {msg}"
+        )
+
+    async def _get_active_node_by_base_url(self, base_url: str):
+        if not base_url:
+            return None
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository
+
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                for node in await node_repo.list_active():
+                    if node.base_url == base_url:
+                        return node
+        except Exception as e:
+            logger.debug(f"[LB] Node lookup failed for {base_url}: {e}")
+        return None
+
+    async def _try_specialized_node_proxy(
+        self,
+        *,
+        node_type: str,
+        base_url: str,
+        data: Dict[str, Any],
+        stream: bool,
+        endpoint: str,
+        model_name: Optional[str],
+        username: Optional[str],
+        node_headers: Optional[Dict[str, Any]],
+    ) -> Optional[Any]:
+        """Antigravity/Bedrock routing. Returns None when generic HTTP upstream applies."""
+        if endpoint not in self._CHAT_COMPLETION_ENDPOINTS or not isinstance(data, dict):
+            return None
+
+        if node_type == "antigravity":
+            node = await self._get_active_node_by_base_url(base_url)
+            if not node or not node.oauth_tokens:
+                logger.warning(f"[Antigravity] Missing OAuth on node {base_url}")
+                return None
+            display_model = model_name or data.get("model", "unknown")
+            logger.info(
+                f"[Antigravity] Routing request to Google v1internal for model={display_model}"
+            )
+            return await proxy_antigravity_request(
+                data=data,
+                stream=stream,
+                endpoint=endpoint,
+                base_url=base_url,
+                oauth_tokens=node.oauth_tokens,
+                project_id=node.project_id,
+                node_headers=node_headers,
+                model_name=display_model,
+                username=username,
+                node_id=node.id,
+            )
+
+        if node_type == "bedrock":
+            node = await self._get_active_node_by_base_url(base_url)
+            if not node or not node.api_key or not node.aws_secret_key or not node.aws_region:
+                logger.warning(f"[Bedrock] Missing AWS credentials on node {base_url}")
+                return None
+            from app.bedrock_proxy import proxy_bedrock_request
+
+            logger.info(f"[Bedrock] Routing request to AWS Bedrock for model={model_name}")
+            return await proxy_bedrock_request(
+                data=data,
+                stream=stream,
+                endpoint=endpoint,
+                base_url=base_url,
+                aws_access_key_id=node.api_key,
+                aws_secret_access_key=node.aws_secret_key,
+                aws_region=node.aws_region,
+                model_name=model_name or data.get("model", "unknown"),
+                username=username,
+            )
+
+        return None
+
     async def _resolve_node_id_by_url(self, base_url: str) -> Optional[int]:
         """Look up node_id from base_url using an in-memory cache."""
         if not base_url:
@@ -1353,7 +1458,7 @@ class OllamaProxy:
 
             # Select best node using load balancer (Redis-first, no session)
             selected_node = await load_balancer.select_node(
-                nodes, strategy="least_loaded"
+                nodes, strategy="priority"
             )
 
             if selected_node:
@@ -2636,10 +2741,34 @@ class OllamaProxy:
             current_url = url
             current_api_key = api_key
             current_headers = node_headers
+            current_node_type = node_type
 
             for attempt in range(MAX_FAILOVER_RETRIES + 1):
                 client = await self._get_http_client()
                 current_model = current_data.get('model', 'unknown')
+                current_base_url = self._base_url_from_request_url(
+                    current_url, endpoint, base_url
+                )
+
+                specialized = await self._try_specialized_node_proxy(
+                    node_type=current_node_type,
+                    base_url=current_base_url,
+                    data=current_data,
+                    stream=True,
+                    endpoint=endpoint,
+                    model_name=current_model,
+                    username=username,
+                    node_headers=current_headers,
+                )
+                if specialized is not None:
+                    if isinstance(specialized, StreamingResponse):
+                        async for chunk in specialized.body_iterator:
+                            yield chunk
+                        return
+                    logger.error(
+                        f"[STREAM] Unexpected non-stream response from {current_node_type} node"
+                    )
+                    return
 
                 logger.debug(f"[STREAM START] Attempt {attempt + 1}: Sending streaming request to {current_url}")
                 logger.debug(f"[STREAM START] Model: {current_model}, OpenAI endpoint: {is_openai_endpoint}")
@@ -2665,12 +2794,12 @@ class OllamaProxy:
 
                     # Log full outgoing request body and headers for debugging (debug level only)
                     if current_data:
-                        _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                        _provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
                         logger.debug(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
                     logger.debug(f"[OUTGOING] request headers: {request_headers}")
 
                     async with client.stream("POST", current_url, json=current_data, headers=request_headers) as resp:
-                        provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                        provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
                         if resp.status_code >= 400:
                             logger.warning(f"[STREAM] {provider_label} response status: {resp.status_code}")
                         else:
@@ -2711,22 +2840,25 @@ class OllamaProxy:
                             except (_json_decode_error, KeyError, TypeError):
                                 pass
 
-                            logger.error(f"{provider_label} upstream error ({resp.status_code}): {error_msg}")
-                            logger.error(f"Request URL: {current_url}")
-                            logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")
-
-                            # === NODE-LEVEL RETRY ===
-                            # Try the same model on a different node first
-                            if (
+                            will_node_retry = (
                                 not strict_allowed_nodes
                                 and resp.status_code in self.NODE_RETRYABLE_STATUS_CODES
                                 and attempt < MAX_FAILOVER_RETRIES
-                            ):
-                                # Add current node to tried list
-                                current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
+                            )
+                            self._short_upstream_error(
+                                provider_label,
+                                resp.status_code,
+                                current_base_url,
+                                current_model,
+                                error_msg,
+                                will_retry=will_node_retry,
+                            )
+
+                            # === NODE-LEVEL RETRY ===
+                            if will_node_retry:
                                 tried_nodes.add(current_base_url)
 
-                                new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
+                                new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
                                     current_model, exclude_nodes=list(tried_nodes),
                                     exclude_scoped=exclude_scoped,
                                     allowed_node_ids=allowed_node_ids,
@@ -2734,23 +2866,25 @@ class OllamaProxy:
                                     strict_allowed_nodes=strict_allowed_nodes,
                                 )
                                 if new_base_url:
-                                    # Check node access for failover node
                                     if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
-                                        logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                        logger.warning(
+                                            f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                                        )
                                         tried_nodes.add(new_base_url)
                                         continue
-                                    logger.warning(
-                                        f"[NODE RETRY] Stream error {resp.status_code} from {current_base_url}, "
-                                        f"trying node {new_base_url} for model {current_model}"
+                                    logger.info(
+                                        f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                                        f"({new_node_type}) model={current_model}"
                                     )
                                     current_url = f"{new_base_url}{endpoint}"
                                     current_api_key = new_api_key
                                     current_headers = new_headers
+                                    current_node_type = new_node_type
                                     current_data = await self._rebind_body_to_node(
                                         current_data, rsnap, new_base_url
                                     )
                                     continue
-                                logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+                                logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
                             # === MODEL-LEVEL FALLBACK ===
                             # Only for 5xx errors and connection errors, try a different model from the group
@@ -2827,7 +2961,7 @@ class OllamaProxy:
                                 )
                                 logger.warning(f"[CONTEXT OVERFLOW] Model context limit reached: {error_msg}")
                             else:
-                                provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                                provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
                                 friendly_msg = f"{provider_label} upstream error: {error_msg}"
 
                             error_response = {
@@ -3390,7 +3524,7 @@ class OllamaProxy:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                         tried_nodes.add(current_base_url)
 
-                        new_base_url, new_api_key, _, _, _ = await self._select_node_url(
+                        new_base_url, new_api_key, new_node_type, _, _ = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes),
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
@@ -3399,21 +3533,24 @@ class OllamaProxy:
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
-                                logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                logger.warning(
+                                    f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                                )
                                 tried_nodes.add(new_base_url)
                                 continue
-                            logger.warning(
-                                f"[NODE RETRY] Connection error from {current_base_url}, "
-                                f"trying node {new_base_url} for model {current_model}"
+                            logger.info(
+                                f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                                f"({new_node_type}) model={current_model}"
                             )
                             current_url = f"{new_base_url}{endpoint}"
                             current_api_key = new_api_key
+                            current_node_type = new_node_type
                             current_data = await self._rebind_body_to_node(
                                 current_data, rsnap, new_base_url
                             )
                             last_error = e
                             continue
-                        logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+                        logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
                     # === MODEL-LEVEL FALLBACK ===
                     if original_group and attempt < MAX_FAILOVER_RETRIES:
@@ -3555,13 +3692,33 @@ class OllamaProxy:
         current_data = data.copy() if data else {}
         current_api_key = api_key
         current_headers = node_headers
+        current_node_type = node_type
 
         for attempt in range(MAX_FAILOVER_RETRIES + 1):
             client = await self._get_http_client()
             current_model = current_data.get('model') or model_name or 'unknown'
+            current_base_url = self._base_url_from_request_url(
+                current_url, endpoint, url.rsplit(endpoint, 1)[0] if endpoint in url else ""
+            )
+
+            specialized = await self._try_specialized_node_proxy(
+                node_type=current_node_type,
+                base_url=current_base_url,
+                data=current_data,
+                stream=False,
+                endpoint=endpoint,
+                model_name=current_model,
+                username=username,
+                node_headers=current_headers,
+            )
+            if specialized is not None:
+                return specialized
 
             try:
-                logger.info(f"Sending request to Ollama: {current_url} (attempt {attempt + 1})")
+                provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
+                logger.info(
+                    f"Sending request to {provider_label}: {current_url} (attempt {attempt + 1})"
+                )
 
                 request_headers = {}
                 if client_headers:
@@ -3579,7 +3736,7 @@ class OllamaProxy:
 
                 # Log full outgoing request body and headers for debugging (debug level only)
                 if current_data:
-                    _provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
+                    _provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
                     logger.debug(f"[OUTGOING] {_provider_label} request body: {_json_dumps(current_data, indent=True).decode()}")
                 logger.debug(f"[OUTGOING] request headers: {request_headers}")
 
@@ -3613,23 +3770,36 @@ class OllamaProxy:
                         logger.warning(f"[WAF] Cookie refresh failed for {current_base_url}: {refresh_error}")
 
                     error_text = response.text
-                    provider_label = 'vLLM' if node_type == 'vllm' else 'Ollama'
-                    logger.error(f"{provider_label} error ({response.status_code}): {error_text}")
-                    logger.error(f"Request URL: {current_url}")
-                    if current_data:
-                        logger.error(f"Request data: {_json_dumps(current_data, indent=True).decode()}")
+                    try:
+                        err_json = json.loads(error_text)
+                        if isinstance(err_json, dict) and "error" in err_json:
+                            err_detail = err_json["error"]
+                            if isinstance(err_detail, dict) and "message" in err_detail:
+                                error_text = err_detail["message"]
+                            elif isinstance(err_detail, str):
+                                error_text = err_detail
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        pass
 
-                    # === NODE-LEVEL RETRY ===
-                    # Try the same model on a different node first
-                    if (
+                    will_node_retry = (
                         not strict_allowed_nodes
                         and response.status_code in self.NODE_RETRYABLE_STATUS_CODES
                         and attempt < MAX_FAILOVER_RETRIES
-                    ):
-                        current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
+                    )
+                    self._short_upstream_error(
+                        provider_label,
+                        response.status_code,
+                        current_base_url,
+                        current_model,
+                        error_text,
+                        will_retry=will_node_retry,
+                    )
+
+                    # === NODE-LEVEL RETRY ===
+                    if will_node_retry:
                         tried_nodes.add(current_base_url)
 
-                        new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
+                        new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
                             current_model, exclude_nodes=list(tried_nodes),
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=allowed_node_ids,
@@ -3638,25 +3808,28 @@ class OllamaProxy:
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
-                                logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                                logger.warning(
+                                    f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                                )
                                 tried_nodes.add(new_base_url)
                                 continue
-                            logger.warning(
-                                f"[NODE RETRY] Error {response.status_code} from {current_base_url}, "
-                                f"trying node {new_base_url} for model {current_model}"
+                            logger.info(
+                                f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                                f"({new_node_type}) model={current_model}"
                             )
                             current_url = f"{new_base_url}{endpoint}"
                             current_api_key = new_api_key
                             current_headers = new_headers
+                            current_node_type = new_node_type
                             current_data = await self._rebind_body_to_node(
                                 current_data, rsnap, new_base_url
                             )
                             last_error = HTTPException(
                                 status_code=response.status_code,
-                                detail=f"Ollama error: {error_text}"
+                                detail=f"Upstream error: {error_text}"
                             )
                             continue
-                        logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
+                        logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
                     # === MODEL-LEVEL FALLBACK ===
                     # Only for 5xx errors, try a different model from the group
@@ -3783,15 +3956,16 @@ class OllamaProxy:
                 return response_data
 
             except httpx.RequestError as e:
-                logger.error(f"Failed to connect to Ollama: {str(e)}")
+                logger.warning(
+                    f"[{provider_label}] connection failed model={current_model} "
+                    f"host={current_base_url}: {e}"
+                )
 
                 # === NODE-LEVEL RETRY ===
-                # Try the same model on a different node first
                 if not strict_allowed_nodes and attempt < MAX_FAILOVER_RETRIES:
-                    current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                     tried_nodes.add(current_base_url)
 
-                    new_base_url, new_api_key, _, _, _ = await self._select_node_url(
+                    new_base_url, new_api_key, new_node_type, _, _ = await self._select_node_url(
                         current_model, exclude_nodes=list(tried_nodes),
                         exclude_scoped=exclude_scoped,
                         allowed_node_ids=allowed_node_ids,
@@ -3800,15 +3974,18 @@ class OllamaProxy:
                     )
                     if new_base_url:
                         if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
-                            logger.warning(f"[NODE RETRY] User '{username}' denied access to failover node {new_base_url}, skipping")
+                            logger.warning(
+                                f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                            )
                             tried_nodes.add(new_base_url)
                             continue
-                        logger.warning(
-                            f"[NODE RETRY] Connection error from {current_base_url}, "
-                            f"trying node {new_base_url} for model {current_model}"
+                        logger.info(
+                            f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                            f"({new_node_type}) model={current_model}"
                         )
                         current_url = f"{new_base_url}{endpoint}"
                         current_api_key = new_api_key
+                        current_node_type = new_node_type
                         current_data = await self._rebind_body_to_node(
                             current_data, rsnap, new_base_url
                         )
