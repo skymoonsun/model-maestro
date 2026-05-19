@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from app.google_proxy import (
     _antigravity_model_variants,
     _clean_json_schema,
+    _convert_messages_to_contents,
     _convert_tools_to_gemini,
     resolve_antigravity_model_name,
 )
@@ -59,6 +60,80 @@ def test_convert_tools_to_gemini_sanitizes_parameters() -> None:
     params = gemini[0]["functionDeclarations"][0]["parameters"]
     assert "$schema" not in params
     assert params["properties"]["x"]["enum"] == ["y"]
+
+
+def test_convert_messages_does_not_merge_consecutive_model_turns() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tu_a",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tu_a", "name": "Read", "content": "ok"},
+        {"role": "assistant", "content": "done"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tu_b",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tu_b", "name": "Bash", "content": "ok"},
+    ]
+    contents, _ = _convert_messages_to_contents(messages)
+    model_turns = [c for c in contents if c["role"] == "model"]
+    assert len(model_turns) == 2
+    assert any(
+        part.get("functionCall", {}).get("id") == "tu_a"
+        for part in model_turns[0]["parts"]
+    )
+    assert any(
+        part.get("functionCall", {}).get("id") == "tu_b"
+        for part in model_turns[1]["parts"]
+    )
+
+
+def test_convert_messages_merges_consecutive_user_tool_results() -> None:
+    messages = [
+        {"role": "user", "content": "run tools"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tu_1",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                },
+                {
+                    "id": "tu_2",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tu_1", "name": "Read", "content": "a"},
+        {"role": "tool", "tool_call_id": "tu_2", "name": "Bash", "content": "b"},
+    ]
+    contents, _ = _convert_messages_to_contents(messages)
+    user_turns = [c for c in contents if c["role"] == "user"]
+    assert len(user_turns) == 2
+    tool_responses = [
+        p["functionResponse"]["id"]
+        for p in user_turns[1]["parts"]
+        if "functionResponse" in p
+    ]
+    assert tool_responses == ["tu_1", "tu_2"]
 
 
 def test_antigravity_model_variants_adds_claude_prefix() -> None:

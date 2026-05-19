@@ -46,6 +46,7 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
     """
     system_instructions: List[str] = []
     contents: List[Dict[str, Any]] = []
+    tool_call_names: Dict[str, str] = {}
 
     for msg in messages:
         role = msg.get("role", "")
@@ -117,6 +118,9 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
                 except (json.JSONDecodeError, TypeError):
                     args_parsed = {}
 
+                if call_id:
+                    tool_call_names[call_id] = name
+
                 func_call_part = {
                     "functionCall": {
                         "name": name,
@@ -128,10 +132,12 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
 
         # Handle tool response
         if role in ("tool", "function"):
-            name = msg.get("name", "unknown")
+            tool_call_id = msg.get("tool_call_id", "")
+            name = msg.get("name") or tool_call_names.get(tool_call_id, "")
+            if not name:
+                name = "unknown"
             if name == "local_shell_call":
                 name = "shell"
-            tool_call_id = msg.get("tool_call_id", "")
 
             content_val = ""
             if isinstance(content, str):
@@ -151,11 +157,24 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
         if parts:
             contents.append({"role": google_role, "parts": parts})
 
-    # Merge consecutive same-role messages (Gemini requires alternating user/model)
+    def _has_function_call(parts: List[Dict[str, Any]]) -> bool:
+        return any("functionCall" in part for part in parts)
+
+    # Merge consecutive user turns. For model turns, merge only when we are not
+    # stacking two separate tool-call rounds (breaks tool_use / tool_result pairing).
     merged: List[Dict[str, Any]] = []
     for msg in contents:
-        if merged and merged[-1]["role"] == msg["role"]:
-            merged[-1]["parts"].extend(msg["parts"])
+        if not merged:
+            merged.append(msg)
+            continue
+        prev = merged[-1]
+        if prev["role"] == "user" and msg["role"] == "user":
+            prev["parts"].extend(msg["parts"])
+        elif prev["role"] == "model" and msg["role"] == "model":
+            if _has_function_call(prev["parts"]) and _has_function_call(msg["parts"]):
+                merged.append(msg)
+            else:
+                prev["parts"].extend(msg["parts"])
         else:
             merged.append(msg)
 
