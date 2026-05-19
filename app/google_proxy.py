@@ -70,31 +70,68 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
         if reasoning and isinstance(reasoning, str) and reasoning != "[undefined]":
             parts.append({"text": reasoning, "thought": True})
 
-        # Handle content
-        if isinstance(content, str):
-            if content:
-                parts.append({"text": content})
-        elif isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = block.get("type", "")
-                if block_type == "text":
-                    text = block.get("text", "")
-                    if text:
-                        parts.append({"text": text})
-                elif block_type == "image_url":
-                    image_url = block.get("image_url", {})
-                    url = image_url.get("url", "")
-                    if url.startswith("data:"):
-                        comma_pos = url.find(",")
-                        if comma_pos != -1:
-                            mime_part = url[5:comma_pos]
-                            mime_type = mime_part.split(";")[0] if ";" in mime_part else mime_part
-                            data = url[comma_pos + 1:]
-                            parts.append({"inlineData": {"mimeType": mime_type or "image/jpeg", "data": data}})
-                    elif url.startswith("http"):
-                        parts.append({"fileData": {"fileUri": url, "mimeType": "image/jpeg"}})
+        # Handle content (tool role uses functionResponse only — not a duplicate text part)
+        if role not in ("tool", "function"):
+            if isinstance(content, str):
+                if content:
+                    parts.append({"text": content})
+            elif isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    block_type = block.get("type", "")
+                    if block_type == "text":
+                        text = block.get("text", "")
+                        if text:
+                            parts.append({"text": text})
+                    elif block_type == "tool_use" and role == "assistant":
+                        tu_name = block.get("name", "")
+                        tu_id = block.get("id", "")
+                        if tu_id:
+                            tool_call_names[tu_id] = tu_name
+                        if tu_name == "local_shell_call":
+                            tu_name = "shell"
+                        parts.append({
+                            "functionCall": {
+                                "name": tu_name,
+                                "args": block.get("input", {}) or {},
+                                "id": tu_id,
+                            }
+                        })
+                    elif block_type == "image_url":
+                        image_url = block.get("image_url", {})
+                        url = image_url.get("url", "")
+                        if url.startswith("data:"):
+                            comma_pos = url.find(",")
+                            if comma_pos != -1:
+                                mime_part = url[5:comma_pos]
+                                mime_type = mime_part.split(";")[0] if ";" in mime_part else mime_part
+                                data = url[comma_pos + 1:]
+                                parts.append({"inlineData": {"mimeType": mime_type or "image/jpeg", "data": data}})
+                        elif url.startswith("http"):
+                            parts.append({"fileData": {"fileUri": url, "mimeType": "image/jpeg"}})
+                    elif block_type == "tool_result" and role == "user":
+                        tr_id = block.get("tool_use_id", "")
+                        tr_name = block.get("name") or tool_call_names.get(tr_id, "") or "unknown"
+                        if tr_name == "local_shell_call":
+                            tr_name = "shell"
+                        tr_content = block.get("content", "")
+                        if isinstance(tr_content, list):
+                            tr_texts = [
+                                b.get("text", "")
+                                for b in tr_content
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            ]
+                            tr_content = "\n".join(tr_texts) if tr_texts else ""
+                        elif not isinstance(tr_content, str):
+                            tr_content = str(tr_content) if tr_content is not None else ""
+                        parts.append({
+                            "functionResponse": {
+                                "name": tr_name,
+                                "response": {"result": tr_content},
+                                "id": tr_id,
+                            }
+                        })
 
         # Handle tool calls (assistant message)
         tool_calls = msg.get("tool_calls")
@@ -160,6 +197,12 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
     def _has_function_call(parts: List[Dict[str, Any]]) -> bool:
         return any("functionCall" in part for part in parts)
 
+    def _reorder_user_parts(parts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """functionResponse parts must come before plain text for Claude-on-Google."""
+        responses = [p for p in parts if "functionResponse" in p]
+        rest = [p for p in parts if "functionResponse" not in p]
+        return responses + rest
+
     # Merge consecutive user turns. For model turns, merge only when we are not
     # stacking two separate tool-call rounds (breaks tool_use / tool_result pairing).
     merged: List[Dict[str, Any]] = []
@@ -170,6 +213,7 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
         prev = merged[-1]
         if prev["role"] == "user" and msg["role"] == "user":
             prev["parts"].extend(msg["parts"])
+            prev["parts"] = _reorder_user_parts(prev["parts"])
         elif prev["role"] == "model" and msg["role"] == "model":
             if _has_function_call(prev["parts"]) and _has_function_call(msg["parts"]):
                 merged.append(msg)
@@ -177,6 +221,10 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
                 prev["parts"].extend(msg["parts"])
         else:
             merged.append(msg)
+
+    for msg in merged:
+        if msg["role"] == "user":
+            msg["parts"] = _reorder_user_parts(msg["parts"])
 
     return merged, system_instructions
 
