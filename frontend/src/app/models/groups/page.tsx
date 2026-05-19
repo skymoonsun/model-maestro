@@ -165,11 +165,11 @@ function GroupDetail({
         }
         const mapping = mappingsData?.find((m) => m.display_name === newMemberName);
         const realName = mapping?.real_name ?? newMemberName;
+        // Group members may reference catalog-unavailable models; list any node that syncs this name.
         return nodesData.filter((node) =>
             node.models?.some(
                 (m) =>
-                    m.is_available !== false &&
-                    (m.model_name === realName || m.model_name === newMemberName),
+                    m.model_name === realName || m.model_name === newMemberName,
             ),
         );
     }, [nodesData, newMemberName, mappingsData]);
@@ -409,7 +409,7 @@ function GroupDetail({
                                         <div className="mt-3">
                                             <Label className="text-sm mb-1.5 block">Preferred nodes (optional)</Label>
                                             <p className="text-xs text-muted-foreground mb-2">
-                                                Only nodes that currently host this model are listed (if a mapping exists, we match the real Ollama name too).
+                                                Nodes that sync this model are listed, including models marked unavailable on the node (if a mapping exists, we match the real name too).
                                                 Checked nodes restrict traffic to that subset; leave all unchecked to let the load balancer use every eligible node.
                                             </p>
                                             {filteredNodesForSelectedModel.length === 0 ? (

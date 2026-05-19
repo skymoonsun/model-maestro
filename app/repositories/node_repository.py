@@ -336,25 +336,36 @@ class NodeModelRepository:
             add(f"claude-{model_name}")
         return variants
 
-    async def get_nodes_for_model(self, model_name: str) -> List[Dict[str, Any]]:
-        """Get all nodes that have a specific model (includes claude- prefix aliases)."""
+    async def get_nodes_for_model(
+        self,
+        model_name: str,
+        *,
+        include_unavailable: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Get all nodes that have a specific model (includes claude- prefix aliases).
+
+        When ``include_unavailable`` is True, nodes are returned even if the model row
+        is marked unavailable (used for model-group routing where members may be
+        catalog-hidden but still routable via the group).
+        """
         from app.models_db import OllamaNode
 
         lookup_names = self._model_lookup_variants(model_name)
         if not lookup_names:
             return []
 
+        conditions = [
+            NodeModel.model_name.in_(lookup_names),
+            OllamaNode.is_active == True,
+            OllamaNode.health_status == 'healthy',
+        ]
+        if not include_unavailable:
+            conditions.append(NodeModel.is_available == True)
+
         result = await self.session.execute(
             select(NodeModel, OllamaNode)
             .join(OllamaNode, NodeModel.node_id == OllamaNode.id)
-            .where(
-                and_(
-                    NodeModel.model_name.in_(lookup_names),
-                    NodeModel.is_available == True,
-                    OllamaNode.is_active == True,
-                    OllamaNode.health_status == 'healthy'
-                )
-            )
+            .where(and_(*conditions))
             .order_by(OllamaNode.priority.desc())
         )
         

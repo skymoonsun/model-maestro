@@ -474,7 +474,9 @@ class NodeManager:
     async def get_nodes_for_model(
         self,
         model_name: str,
-        session=None
+        session=None,
+        *,
+        include_unavailable: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Get all nodes that have a specific model.
@@ -483,12 +485,15 @@ class NodeManager:
         Args:
             model_name: The model name to look up
             session: Optional DB session (only used on cache miss)
+            include_unavailable: Include nodes where the model is synced but marked unavailable
 
         Returns:
             List of node dicts with load info
         """
         from app.redis import redis_manager, CACHE_KEYS, CACHE_TTL
         cache_key = CACHE_KEYS["MODEL_NODES"].format(model_name=model_name)
+        if include_unavailable:
+            cache_key = f"{cache_key}:all"
 
         # Try Redis first
         if redis_manager:
@@ -504,10 +509,17 @@ class NodeManager:
         if session is None:
             from app.database import async_session_maker
             async with async_session_maker() as db_session:
-                return await self.get_nodes_for_model(model_name, db_session)
+                return await self.get_nodes_for_model(
+                    model_name,
+                    db_session,
+                    include_unavailable=include_unavailable,
+                )
 
         model_repo = NodeModelRepository(session)
-        nodes = await model_repo.get_nodes_for_model(model_name)
+        nodes = await model_repo.get_nodes_for_model(
+            model_name,
+            include_unavailable=include_unavailable,
+        )
 
         # Store in Redis for next time
         if redis_manager:
