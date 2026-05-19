@@ -4,10 +4,12 @@ import pytest
 from fastapi import HTTPException
 
 from app.google_proxy import (
+    GEMINI_SKIP_THOUGHT_SIGNATURE,
     _antigravity_model_variants,
     _clean_json_schema,
     _convert_messages_to_contents,
     _convert_tools_to_gemini,
+    _requires_thought_signature,
     resolve_antigravity_model_name,
 )
 
@@ -60,6 +62,40 @@ def test_convert_tools_to_gemini_sanitizes_parameters() -> None:
     params = gemini[0]["functionDeclarations"][0]["parameters"]
     assert "$schema" not in params
     assert params["properties"]["x"]["enum"] == ["y"]
+
+
+def test_requires_thought_signature_for_gemini_3_flash() -> None:
+    assert _requires_thought_signature("gemini-3.5-flash-low") is True
+    assert _requires_thought_signature("claude-opus-4-6-thinking") is False
+
+
+def test_convert_messages_injects_thought_signature_on_function_calls() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tu_skill",
+                    "type": "function",
+                    "function": {"name": "Skill", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tu_skill", "name": "Skill", "content": "ok"},
+        {"role": "user", "content": "continue"},
+    ]
+    contents, _ = _convert_messages_to_contents(messages, model_name="gemini-3.5-flash-low")
+    func_parts = [
+        p
+        for c in contents
+        if c["role"] == "model"
+        for p in c["parts"]
+        if "functionCall" in p
+    ]
+    assert len(func_parts) == 1
+    assert func_parts[0]["thoughtSignature"] == GEMINI_SKIP_THOUGHT_SIGNATURE
+    assert func_parts[0]["functionCall"]["name"] == "Skill"
 
 
 def test_convert_messages_does_not_merge_consecutive_model_turns() -> None:

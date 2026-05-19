@@ -33,12 +33,60 @@ logger = logging.getLogger(__name__)
 # (quota exhausted) — that hammers prod and hides the real error.
 _V1INTERNAL_ENDPOINT_FALLBACK_CODES = frozenset({408, 404, 500, 502, 503, 504})
 
+# Sentinel accepted by Gemini v1internal when no real thought signature is available
+# (e.g. Claude Code tool_use replay). See Antigravity-Manager openai/request.rs.
+GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+
+def _requires_thought_signature(model_name: str) -> bool:
+    """Whether functionCall parts must include thoughtSignature for this model."""
+    m = (model_name or "").lower()
+    if "claude" in m:
+        return False
+    if "gemini-3" in m or "gemini-2.0-pro" in m:
+        return True
+    if "-thinking" in m:
+        return True
+    return False
+
+
+def _make_function_call_part(
+    func_call: Dict[str, Any],
+    *,
+    thought_signature: Optional[str] = None,
+    model_name: str = "",
+) -> Dict[str, Any]:
+    """Build a Gemini content part for a functionCall with optional thoughtSignature."""
+    part: Dict[str, Any] = {"functionCall": func_call}
+    sig = thought_signature
+    if not sig and _requires_thought_signature(model_name):
+        sig = GEMINI_SKIP_THOUGHT_SIGNATURE
+    if sig:
+        part["thoughtSignature"] = sig
+    return part
+
+
+def _ensure_thought_signatures_on_contents(
+    contents: List[Dict[str, Any]],
+    model_name: str,
+) -> None:
+    """Backfill thoughtSignature on any functionCall parts still missing one."""
+    if not _requires_thought_signature(model_name):
+        return
+    for msg in contents:
+        for part in msg.get("parts", []):
+            if isinstance(part, dict) and "functionCall" in part and "thoughtSignature" not in part:
+                part["thoughtSignature"] = GEMINI_SKIP_THOUGHT_SIGNATURE
+
 
 # =============================================================================
 # Request Transformation: OpenAI -> Google v1internal
 # =============================================================================
 
-def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+def _convert_messages_to_contents(
+    messages: List[Dict[str, Any]],
+    model_name: str = "",
+) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Convert OpenAI messages to Google contents format.
 
     Returns:
@@ -47,6 +95,7 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
     system_instructions: List[str] = []
     contents: List[Dict[str, Any]] = []
     tool_call_names: Dict[str, str] = {}
+    last_thought_signature: Optional[str] = None
 
     for msg in messages:
         role = msg.get("role", "")
@@ -68,7 +117,14 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
         # Handle reasoning_content (thinking blocks)
         reasoning = msg.get("reasoning_content")
         if reasoning and isinstance(reasoning, str) and reasoning != "[undefined]":
-            parts.append({"text": reasoning, "thought": True})
+            thought_part: Dict[str, Any] = {"text": reasoning, "thought": True}
+            msg_sig = msg.get("thought_signature") or msg.get("thoughtSignature")
+            if isinstance(msg_sig, str) and msg_sig:
+                last_thought_signature = msg_sig
+                thought_part["thoughtSignature"] = msg_sig
+            elif _requires_thought_signature(model_name):
+                thought_part["thoughtSignature"] = GEMINI_SKIP_THOUGHT_SIGNATURE
+            parts.append(thought_part)
 
         # Handle content (tool role uses functionResponse only — not a duplicate text part)
         if role not in ("tool", "function"):
@@ -91,13 +147,20 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
                             tool_call_names[tu_id] = tu_name
                         if tu_name == "local_shell_call":
                             tu_name = "shell"
-                        parts.append({
-                            "functionCall": {
-                                "name": tu_name,
-                                "args": block.get("input", {}) or {},
-                                "id": tu_id,
-                            }
-                        })
+                        tu_sig = block.get("thought_signature") or block.get("thoughtSignature")
+                        if isinstance(tu_sig, str) and tu_sig:
+                            last_thought_signature = tu_sig
+                        parts.append(
+                            _make_function_call_part(
+                                {
+                                    "name": tu_name,
+                                    "args": block.get("input", {}) or {},
+                                    "id": tu_id,
+                                },
+                                thought_signature=last_thought_signature if isinstance(last_thought_signature, str) else None,
+                                model_name=model_name,
+                            )
+                        )
                     elif block_type == "image_url":
                         image_url = block.get("image_url", {})
                         url = image_url.get("url", "")
@@ -158,14 +221,20 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
                 if call_id:
                     tool_call_names[call_id] = name
 
-                func_call_part = {
-                    "functionCall": {
-                        "name": name,
-                        "args": args_parsed,
-                        "id": call_id,
-                    }
-                }
-                parts.append(func_call_part)
+                tc_sig = tc.get("thought_signature") or tc.get("thoughtSignature")
+                if isinstance(tc_sig, str) and tc_sig:
+                    last_thought_signature = tc_sig
+                parts.append(
+                    _make_function_call_part(
+                        {
+                            "name": name,
+                            "args": args_parsed,
+                            "id": call_id,
+                        },
+                        thought_signature=last_thought_signature if isinstance(last_thought_signature, str) else None,
+                        model_name=model_name,
+                    )
+                )
 
         # Handle tool response
         if role in ("tool", "function"):
@@ -225,6 +294,8 @@ def _convert_messages_to_contents(messages: List[Dict[str, Any]]) -> Tuple[List[
     for msg in merged:
         if msg["role"] == "user":
             msg["parts"] = _reorder_user_parts(msg["parts"])
+
+    _ensure_thought_signatures_on_contents(merged, model_name)
 
     return merged, system_instructions
 
@@ -338,7 +409,8 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(messages, list):
         messages = []
 
-    contents, system_instructions = _convert_messages_to_contents(messages)
+    model_name = (data.get("model") or "").lower()
+    contents, system_instructions = _convert_messages_to_contents(messages, model_name=model_name)
 
     # Build generationConfig
     gen_config: Dict[str, Any] = {
@@ -352,7 +424,6 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
         gen_config["maxOutputTokens"] = max_tokens
 
     # Handle thinking models
-    model_name = (data.get("model") or "").lower()
     is_thinking_model = (
         "-thinking" in model_name
         or "gemini-2.0-pro" in model_name
