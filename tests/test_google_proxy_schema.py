@@ -16,6 +16,7 @@ from app.google_proxy import (
     finalize_v1internal_inner_request,
     resolve_antigravity_model_name,
     transform_openai_to_google,
+    wrap_v1internal_request,
 )
 
 
@@ -147,6 +148,22 @@ def test_transform_openai_to_google_tools_use_validated_mode() -> None:
     # maxOutputTokens must exceed thinkingBudget for v1internal
     assert body["generationConfig"]["maxOutputTokens"] == 57344
     assert body["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 49152
+
+
+def test_wrap_v1internal_request_uses_agent_envelope() -> None:
+    inner = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+    wrapped = wrap_v1internal_request(
+        inner,
+        "test-project",
+        "gemini-3.1-pro-high",
+        message_count=1,
+        session_key="acct@test.com",
+    )
+    assert wrapped["requestType"] == "agent"
+    assert wrapped["userAgent"] == "antigravity"
+    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
+    assert wrapped["requestId"].startswith("agent/")
+    assert "sessionId" in wrapped["request"]
 
 
 def test_finalize_v1internal_strips_thinking_level() -> None:
