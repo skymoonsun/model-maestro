@@ -198,22 +198,62 @@ def _convert_tools_to_gemini(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return []
 
 
-def _clean_json_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Remove Gemini-incompatible JSON Schema fields."""
+# JSON Schema keywords rejected by Google v1internal function_declarations.parameters
+_GEMINI_FORBIDDEN_SCHEMA_KEYS = frozenset({
+    "$schema",
+    "$id",
+    "$defs",
+    "$anchor",
+    "$comment",
+    "$vocabulary",
+    "$dynamicRef",
+    "$ref",
+    "multipleOf",
+    "pattern",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "propertyNames",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "if",
+    "then",
+    "else",
+    "dependentRequired",
+    "dependentSchemas",
+    "contentEncoding",
+    "contentMediaType",
+    "examples",
+    "readOnly",
+    "writeOnly",
+    "deprecated",
+    "not",
+    "prefixItems",
+    "contains",
+})
+
+
+def _clean_json_schema(schema: Any) -> Any:
+    """Remove or rewrite JSON Schema fields incompatible with Gemini tool parameters."""
+    if isinstance(schema, list):
+        return [_clean_json_schema(item) for item in schema]
+
     if not isinstance(schema, dict):
         return schema
 
-    forbidden = {"multipleOf", "pattern", "exclusiveMinimum", "exclusiveMaximum"}
-    cleaned = {}
-    for k, v in schema.items():
-        if k in forbidden:
+    cleaned: Dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _GEMINI_FORBIDDEN_SCHEMA_KEYS or key.startswith("$"):
             continue
-        if isinstance(v, dict):
-            cleaned[k] = _clean_json_schema(v)
-        elif isinstance(v, list):
-            cleaned[k] = [_clean_json_schema(i) if isinstance(i, dict) else i for i in v]
+        if key == "const":
+            if "enum" not in schema and "enum" not in cleaned:
+                cleaned["enum"] = [value]
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = _clean_json_schema(value)
+        elif isinstance(value, list):
+            cleaned[key] = [_clean_json_schema(item) for item in value]
         else:
-            cleaned[k] = v
+            cleaned[key] = value
     return cleaned
 
 
