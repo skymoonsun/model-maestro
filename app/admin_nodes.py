@@ -87,6 +87,7 @@ async def create_node(
             is_active=request.is_active if request.is_active is not None else True,
             node_type=request.node_type or 'ollama',
             warmup_enabled=request.warmup_enabled if request.warmup_enabled is not None else True,
+            auto_sync_enabled=request.auto_sync_enabled if request.auto_sync_enabled is not None else True,
             health_check_url=request.health_check_url,
             code=request.code,
             headers=request.headers,
@@ -124,6 +125,7 @@ async def create_node(
             is_active=node.is_active,
             node_type=node.node_type,
             warmup_enabled=node.warmup_enabled,
+            auto_sync_enabled=node.auto_sync_enabled,
             code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
@@ -187,6 +189,7 @@ async def get_node(
             is_active=node.is_active,
             node_type=node.node_type,
             warmup_enabled=node.warmup_enabled,
+            auto_sync_enabled=node.auto_sync_enabled,
             code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
@@ -256,6 +259,9 @@ async def update_node(
         if request.warmup_enabled is not None:
             update_data["warmup_enabled"] = request.warmup_enabled
 
+        if request.auto_sync_enabled is not None:
+            update_data["auto_sync_enabled"] = request.auto_sync_enabled
+
         if request.health_check_url is not None:
             update_data["health_check_url"] = request.health_check_url
 
@@ -324,6 +330,7 @@ async def update_node(
             is_active=node.is_active,
             node_type=node.node_type,
             warmup_enabled=node.warmup_enabled,
+            auto_sync_enabled=node.auto_sync_enabled,
             code=node.code,
             health_status=node.health_status,
             last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
@@ -661,6 +668,7 @@ async def update_node_priorities(
                 is_active=node.is_active,
                 node_type=node.node_type,
                 warmup_enabled=node.warmup_enabled,
+                auto_sync_enabled=node.auto_sync_enabled,
                 health_status=node.health_status,
                 last_health_check=node.last_health_check.isoformat() if node.last_health_check else None,
                 created_at=node.created_at.isoformat() if node.created_at else None,

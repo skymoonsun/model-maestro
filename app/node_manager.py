@@ -418,10 +418,18 @@ class NodeManager:
             await session.commit()
             return result
 
-    async def sync_all_nodes(self, session) -> Dict[str, Any]:
+    async def sync_all_nodes(
+        self,
+        session,
+        *,
+        auto_sync_only: bool = False,
+    ) -> Dict[str, Any]:
         """
         Sync models from all active nodes concurrently.
         Each sync gets its own session to avoid SQLAlchemy concurrency issues.
+
+        When auto_sync_only is True, only nodes with auto_sync_enabled are synced
+        (used by the periodic background discovery task).
 
         Returns:
             Dict with overall sync statistics
@@ -430,6 +438,8 @@ class NodeManager:
 
         node_repo = NodeRepository(session)
         nodes = await node_repo.list_active()
+        if auto_sync_only:
+            nodes = [n for n in nodes if n.auto_sync_enabled]
 
         # Sync all nodes concurrently, each with its own session
         results = await _asyncio.gather(

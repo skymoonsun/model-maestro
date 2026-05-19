@@ -371,7 +371,9 @@ async def model_discovery_task():
             from app.node_manager import node_manager
 
             async with async_session_maker() as session:
-                result = await node_manager.sync_all_nodes(session)
+                result = await node_manager.sync_all_nodes(
+                    session, auto_sync_only=True
+                )
 
                 logger.info(
                     f"Model discovery: {result['successful_nodes']}/{result['total_nodes']} nodes, "

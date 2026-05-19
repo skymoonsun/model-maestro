@@ -291,6 +291,7 @@ class OllamaNode(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama', 'vllm', 'antigravity', 'bedrock'
     warmup_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Enable model warmup for this node
+    auto_sync_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Include in background model discovery sync
     code = Column(String(30), unique=True, nullable=True, index=True)  # Short routing code e.g. "trmix", "us-east-1"
     health_check_url = Column(String(500), nullable=True)  # Custom health check endpoint
     headers = Column(JSONB, nullable=True)  # Custom HTTP headers as {"X-Custom": "value"}

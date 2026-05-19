@@ -824,6 +824,7 @@ export interface OllamaNodeResponse {
   node_type: string;
   code?: string | null;
   warmup_enabled: boolean;
+  auto_sync_enabled: boolean;
   health_status: string;
   last_health_check: string | null;
   created_at: string | null;
@@ -888,6 +889,7 @@ export interface CreateNode {
   is_active?: boolean;
   node_type?: string;
   warmup_enabled?: boolean;
+  auto_sync_enabled?: boolean;
   health_check_url?: string | null;
   code?: string | null;
   headers?: Record<string, string> | null;
