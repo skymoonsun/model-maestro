@@ -19,7 +19,9 @@ from app.models import (
     PullModelRequest,
     PullModelResponse,
     NodePriorityBatchRequest,
-    NodePriorityBatchResponse
+    NodePriorityBatchResponse,
+    AntigravityQuotaResponse,
+    AntigravityQuotaData,
 )
 from app.models_db import OllamaNode, AuditLog
 from app.repositories.node_repository import (
@@ -892,3 +894,64 @@ async def google_refresh_token(
             "node_name": node.name,
             "expires_in": new_tokens.get("expires_in"),
         }
+
+
+@router.get("/{node_id}/quota", response_model=AntigravityQuotaResponse)
+async def get_antigravity_quota(
+    node_id: int,
+    admin: str = Depends(verify_admin),
+):
+    """
+    Fetch Google account quota for an Antigravity node (fetchAvailableModels).
+
+    Uses the same APIs as Antigravity Manager: loadCodeAssist + fetchAvailableModels
+    with Sandbox → Daily → Prod endpoint fallback.
+    """
+    async with async_session_maker() as session:
+        repo = NodeRepository(session)
+        node = await repo.get_by_id(node_id)
+
+        if not node:
+            raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+        if node.node_type != "antigravity":
+            raise HTTPException(
+                status_code=400,
+                detail="Quota is only available for antigravity nodes",
+            )
+
+        if not node.oauth_tokens or not node.oauth_tokens.get("access_token"):
+            raise HTTPException(
+                status_code=400,
+                detail="Node has no Google OAuth tokens. Connect Google Auth first.",
+            )
+
+        from app.google_quota import fetch_antigravity_quota
+
+        tokens = dict(node.oauth_tokens)
+        try:
+            quota_raw, resolved_project_id = await fetch_antigravity_quota(
+                tokens,
+                node.project_id,
+            )
+        except Exception as exc:
+            logger.error("[Quota] fetch failed for node %s: %s", node_id, exc)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        update_data: dict = {}
+        if tokens != node.oauth_tokens:
+            update_data["oauth_tokens"] = tokens
+        if resolved_project_id and resolved_project_id != node.project_id:
+            update_data["project_id"] = resolved_project_id
+        if update_data:
+            await repo.update(node_id, **update_data)
+
+        quota = AntigravityQuotaData.model_validate(quota_raw)
+
+        return AntigravityQuotaResponse(
+            success=True,
+            node_id=node_id,
+            node_name=node.name,
+            project_id=resolved_project_id or node.project_id,
+            quota=quota,
+        )

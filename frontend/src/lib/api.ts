@@ -423,6 +423,8 @@ export const nodesApi = {
       method: 'POST',
       body: JSON.stringify({ code, state }),
     }),
+  getQuota: (nodeId: number) =>
+    adminFetch<AntigravityQuotaResponse>(`/admin/nodes/${nodeId}/quota`),
   googleRefreshToken: (nodeId: number) =>
     adminFetch<{ success: boolean; expires_in: number }>(`/admin/nodes/${nodeId}/google-refresh-token`, {
       method: 'POST',
@@ -849,6 +851,33 @@ export interface Node extends OllamaNodeResponse {
 }
 
 export interface NodeDetail extends Node { }
+
+export interface AntigravityModelQuota {
+  name: string;
+  percentage: number;
+  reset_time: string;
+  display_name?: string | null;
+  supports_images?: boolean | null;
+  supports_thinking?: boolean | null;
+  recommended?: boolean | null;
+}
+
+export interface AntigravityQuota {
+  models: AntigravityModelQuota[];
+  last_updated: number;
+  is_forbidden?: boolean;
+  forbidden_reason?: string | null;
+  subscription_tier?: string | null;
+  model_forwarding_rules?: Record<string, string>;
+}
+
+export interface AntigravityQuotaResponse {
+  success: boolean;
+  node_id: number;
+  node_name: string;
+  project_id?: string | null;
+  quota: AntigravityQuota;
+}
 
 export interface CreateNode {
   name: string;

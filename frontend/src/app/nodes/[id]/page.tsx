@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useSearchParams } from 'next/navigation';
-import { nodesApi } from '@/lib/api';
+import { nodesApi, type AntigravityModelQuota } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -39,8 +39,46 @@ import {
     Key,
     Shield,
     ExternalLink,
+    Gauge,
+    Clock,
 } from 'lucide-react';
 import Link from 'next/link';
+
+function formatResetTime(resetTime: string): string {
+    if (!resetTime) return '—';
+    const target = new Date(resetTime);
+    if (Number.isNaN(target.getTime())) return resetTime;
+    const diffMs = target.getTime() - Date.now();
+    if (diffMs <= 0) return 'now';
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h ${mins % 60}m`;
+    return target.toLocaleString();
+}
+
+function QuotaRow({ model }: { model: AntigravityModelQuota }) {
+    const label = model.display_name || model.name;
+    return (
+        <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="font-medium truncate" title={model.name}>
+                    {label}
+                </span>
+                <span className="text-muted-foreground tabular-nums shrink-0">
+                    {model.percentage}%
+                </span>
+            </div>
+            <Progress value={model.percentage} className="h-2" />
+            {model.reset_time ? (
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Clock className="h-3 w-3" />
+                    <span>Reset: {formatResetTime(model.reset_time)}</span>
+                </div>
+            ) : null}
+        </div>
+    );
+}
 
 function formatSize(bytes: number) {
     if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -82,6 +120,7 @@ export default function NodeDetailPage() {
     const [status, setStatus] = useState('');
     const [googleAuthing, setGoogleAuthing] = useState(false);
     const [googleRefreshing, setGoogleRefreshing] = useState(false);
+    const [quotaRefreshing, setQuotaRefreshing] = useState(false);
 
     // Handle OAuth redirect query params
     const searchParams = useSearchParams();
@@ -110,6 +149,35 @@ export default function NodeDetailPage() {
         queryFn: () => nodesApi.getMetrics(nodeId),
         enabled: !isNaN(nodeId) && !!node,
     });
+
+    const {
+        data: quotaData,
+        refetch: refetchQuota,
+        isFetching: quotaFetching,
+    } = useQuery({
+        queryKey: ['nodes', nodeId, 'quota'],
+        queryFn: () => nodesApi.getQuota(nodeId),
+        enabled:
+            !isNaN(nodeId) &&
+            node?.node_type === 'antigravity' &&
+            !!node?.oauth_tokens?.access_token,
+        staleTime: 60_000,
+        retry: false,
+    });
+
+    const handleRefreshQuota = async () => {
+        setQuotaRefreshing(true);
+        try {
+            const r = await refetchQuota();
+            if (r.error) throw r.error;
+            toast.success('Quota refreshed');
+            qc.invalidateQueries({ queryKey: ['nodes', nodeId] });
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Quota refresh failed');
+        } finally {
+            setQuotaRefreshing(false);
+        }
+    };
 
     const handleHealthCheck = async () => {
         setHealthChecking(true);
@@ -337,6 +405,66 @@ export default function NodeDetailPage() {
                                 </Button>
                             )}
                         </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {node.node_type === 'antigravity' && node.oauth_tokens?.access_token && (
+                <Card>
+                    <CardHeader className="pb-2">
+                        <div className="flex items-center justify-between gap-2">
+                            <CardTitle className="text-sm font-medium flex items-center gap-2">
+                                <Gauge className="h-4 w-4" />
+                                Account Quota
+                            </CardTitle>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={quotaRefreshing || quotaFetching}
+                                onClick={handleRefreshQuota}
+                            >
+                                {quotaRefreshing || quotaFetching ? (
+                                    <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                ) : (
+                                    <RefreshCw className="h-4 w-4 mr-2" />
+                                )}
+                                Refresh
+                            </Button>
+                        </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        {quotaData?.quota.subscription_tier && (
+                            <Badge variant="outline" className="font-normal">
+                                {quotaData.quota.subscription_tier}
+                            </Badge>
+                        )}
+                        {quotaData?.quota.is_forbidden && (
+                            <p className="text-sm text-destructive">
+                                Account forbidden or unauthorized
+                                {quotaData.quota.forbidden_reason
+                                    ? `: ${quotaData.quota.forbidden_reason}`
+                                    : ''}
+                            </p>
+                        )}
+                        {quotaFetching && !quotaData ? (
+                            <Skeleton className="h-24 w-full" />
+                        ) : quotaData?.quota.models.length ? (
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                {quotaData.quota.models.map((m) => (
+                                    <QuotaRow key={m.name} model={m} />
+                                ))}
+                            </div>
+                        ) : !quotaFetching ? (
+                            <p className="text-sm text-muted-foreground">
+                                No quota data. Click Refresh to fetch from Google.
+                            </p>
+                        ) : null}
+                        {quotaData?.quota.last_updated ? (
+                            <p className="text-xs text-muted-foreground">
+                                Updated:{' '}
+                                {new Date(quotaData.quota.last_updated * 1000).toLocaleString()}
+                            </p>
+                        ) : null}
                     </CardContent>
                 </Card>
             )}
