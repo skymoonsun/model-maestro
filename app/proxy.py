@@ -2382,6 +2382,7 @@ class OllamaProxy:
                     node_headers=node_headers,
                     model_name=model_name or data.get('model', 'unknown'),
                     username=username,
+                    node_id=node_info.id,
                 )
             else:
                 raise HTTPException(
