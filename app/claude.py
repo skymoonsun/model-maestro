@@ -617,25 +617,126 @@ async def claude_count_tokens(
 
 
 # =============================================================================
-# Non-streaming -> Anthropic SSE (for tool_calls)
+# Anthropic SSE helpers (streaming)
+# =============================================================================
+
+def _anthropic_sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _merge_streaming_tool_call_deltas(
+    tool_calls_by_index: Dict[int, Dict[str, Any]],
+    delta_tool_calls: Any,
+) -> None:
+    """Accumulate OpenAI-style streaming tool_call fragments by index."""
+    if not delta_tool_calls or not isinstance(delta_tool_calls, list):
+        return
+
+    for tc in delta_tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        idx = int(tc.get("index", 0))
+        if idx not in tool_calls_by_index:
+            tool_calls_by_index[idx] = {
+                "id": "",
+                "name": "",
+                "arguments": "",
+                "arguments_emitted_len": 0,
+                "block_index": None,
+                "started": False,
+                "stopped": False,
+            }
+        acc = tool_calls_by_index[idx]
+        if tc.get("id"):
+            acc["id"] = str(tc["id"])
+        func = tc.get("function") or {}
+        if isinstance(func, dict):
+            if func.get("name"):
+                acc["name"] = str(func["name"])
+            arg_part = func.get("arguments")
+            if arg_part:
+                acc["arguments"] += str(arg_part)
+
+
+def _tool_stream_start_events(
+    acc: Dict[str, Any],
+    block_index: int,
+) -> List[str]:
+    tool_id = acc["id"] or f"tu_{uuid.uuid4().hex[:20]}"
+    acc["id"] = tool_id
+    acc["block_index"] = block_index
+    acc["started"] = True
+    return [
+        _anthropic_sse(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": tool_id,
+                    "name": acc["name"],
+                    "input": {},
+                },
+            },
+        )
+    ]
+
+
+def _tool_stream_argument_delta_events(acc: Dict[str, Any]) -> List[str]:
+    if acc.get("block_index") is None:
+        return []
+    args = acc.get("arguments", "")
+    emitted = int(acc.get("arguments_emitted_len", 0))
+    if emitted >= len(args):
+        return []
+    new_part = args[emitted:]
+    acc["arguments_emitted_len"] = len(args)
+    return [
+        _anthropic_sse(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": acc["block_index"],
+                "delta": {"type": "input_json_delta", "partial_json": new_part},
+            },
+        )
+    ]
+
+
+def _tool_stream_stop_event(acc: Dict[str, Any]) -> Optional[str]:
+    if not acc.get("started") or acc.get("stopped") or acc.get("block_index") is None:
+        return None
+    acc["stopped"] = True
+    return _anthropic_sse(
+        "content_block_stop",
+        {"type": "content_block_stop", "index": acc["block_index"]},
+    )
+
+
+# =============================================================================
+# Non-streaming -> Anthropic SSE (fallback when upstream is not SSE)
 # =============================================================================
 
 async def _stream_from_non_streaming(
     ollama_body: Dict[str, Any],
     display_model_name: str,
     username: str,
+    prefetched_response: Any = None,
 ) -> StreamingResponse:
     """Get non-streaming response and emit as Anthropic SSE events."""
-    ns_body = {**ollama_body, "stream": False}
-    response = await ollama_proxy.proxy_request(
-        method="POST",
-        endpoint="/v1/chat/completions",
-        data=ns_body,
-        stream=False,
-        username=username,
-        source="Claude",
-        url_path="/claude/v1/messages",
-    )
+    response = prefetched_response
+    if response is None:
+        ns_body = {**ollama_body, "stream": False}
+        response = await ollama_proxy.proxy_request(
+            method="POST",
+            endpoint="/v1/chat/completions",
+            data=ns_body,
+            stream=False,
+            username=username,
+            source="Claude",
+            url_path="/claude/v1/messages",
+        )
     if isinstance(response, dict):
         response_data = response
     elif isinstance(response, str) and response.strip():
@@ -787,13 +888,11 @@ async def _handle_claude_streaming(
 ) -> StreamingResponse:
     """
     Handle streaming Claude request.
-    Consume Ollama OpenAI-compatible SSE and produce Anthropic SSE.
+    Consume OpenAI-compatible SSE and produce Anthropic SSE (text, thinking, tool_use).
     """
-    # When tools are present, use non-streaming path and convert to SSE events
-    # because OpenAI streaming tool_calls are complex to map to Anthropic format
     if ollama_body.get("tools"):
-        return await _stream_from_non_streaming(
-            ollama_body, display_model_name, username
+        logger.info(
+            f"[Claude] Streaming with {len(ollama_body['tools'])} tools via upstream SSE"
         )
 
     proxy_response = await ollama_proxy.proxy_request(
@@ -807,50 +906,60 @@ async def _handle_claude_streaming(
     )
 
     if not isinstance(proxy_response, StreamingResponse):
-        # Proxy returned non-streaming; return as single content
-        return StreamingResponse(
-            _fallback_claude_stream(proxy_response, display_model_name),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        logger.info("[Claude] Upstream returned non-streaming body; synthesizing Anthropic SSE")
+        return await _stream_from_non_streaming(
+            {**ollama_body, "stream": False},
+            display_model_name,
+            username,
+            prefetched_response=proxy_response,
         )
 
     msg_id = f"msg_{uuid.uuid4().hex[:20]}"
 
     async def claude_stream_generator():
-        """Generator that consumes Ollama SSE and produces Anthropic SSE events."""
+        """Generator that consumes OpenAI SSE and produces Anthropic SSE events."""
         buffer = b""
         text_so_far = ""
         usage_stats: Dict[str, int] = {}
         finish_reason = None
 
-        # Block indices: 0 = thinking, 1 = text
-        thinking_index = 0
-        text_index = 1
+        thinking_index: Optional[int] = None
+        text_index: Optional[int] = None
         thinking_started = False
         text_started = False
+        next_block_index = 0
+        tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
 
-        # message_start
-        yield (
-            f"event: message_start\ndata: "
-            + json.dumps(
-                {
-                    "type": "message_start",
-                    "message": {
-                        "id": msg_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "model": display_model_name,
-                        "content": [],
-                        "stop_reason": None,
-                        "usage": {"input_tokens": 0},
-                    },
-                }
-            )
-            + "\n\n"
+        def emit_tool_updates() -> List[str]:
+            nonlocal next_block_index
+            events: List[str] = []
+            for tc_idx in sorted(tool_calls_by_index.keys()):
+                acc = tool_calls_by_index[tc_idx]
+                if not acc["started"] and acc["id"] and acc["name"]:
+                    for ev in _tool_stream_start_events(acc, next_block_index):
+                        events.append(ev)
+                    next_block_index = int(acc["block_index"]) + 1
+                for ev in _tool_stream_argument_delta_events(acc):
+                    events.append(ev)
+            return events
+
+        yield _anthropic_sse(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": display_model_name,
+                    "content": [],
+                    "stop_reason": None,
+                    "usage": {"input_tokens": 0},
+                },
+            },
         )
 
         try:
-            # Consume Ollama SSE stream via body_iterator
             async for chunk in proxy_response.body_iterator:
                 buffer += chunk
                 # Normalize \r\n -> \n for consistent SSE parsing
@@ -884,129 +993,128 @@ async def _handle_claude_streaming(
                     if fr is not None:
                         finish_reason = fr
 
-                    delta = choice.get("delta", {})
+                    delta = choice.get("delta", {}) or {}
                     delta_content = delta.get("content")
-                    delta_thinking = delta.get("reasoning") or delta.get("thinking")
+                    delta_thinking = (
+                        delta.get("reasoning")
+                        or delta.get("thinking")
+                        or delta.get("reasoning_content")
+                    )
 
-                    # Emit thinking block (separate content block)
                     if delta_thinking:
                         if not thinking_started:
                             thinking_started = True
-                            yield (
-                                f"event: content_block_start\ndata: "
-                                + json.dumps(
-                                    {
-                                        "type": "content_block_start",
-                                        "index": thinking_index,
-                                        "content_block": {"type": "thinking", "thinking": ""},
-                                    }
-                                )
-                                + "\n\n"
-                            )
-                        yield (
-                            f"event: content_block_delta\ndata: "
-                            + json.dumps(
+                            thinking_index = next_block_index
+                            next_block_index += 1
+                            yield _anthropic_sse(
+                                "content_block_start",
                                 {
-                                    "type": "content_block_delta",
+                                    "type": "content_block_start",
                                     "index": thinking_index,
-                                    "delta": {
-                                        "type": "thinking_delta",
-                                        "thinking": delta_thinking,
-                                    },
-                                }
+                                    "content_block": {"type": "thinking", "thinking": ""},
+                                },
                             )
-                            + "\n\n"
+                        yield _anthropic_sse(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": thinking_index,
+                                "delta": {
+                                    "type": "thinking_delta",
+                                    "thinking": str(delta_thinking),
+                                },
+                            },
                         )
 
-                    # Emit text block (separate content block)
-                    if delta_content is not None:
+                    if delta_content is not None and str(delta_content):
                         if not text_started:
                             text_started = True
-                            yield (
-                                f"event: content_block_start\ndata: "
-                                + json.dumps(
-                                    {
-                                        "type": "content_block_start",
-                                        "index": text_index,
-                                        "content_block": {"type": "text", "text": ""},
-                                    }
-                                )
-                                + "\n\n"
+                            text_index = next_block_index
+                            next_block_index += 1
+                            yield _anthropic_sse(
+                                "content_block_start",
+                                {
+                                    "type": "content_block_start",
+                                    "index": text_index,
+                                    "content_block": {"type": "text", "text": ""},
+                                },
                             )
                         text_so_far += str(delta_content)
-                        yield (
-                            f"event: content_block_delta\ndata: "
-                            + json.dumps(
-                                {
-                                    "type": "content_block_delta",
-                                    "index": text_index,
-                                    "delta": {
-                                        "type": "text_delta",
-                                        "text": str(delta_content),
-                                    },
-                                }
-                            )
-                            + "\n\n"
+                        yield _anthropic_sse(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": text_index,
+                                "delta": {
+                                    "type": "text_delta",
+                                    "text": str(delta_content),
+                                },
+                            },
                         )
+
+                    if delta.get("tool_calls"):
+                        _merge_streaming_tool_call_deltas(
+                            tool_calls_by_index, delta["tool_calls"]
+                        )
+                        for ev in emit_tool_updates():
+                            yield ev
 
         except Exception as e:
             logger.error(f"[Claude] Streaming error: {e}", exc_info=True)
-            yield (
-                f"event: error\ndata: "
-                + json.dumps(
-                    {"type": "error", "error": {"type": "overloaded_error", "message": str(e)}}
-                )
-                + "\n\n"
+            yield _anthropic_sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": {"type": "overloaded_error", "message": str(e)},
+                },
             )
 
-        # Ensure at least an empty text block exists for empty responses
-        if not text_started:
+        for ev in emit_tool_updates():
+            yield ev
+
+        if not text_started and not any(
+            acc.get("started") for acc in tool_calls_by_index.values()
+        ):
             text_started = True
-            yield (
-                f"event: content_block_start\ndata: "
-                + json.dumps(
-                    {
-                        "type": "content_block_start",
-                        "index": text_index,
-                        "content_block": {"type": "text", "text": ""},
-                    }
-                )
-                + "\n\n"
+            text_index = next_block_index
+            next_block_index += 1
+            yield _anthropic_sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": text_index,
+                    "content_block": {"type": "text", "text": ""},
+                },
             )
 
-        # content_block_stop for thinking
-        if thinking_started:
-            yield (
-                f"event: content_block_stop\ndata: "
-                + json.dumps({"type": "content_block_stop", "index": thinking_index})
-                + "\n\n"
+        if thinking_started and thinking_index is not None:
+            yield _anthropic_sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": thinking_index},
             )
 
-        # content_block_stop for text
-        if text_started:
-            yield (
-                f"event: content_block_stop\ndata: "
-                + json.dumps({"type": "content_block_stop", "index": text_index})
-                + "\n\n"
+        if text_started and text_index is not None:
+            yield _anthropic_sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": text_index},
             )
 
-        # message_delta with mapped finish_reason
+        for tc_idx in sorted(tool_calls_by_index.keys()):
+            stop_ev = _tool_stream_stop_event(tool_calls_by_index[tc_idx])
+            if stop_ev:
+                yield stop_ev
+
         out_tokens = usage_stats.get("completion_tokens", len(text_so_far) // 4)
         anthropic_stop = _map_finish_reason(finish_reason)
-        yield (
-            f"event: message_delta\ndata: "
-            + json.dumps(
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": anthropic_stop},
-                    "usage": {"output_tokens": out_tokens},
-                }
-            )
-            + "\n\n"
+        yield _anthropic_sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": anthropic_stop},
+                "usage": {"output_tokens": out_tokens},
+            },
         )
-
-        # message_stop
-        yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+        yield _anthropic_sse("message_stop", {"type": "message_stop"})
 
     return StreamingResponse(
         claude_stream_generator(),

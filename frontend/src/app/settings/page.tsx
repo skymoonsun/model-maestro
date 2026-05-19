@@ -252,8 +252,8 @@ export default function SettingsPage() {
                         <div>
                             <p className="text-sm font-medium">Streaming Enabled</p>
                             <p className="text-xs text-muted-foreground">
-                                When enabled, Claude requests with stream=true will use SSE streaming.
-                                When disabled, all requests behave as stream=false.
+                                When enabled, Claude Code requests use upstream SSE (including tool calls).
+                                When disabled, requests are buffered (stream=false) even if the client asks for stream.
                             </p>
                         </div>
                         <Switch
