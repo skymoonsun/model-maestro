@@ -295,6 +295,19 @@ def get_session_id() -> str:
     return str(uuid.uuid4())
 
 
+def derive_stable_session_id(account_key: str) -> str:
+    """FNV-1a stable negative session id (Antigravity-Manager session.rs parity)."""
+    if not account_key:
+        account_key = "default"
+    hash_val = -3750763034362895579
+    for byte in account_key.encode("utf-8"):
+        hash_val = (hash_val * 1099511628211) & ((1 << 64) - 1)
+        if hash_val >= 1 << 63:
+            hash_val -= 1 << 64
+        hash_val ^= byte
+    return str(hash_val)
+
+
 # =============================================================================
 # User-Agent & Headers
 # =============================================================================

@@ -11,6 +11,8 @@ Handles:
 
 import json
 import logging
+import os
+import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, AsyncGenerator
 from datetime import datetime
@@ -23,9 +25,8 @@ from app.gemini_schema import clean_json_schema_for_gemini
 from app.google_auth import (
     V1_INTERNAL_BASE_URLS,
     build_v1internal_headers,
+    derive_stable_session_id,
     ensure_fresh_token,
-    get_current_version,
-    get_user_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,16 @@ _V1INTERNAL_ENDPOINT_FALLBACK_CODES = frozenset({408, 404, 500, 502, 503, 504})
 # Sentinel accepted by Gemini v1internal when no real thought signature is available
 # (e.g. Claude Code tool_use replay). See Antigravity-Manager openai/request.rs.
 GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+_ANTIGRAVITY_IDENTITY = (
+    "You are Antigravity, a powerful agentic AI coding assistant designed by the "
+    "Google Deepmind team working on Advanced Agentic Coding.\n"
+    "You are pair programming with a USER to solve their coding task. The task may "
+    "require creating a new codebase, modifying or debugging an existing codebase, "
+    "or simply answering a question.\n"
+    "**Absolute paths only**\n"
+    "**Proactiveness**"
+)
 
 
 def _requires_thought_signature(model_name: str) -> bool:
@@ -582,12 +593,18 @@ def transform_openai_to_google(data: Dict[str, Any]) -> Dict[str, Any]:
         "safetySettings": _V1INTERNAL_SAFETY_SETTINGS,
     }
 
-    # System instruction
-    if system_instructions:
-        result["systemInstruction"] = {
-            "role": "user",
-            "parts": [{"text": "\n\n".join(system_instructions)}],
-        }
+    # System instruction (Antigravity identity + user/developer prompts)
+    sys_parts: List[Dict[str, Any]] = []
+    user_has_antigravity = any(
+        isinstance(s, str) and "You are Antigravity" in s for s in system_instructions
+    )
+    if not user_has_antigravity:
+        sys_parts.append({"text": _ANTIGRAVITY_IDENTITY})
+    for inst in system_instructions:
+        if isinstance(inst, str) and inst.strip():
+            sys_parts.append({"text": inst})
+    if sys_parts:
+        result["systemInstruction"] = {"role": "user", "parts": sys_parts}
 
     # Tools
     tools = data.get("tools")
@@ -704,29 +721,34 @@ def wrap_v1internal_request(
     body: Dict[str, Any],
     project_id: str,
     mapped_model: str,
+    *,
+    message_count: int = 1,
+    session_key: Optional[str] = None,
+    is_image_gen: bool = False,
 ) -> Dict[str, Any]:
-    """Wrap the inner Google request body with v1internal envelope fields.
+    """Wrap inner body with v1internal envelope (Antigravity gemini/wrapper.rs parity).
 
-    The Rust code wraps with:
-    - project: project_id
-    - requestId: UUID
-    - request: {contents, generationConfig, systemInstruction, tools, ...}
-    - model: mapped_model
-    - userAgent: user agent string
-    - requestType: "generate_content" | "stream_generate_content"
+    HTTP method stays ``streamGenerateContent`` / ``generateContent``; envelope
+    ``requestType`` is ``agent`` for chat (not ``stream_generate_content``).
     """
-    request_type = "stream_generate_content" if "stream" in str(body) else "generate_content"
-    # Actually we should determine this from the caller, but default to generate_content
-    # The caller will override requestType if needed
+    inner = dict(body)
+    if session_key:
+        inner["sessionId"] = derive_stable_session_id(session_key)
 
-    return {
+    timestamp_ms = int(time.time() * 1000)
+    request_id = f"agent/{timestamp_ms}/{uuid.uuid4().hex[:8]}"
+
+    envelope: Dict[str, Any] = {
         "project": project_id,
-        "requestId": str(uuid.uuid4()),
-        "request": body,
+        "requestId": request_id,
+        "request": inner,
         "model": mapped_model,
-        "userAgent": get_user_agent(),
-        "requestType": request_type,
+        "userAgent": "antigravity",
+        "requestType": "image_gen" if is_image_gen else "agent",
     }
+    if not is_image_gen:
+        envelope["enabledCreditTypes"] = ["GOOGLE_ONE_AI"]
+    return envelope
 
 
 def _antigravity_model_variants(requested: str) -> List[str]:
@@ -1281,11 +1303,25 @@ async def proxy_antigravity_request(
         method = "generateContent"
         query_string = None
 
-    # Wrap with v1internal envelope
-    wrapped = wrap_v1internal_request(google_body, project_id, model_name)
-    wrapped["requestType"] = "stream_generate_content" if stream else "generate_content"
+    message_count = len(data.get("messages", [])) if isinstance(data.get("messages"), list) else 1
+    session_key = (
+        project_id
+        or (oauth_tokens.get("refresh_token") if isinstance(oauth_tokens, dict) else None)
+        or username
+        or str(node_id or "")
+    )
+    wrapped = wrap_v1internal_request(
+        google_body,
+        project_id or "",
+        model_name,
+        message_count=message_count,
+        session_key=str(session_key) if session_key else None,
+    )
 
-    logger.info(f"[Antigravity] Forwarding to Google v1internal ({method}), model={model_name}, stream={stream}")
+    logger.info(
+        f"[Antigravity] Forwarding to Google v1internal ({method}), model={model_name}, "
+        f"stream={stream}, requestType={wrapped.get('requestType')}"
+    )
 
     if stream:
         # Streaming response
@@ -1354,10 +1390,23 @@ async def proxy_antigravity_request(
                                 except (json.JSONDecodeError, ValueError):
                                     error_detail = error_text.decode("utf-8", errors="replace")
 
+                                tool_count = 0
+                                req_inner = wrapped.get("request") if isinstance(wrapped, dict) else {}
+                                if isinstance(req_inner, dict):
+                                    for tg in req_inner.get("tools") or []:
+                                        if isinstance(tg, dict):
+                                            tool_count += len(tg.get("functionDeclarations") or [])
                                 logger.error(
                                     f"[Antigravity] Upstream error {resp.status_code}: {error_detail} "
-                                    f"(model={model_name}, tools={len(data.get('tools') or [])})"
+                                    f"(model={model_name}, tools={tool_count}, "
+                                    f"requestType={wrapped.get('requestType')}, "
+                                    f"requestId={wrapped.get('requestId')})"
                                 )
+                                if os.environ.get("ANTIGRAVITY_DEBUG_REQUEST") == "1":
+                                    logger.error(
+                                        "[Antigravity] Debug envelope: %s",
+                                        json.dumps(wrapped, ensure_ascii=False)[:12000],
+                                    )
                                 error_chunk = {
                                     "error": {
                                         "message": f"Google v1internal error: {error_detail}",
