@@ -380,13 +380,8 @@ def wrap_v1internal_request(
     }
 
 
-def _normalize_model_key(name: str) -> str:
-    """Normalize model IDs for fuzzy matching (case, dots vs dashes)."""
-    return name.lower().replace(".", "-").strip()
-
-
 def _antigravity_model_variants(requested: str) -> List[str]:
-    """Candidate v1internal model IDs for a client-visible name."""
+    """Candidate model IDs for exact catalog lookup (with/without ``claude-`` prefix)."""
     if not requested:
         return []
     variants: List[str] = []
@@ -410,10 +405,10 @@ async def resolve_antigravity_model_name(
     node_id: Optional[int] = None,
     known_model_names: Optional[Iterable[str]] = None,
 ) -> str:
-    """Map client/alias model names to Google v1internal model IDs.
+    """Map to a synced Google model id using exact catalog matches only.
 
-    Claude API strips the ``claude-`` prefix before routing; Google often expects
-    the full ID (e.g. ``claude-opus-4-6-thinking``). Prefer names synced on the node.
+    Claude Code may send names without the ``claude-`` prefix; the node catalog
+    often stores the full id. No fuzzy scoring or prefix guessing when unmatched.
     """
     if not requested:
         return requested
@@ -434,36 +429,27 @@ async def resolve_antigravity_model_name(
         except Exception as e:
             logger.warning(f"[Antigravity] Could not load node model catalog: {e}")
 
-    if catalog:
-        norm_requested = _normalize_model_key(requested)
-        for candidate in _antigravity_model_variants(requested):
-            if candidate in catalog:
-                if candidate != requested:
-                    logger.info(
-                        f"[Antigravity] Resolved model '{requested}' -> '{candidate}' (catalog)"
-                    )
-                return candidate
-            norm_candidate = _normalize_model_key(candidate)
-            for catalog_name in catalog:
-                if _normalize_model_key(catalog_name) == norm_candidate:
-                    if catalog_name != requested:
-                        logger.info(
-                            f"[Antigravity] Resolved model '{requested}' -> '{catalog_name}' (fuzzy)"
-                        )
-                    return catalog_name
+    if not catalog:
+        return requested
 
-    # Heuristic when sync catalog is empty or has no match
-    if not requested.startswith("claude-") and (
-        requested.startswith(("opus-", "sonnet-", "haiku-"))
-        or requested.endswith("-thinking")
-    ):
-        prefixed = f"claude-{requested}"
-        logger.info(
-            f"[Antigravity] Guessing model '{requested}' -> '{prefixed}' (no catalog match)"
-        )
-        return prefixed
+    for candidate in _antigravity_model_variants(requested):
+        if candidate in catalog:
+            if candidate != requested:
+                logger.info(
+                    f"[Antigravity] Resolved model '{requested}' -> '{candidate}' (catalog)"
+                )
+            return candidate
 
-    return requested
+    sample = ", ".join(sorted(catalog)[:5])
+    more = f" (+{len(catalog) - 5} more)" if len(catalog) > 5 else ""
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"Model '{requested}' is not available on this Antigravity node. "
+            f"Sync models on the node or pin Claude Code env vars to a listed id. "
+            f"Known: {sample}{more}"
+        ),
+    )
 
 
 # =============================================================================

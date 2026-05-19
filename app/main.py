@@ -208,8 +208,6 @@ class ErrorOnlyLogMiddleware(BaseHTTPMiddleware):
                 if not msg.get("more_body", False):
                     break
         body_bytes = b"".join(body_parts)
-        body_preview = body_bytes[:2000].decode("utf-8", errors="replace")[:500]
-
         # Extract model name from body if available
         body_json: Optional[Dict[str, Any]] = None
         if body_bytes:
@@ -221,10 +219,9 @@ class ErrorOnlyLogMiddleware(BaseHTTPMiddleware):
         msg_lines = [
             f"Error {status_code} {request.method} {request.url.path}",
             f"  duration={duration_ms}ms",
-            f"  client={request.client}",
         ]
-        if body_preview:
-            msg_lines.append(f"  body={body_preview!r}")
+        if body_json and body_json.get("model"):
+            msg_lines.append(f"  model={body_json.get('model')}")
         if detail:
             msg_lines.append(f"  detail={detail[:200]!r}")
         if status_code >= 500:

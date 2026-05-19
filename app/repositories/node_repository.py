@@ -315,7 +315,7 @@ class NodeModelRepository:
 
     @staticmethod
     def _model_lookup_variants(model_name: str) -> List[str]:
-        """Names to match in node_models (Claude API strips ``claude-`` prefix)."""
+        """Exact alias names for node_models (Claude API strips ``claude-`` prefix)."""
         if not model_name:
             return []
         variants: List[str] = []
@@ -334,7 +334,7 @@ class NodeModelRepository:
         return variants
 
     async def get_nodes_for_model(self, model_name: str) -> List[Dict[str, Any]]:
-        """Get all nodes that have a specific model (includes claude- alias variants)."""
+        """Get all nodes that have a specific model (includes claude- prefix aliases)."""
         from app.models_db import OllamaNode
 
         lookup_names = self._model_lookup_variants(model_name)
