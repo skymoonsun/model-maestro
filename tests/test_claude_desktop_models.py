@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from app.claude import _resolve_claude_request_model
 from app.claude_desktop_models import (
     _memory_routes,
+    _picker_label_is_rejected,
     desktop_display_name_passes_validation,
     desktop_name_passes_client_validation,
     is_maestro_desktop_route_id,
@@ -59,20 +60,34 @@ def test_opaque_id_not_found_without_desktop_header() -> None:
     assert "not found" in exc.value.detail.lower()
 
 
-def test_desktop_display_name_sanitizes_brand_tokens() -> None:
-    assert to_desktop_display_name("gemini-3.5-flash-low") == "g3-3.5-flash-low"
-    assert to_desktop_display_name("claude-opus-4-6-thinking") == "cd-op-4-6-thinking"
-    assert desktop_display_name_passes_validation(to_desktop_display_name("gemini-3-flash"))
+def test_picker_rejects_synthetic_g3_and_middle_dot() -> None:
+    assert _picker_label_is_rejected("g3-3.5-flash-low")
+    assert _picker_label_is_rejected("z-ai · glm-5.1")
+    assert not _picker_label_is_rejected("kimi-k2.6:latest")
+    assert not _picker_label_is_rejected("qwen3.5:latest")
 
 
-def test_desktop_display_name_normalizes_slashes() -> None:
-    assert to_desktop_display_name("z-ai/glm-5.1") == "z-ai · glm-5.1"
-    assert desktop_display_name_passes_validation("z-ai · glm-5.1")
-
-
-def test_desktop_display_name_leaves_unblocked_names() -> None:
+def test_desktop_display_name_passes_through_kimi() -> None:
     assert to_desktop_display_name("kimi-k2.6:latest") == "kimi-k2.6:latest"
-    assert to_desktop_display_name("qwen3.5:latest") == "qwen3.5:latest"
+
+
+def test_desktop_display_name_rewrites_gemini_not_g3() -> None:
+    label = to_desktop_display_name("gemini-3.5-flash-low")
+    assert "gemini" not in label.lower()
+    assert not label.lower().startswith("g3-")
+    assert desktop_display_name_passes_validation(label)
+
+
+def test_desktop_display_name_rewrites_opus_catalog_name() -> None:
+    label = to_desktop_display_name("claude-opus-4-6-thinking")
+    assert not label.lower().startswith(("cd-op", "opus-"))
+    assert label.lower().startswith("sn-")
+
+
+def test_desktop_display_name_org_slash_to_hyphen() -> None:
+    label = to_desktop_display_name("z-ai/glm-5.1")
+    assert " · " not in label
+    assert "glm" in label.lower()
 
 
 def test_legacy_maestro_prefix_still_resolves() -> None:
