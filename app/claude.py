@@ -27,6 +27,14 @@ from app.config import (
     filter_tools_for_model,
 )
 from app.user_manager import user_manager
+from app.claude_desktop_models import (
+    desktop_name_passes_client_validation,
+    is_maestro_desktop_route_id,
+    peek_routing_name_from_public_id,
+    persist_desktop_routes_to_redis,
+    resolve_desktop_public_id,
+    to_desktop_public_id,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -130,6 +138,56 @@ def _model_list_capabilities(model_id: str, *, desktop: bool) -> Dict[str, Any]:
                 "adaptive": _cap(thinking),
             },
         },
+    }
+
+
+async def _resolve_claude_request_model(raw_model: str, *, desktop: bool) -> str:
+    """
+    Normalize model id from Claude clients to Maestro internal routing name.
+
+    Opaque ``claude-maestro-{hash}`` ids are resolved only with the Desktop header;
+    without it the model is treated as not found (no hash lookup).
+    """
+    model_name = (raw_model or "").strip()
+    if is_maestro_desktop_route_id(model_name):
+        if not desktop:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{model_name}' not found",
+            )
+        return await resolve_desktop_public_id(model_name)
+    if desktop:
+        return await resolve_desktop_public_id(model_name)
+    if model_name.startswith("claude-"):
+        return model_name[7:]
+    return model_name
+
+
+def _desktop_listing_entry(
+    internal_name: str,
+    *,
+    desktop: bool,
+    ctx_len: int,
+) -> Dict[str, Any]:
+    """Build one Anthropic ModelInfo object for GET /v1/models."""
+    if desktop:
+        public_id = to_desktop_public_id(internal_name)
+        display = internal_name
+    else:
+        public_id = (
+            internal_name
+            if internal_name.startswith("claude-")
+            else f"claude-{internal_name}"
+        )
+        display = internal_name.removeprefix("claude-") or internal_name
+    return {
+        "type": "model",
+        "id": public_id,
+        "display_name": display,
+        "created_at": _MODEL_LIST_TIMESTAMP,
+        "max_input_tokens": ctx_len,
+        "max_tokens": 8192,
+        "capabilities": _model_list_capabilities(public_id, desktop=desktop),
     }
 
 
@@ -240,24 +298,24 @@ async def claude_list_models(
                 ids_to_add = display_names if display_names else [model_id]
                 for name in ids_to_add:
                     ctx_len = get_context_length_for_model(name) or 131072
-                    model_id = name if name.startswith("claude-") else f"claude-{name}"
-                    models_list.append({
-                        "type": "model",
-                        "id": model_id,
-                        "display_name": name,
-                        "created_at": _MODEL_LIST_TIMESTAMP,
-                        "max_input_tokens": ctx_len,
-                        "max_tokens": 8192,
-                        "capabilities": _model_list_capabilities(model_id, desktop=desktop),
-                    })
+                    entry = _desktop_listing_entry(name, desktop=desktop, ctx_len=ctx_len)
+                    if desktop and not desktop_name_passes_client_validation(entry["id"]):
+                        logger.warning(
+                            f"[Claude][Desktop] Skipping model '{name}' — public id failed validation: "
+                            f"{entry['id']}"
+                        )
+                        continue
+                    models_list.append(entry)
 
-    # Filter by user access (strip claude- prefix for comparison)
+    # Filter by user access (compare internal Maestro names, not Desktop public ids)
     if not user_models_data["has_all_models"]:
         allowed = set(user_models_data["models"])
-        models_list = [
-            m for m in models_list
-            if m["id"].removeprefix("claude-") in allowed
-        ]
+        def _allowed(m: Dict[str, Any]) -> bool:
+            routed = peek_routing_name_from_public_id(m["id"]) or m["display_name"]
+            routed = routed.removeprefix("claude-")
+            return routed in allowed or m["display_name"] in allowed
+
+        models_list = [m for m in models_list if _allowed(m)]
 
     from app.model_list import get_visible_catalog_group_names
 
@@ -265,16 +323,24 @@ async def claude_list_models(
         if any(m["display_name"] == group_name for m in models_list):
             continue
         ctx_len = get_context_length_for_model(group_name) or 131072
-        gid = group_name if group_name.startswith("claude-") else f"claude-{group_name}"
-        models_list.append({
-            "type": "model",
-            "id": gid,
-            "display_name": group_name,
-            "created_at": _MODEL_LIST_TIMESTAMP,
-            "max_input_tokens": ctx_len,
-            "max_tokens": 8192,
-            "capabilities": _model_list_capabilities(gid, desktop=desktop),
-        })
+        entry = _desktop_listing_entry(group_name, desktop=desktop, ctx_len=ctx_len)
+        if not desktop or desktop_name_passes_client_validation(entry["id"]):
+            models_list.append(entry)
+
+    if desktop:
+        seen_ids: set[str] = set()
+        deduped: List[Dict[str, Any]] = []
+        for m in models_list:
+            mid = m["id"]
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            deduped.append(m)
+        models_list = deduped
+        await persist_desktop_routes_to_redis()
+        logger.info(
+            f"[Claude][Desktop] Model list after opaque ids: {len(models_list)} models"
+        )
 
     first_id = models_list[0]["id"] if models_list else None
     last_id = models_list[-1]["id"] if models_list else None
@@ -301,12 +367,8 @@ async def claude_messages(
     POST /claude/v1/messages
     """
     body = await request.json()
-    model_name = body.get("model", "")
-    # Strip claude- prefix unconditionally — we add it artificially in the model list
-    # (see GET /v1/models, line ~145). Claude Code sends it back, and the real
-    # model name (Ollama-side) never starts with "claude-".
-    if model_name.startswith("claude-"):
-        model_name = model_name[7:]
+    desktop = _is_claude_desktop_client(request)
+    model_name = await _resolve_claude_request_model(body.get("model", ""), desktop=desktop)
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")
@@ -625,17 +687,16 @@ async def claude_count_tokens(
     Response: {"input_tokens": <int>}
     """
     body = await request.json()
-    model_name = body.get("model", "")
+    desktop = _is_claude_desktop_client(request)
+    model_name = await _resolve_claude_request_model(body.get("model", ""), desktop=desktop)
+    if not desktop and model_name.startswith("claude-"):
+        stripped = model_name[7:]
+        if model_mapper._mapping_lookup_key(stripped) is not None:
+            model_name = stripped
     messages = body.get("messages", [])
     system = body.get("system")
     tools = body.get("tools", [])
     thinking = body.get("thinking")
-
-    # Strip claude- prefix if artificially added by our model list
-    if model_name.startswith("claude-"):
-        stripped = model_name[7:]
-        if model_mapper._mapping_lookup_key(stripped) is not None:
-            model_name = stripped
 
     total_chars = 0
 

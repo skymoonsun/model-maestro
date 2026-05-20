@@ -23,6 +23,11 @@ Complete reference for all Model Maestro API endpoints.
   - [Completions](#completions)
   - [Embeddings](#embeddings)
   - [Models](#models)
+- [Claude API (Anthropic-compatible)](#claude-api-anthropic-compatible)
+  - [List Models](#list-models-claude)
+  - [Messages](#messages)
+  - [Count Tokens](#count-tokens)
+  - [Claude Desktop header](#claude-desktop-header)
 - [Grafana Assistant](#grafana-assistant)
   - [Chats](#chats)
   - [Chat Stream](#chat-stream)
@@ -443,6 +448,124 @@ GET /v1/models
   ]
 }
 ```
+
+---
+
+## Claude API (Anthropic-compatible)
+
+Used by **Claude Code**, **Claude Desktop (Cowork 3P gateway)**, and VS Code Claude Code extension.
+
+**Base path:** `/claude/` (e.g. `https://maestro.example.com/claude/v1/messages`)
+
+**Authentication:** Same JWT as other LLM endpoints (`Authorization: Bearer <token>`).
+
+See also: [IDE Integration Guide](IDE_INTEGRATION.md) for client-specific setup (Desktop header, model discovery, env vars).
+
+### List Models (Claude)
+
+```bash
+GET /claude/v1/models
+```
+
+Returns Anthropic-style model objects (`id`, `display_name`, `capabilities`, `max_input_tokens`, …) for models the user is allowed to use.
+
+**Claude Desktop only:** When the client sends `X-Maestro-Client: claude-desktop` (see below), Maestro:
+
+- Assigns **opaque** `id` values: `claude-maestro-{hash}` (12 hex chars from SHA-256 of the routing name)
+- Keeps **`display_name`** as the real catalog name (e.g. `google/codegemma-7b`, `kimi-k2.6:latest`)
+- Stores hash → routing name in Redis (`maestro:claude_desktop_route:{hash}`)
+
+Without the Desktop header, list entries use the legacy `claude-{name}` id format (Claude Code).
+
+**Example (Desktop client):**
+
+```json
+{
+  "data": [
+    {
+      "type": "model",
+      "id": "claude-maestro-2bf4c98a7478",
+      "display_name": "kimi-k2.6:latest",
+      "max_input_tokens": 131072,
+      "capabilities": { "...": "..." }
+    }
+  ],
+  "has_more": false
+}
+```
+
+---
+
+### Messages
+
+```bash
+POST /claude/v1/messages
+```
+
+Anthropic Messages API compatible body (`model`, `messages`, `max_tokens`, `stream`, `tools`, `system`, …).
+
+**Model field:**
+
+| Client | `model` value |
+|--------|----------------|
+| Claude Code | Maestro mapping / catalog name, often with `claude-` prefix stripped server-side |
+| Claude Desktop | Opaque id from discovery: `claude-maestro-{hash}` |
+
+**Routing:** Maestro resolves the model name, applies model groups and node load balancing, then proxies to Ollama / vLLM / Antigravity / Bedrock as configured.
+
+**Streaming:** Controlled by system config `claude.streaming_enabled` (default may force non-streaming).
+
+---
+
+### Count Tokens
+
+```bash
+POST /claude/v1/messages/count_tokens
+```
+
+Same `model` rules as [Messages](#messages). Returns `{"input_tokens": <int>}`.
+
+---
+
+### Claude Desktop header
+
+Claude Desktop (Cowork **third-party inference**, `inferenceProvider: gateway`) must send a custom header on **every** inference call (model discovery, test connection, chat):
+
+| Header | Value |
+|--------|--------|
+| `X-Maestro-Client` | `claude-desktop` |
+
+Also accepted: `cowork`, `desktop`.
+
+Configure in Desktop: **Developer → Configure third-party inference → Custom inference headers** (`inferenceCustomHeaders`):
+
+```json
+{
+  "X-Maestro-Client": "claude-desktop"
+}
+```
+
+**Behavior:**
+
+| Request | Header present | Result |
+|---------|----------------|--------|
+| `GET /claude/v1/models` | Yes | Opaque ids + Desktop-friendly `capabilities` |
+| `GET /claude/v1/models` | No | Standard `claude-{name}` ids (Claude Code style) |
+| `POST /claude/v1/messages` with `claude-maestro-…` | Yes | Hash resolved → real routing name |
+| `POST /claude/v1/messages` with `claude-maestro-…` | No | **404** `Model 'claude-maestro-…' not found` (no hash lookup) |
+
+**Why opaque ids:** Claude Desktop 1.6259+ rejects model ids containing substrings such as `kimi`, `qwen`, `gemma`, `deepseek`, etc., even when the id starts with `claude-`. Opaque ids avoid exposing those strings in the `id` field while `display_name` stays human-readable.
+
+**Gateway URL (Desktop):**
+
+| Field | Value |
+|-------|--------|
+| Inference provider | `gateway` |
+| Gateway base URL | `https://maestro.example.com/claude` |
+| Gateway API key | Maestro JWT |
+| Custom headers | `{"X-Maestro-Client": "claude-desktop"}` |
+
+After deploy or catalog changes, re-run **Test model discovery** in Desktop so it picks up new `claude-maestro-…` ids.
 
 ---
 

@@ -1,10 +1,11 @@
 # IDE Integration Guide
 
-Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide covers setup for **Claude Code**, **VS Code** (Claude Code & Kilo Code extensions), **OpenClaw**, **Cursor** and **Grafana Assistant**.
+Model Maestro acts as a unified LLM gateway for AI-powered IDEs. This guide covers setup for **Claude Code**, **Claude Desktop (Cowork 3P)**, **VS Code** (Claude Code & Kilo Code extensions), **OpenClaw**, **Cursor** and **Grafana Assistant**.
 
 ## Table of Contents
 
 - [Claude Code](#claude-code)
+- [Claude Desktop (Cowork 3P)](#claude-desktop-cowork-3p)
 - [VS Code](#vs-code)
 - [OpenClaw](#openclaw)
 - [Cursor](#cursor)
@@ -87,6 +88,80 @@ claude
 - `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` fills the `/model` picker from Maestro’s model list (`GET /claude/v1/models`). Only models you expose there (and grant to the user) should be selected.
 - **Do not rely on Maestro to invent model ids** — configure `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` to mapped names your nodes actually serve.
 - Create a user token via the admin panel (`/users`) if you do not have one.
+
+---
+
+## Claude Desktop (Cowork 3P)
+
+Claude Desktop in **third-party inference** mode (`inferenceProvider: gateway`) talks to Maestro’s Anthropic-compatible API. Official docs: [Using an LLM gateway](https://claude.com/docs/cowork/3p/gateway) and [Configuration reference](https://claude.com/docs/cowork/3p/configuration).
+
+### Why the picker shows fewer models than the API
+
+This is usually **not** “Maestro lost models”. Claude Desktop **1.6259+** filters models in two ways ([anthropics/claude-code#56990](https://github.com/anthropics/claude-code/issues/56990)):
+
+| Check | Rule |
+|-------|------|
+| **Keyword / alias** | Id must match `^(sonnet\|opus\|haiku)(-[\d.]+)?$` **or** contain `claude`, `sonnet`, `opus`, `haiku`, `anthropic`. |
+| **Substring blocklist** | Id must **not** contain competitor names, e.g. `kimi`, `qwen`, `deepseek`, `gpt`, `gemini`, `mimo`, … |
+
+So `claude-kimi-k2.6:latest` fails even though it starts with `claude-` — the blocklist matches `kimi` inside the id. Desktop is not checking “real Anthropic model”; it is pattern + blocklist matching.
+
+Maestro with `X-Maestro-Client: claude-desktop` uses **opaque ids** so Desktop never sees blocked substrings:
+
+| Field | Example |
+|-------|---------|
+| `id` | `claude-maestro-a1b2c3d4e5f6` (SHA-256 of routing name, first 12 hex chars) |
+| `display_name` | `google/codegemma-7b` (real name, unchanged) |
+
+Mappings are stored in Redis (`maestro:claude_desktop_route:{hash}`) and resolved on `POST /v1/messages` **only when** `X-Maestro-Client: claude-desktop` is sent. Without that header, `claude-maestro-…` is not resolved (plain **404 model not found**). Re-run model discovery after deploy so Desktop picks up new ids.
+
+**Test connection** is a separate issue: Desktop sends a tiny `POST /v1/messages` probe. If routing ignores `preferred_node_ids` and hits the wrong node (e.g. Ollama), you get 404 even when the model exists on Antigravity.
+
+### Recommended Desktop setup
+
+| Field | Value |
+|-------|--------|
+| Inference provider | `gateway` |
+| Gateway base URL | `https://maestro.example.com/claude` (no trailing slash required; Desktop appends `/v1/...`) |
+| Gateway API key | Maestro JWT |
+| Model discovery | `true` (default) **or** set an explicit `inferenceModels` list (see below) |
+
+Anthropic recommends an **explicit model list** when discovery is noisy — picker shows exactly what you configure, and you can pin Haiku for sub-agents. Example `inferenceModels` (JSON string in managed config):
+
+```json
+[
+  "claude-maestro-2bf4c98a7478",
+  "claude-maestro-8f3a2b1c4d5e"
+]
+```
+
+Use opaque **`id`** values from model discovery (with `X-Maestro-Client` set), not raw catalog names like `kimi-k2.6:latest`.
+
+### Custom header: Desktop mode on Maestro
+
+In the Desktop config UI (**Custom inference headers** / `inferenceCustomHeaders`), add:
+
+```json
+{
+  "X-Maestro-Client": "claude-desktop"
+}
+```
+
+Maestro then returns **Anthropic-shaped `capabilities`** on `GET /claude/v1/models` so Desktop is more likely to show gateway models in the picker. Logs include `client=desktop`.
+
+Accepted values: `claude-desktop`, `cowork`, `desktop`.
+
+This header is sent on **every** inference request (including model discovery and test connection). It enables Desktop-safe **model id aliasing** (not just capabilities). It does not replace correct routing or node sync.
+
+**Manual model entry** must use the opaque **`id`** from discovery (e.g. `claude-maestro-8f3a2b1c4d5e`), not the raw catalog name (`google/codegemma-7b`). The picker label comes from `display_name`.
+
+### Verify
+
+1. Developer → Configure third-party inference → **Test model discovery** — should list models from Maestro.
+2. Gateway logs: `[Claude] User … requesting model list (…, client=desktop)`.
+3. Compare raw API: `curl -H "Authorization: Bearer $TOKEN" -H "X-Maestro-Client: claude-desktop" https://maestro.example.com/claude/v1/models | jq '.data | length'`
+
+API reference (endpoints, header behavior, 404 rules): [API.md — Claude API](API.md#claude-desktop-header).
 
 ---
 
@@ -348,4 +423,8 @@ Then fill the Connection form manually with:
 | Empty model list in Cursor | `/cursor` endpoint not returning models | Check Maestro logs; ensure model discovery succeeded for at least one node |
 | Main chat works, “summarize” / subagent fails | Claude Code uses Haiku/subagent model, not main Opus | Set `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` to a synced Antigravity model id |
 | `haiku-4-5-…` 404 on Antigravity | ID is Claude Code default, not in your sync catalog | Pin Haiku/subagent env vars; run **Sync Models**; add Maestro mapping if display name differs |
+| Desktop shows few models | Client-side id/capability filter + blocklist | Add `X-Maestro-Client: claude-desktop`; use opaque ids from discovery |
+| `claude-maestro-…` works in curl but not Desktop | Missing custom header on Desktop | Set `inferenceCustomHeaders` in Cowork 3P config |
+| `claude-maestro-…` 404 without header | Opaque ids only resolve with Desktop header | Expected — use real model name for Claude Code/curl, or send the header |
+| Desktop test connection 404 | Wrong node (e.g. Ollama instead of Antigravity) | Ensure model group preferred node is healthy; sync node catalog; deploy routing pin fix |
 | Grafana "Domain not allowed" | Backend URL does not end with `.grafana.net` | Use the bypass script (Method 1) or reverse proxy with `.grafana.net` domain (Method 2) |
