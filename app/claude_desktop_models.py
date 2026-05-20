@@ -51,6 +51,7 @@ DESKTOP_BLOCKED_SUBSTRINGS = (
 )
 
 _REDIS_ROUTE_KEY = "maestro:claude_desktop_route:{hash}"
+_REDIS_ALIAS_KEY = "maestro:claude_desktop_alias:{alias}"
 _REDIS_ROUTE_TTL_SEC = 60 * 60 * 24 * 30  # 30 days
 
 # hash12 -> Maestro routing name (no claude- prefix)
@@ -92,6 +93,26 @@ def register_desktop_route_alias(alias: str, canonical_routing_name: str) -> Non
         _alias_to_routing[normalize_routing_name(alias_key)] = canonical
 
 
+async def _load_aliases_from_redis() -> None:
+    """Hydrate alias table after process restart (Desktop POST without prior GET /models)."""
+    try:
+        from app.redis import redis_manager
+    except Exception:
+        return
+    if not redis_manager or not redis_manager.redis_client:
+        return
+    try:
+        keys = await redis_manager.redis_client.keys("maestro:claude_desktop_alias:*")
+        for key in keys or []:
+            canonical = await redis_manager.get(key)
+            if not isinstance(canonical, str) or not canonical:
+                continue
+            alias = key.rsplit(":", 1)[-1]
+            _alias_to_routing[alias] = canonical
+    except Exception as e:
+        logger.debug(f"[Claude][Desktop] Alias Redis hydrate skipped: {e}")
+
+
 def to_desktop_public_id(internal_name: str) -> str:
     """Build opaque Desktop id and register in-memory mapping for this process."""
     return _remember_route(internal_name)
@@ -124,7 +145,7 @@ def desktop_name_passes_client_validation(model_id: str) -> bool:
 
 async def persist_desktop_routes_to_redis() -> None:
     """Flush in-memory route table after GET /v1/models (Desktop clients)."""
-    if not _memory_routes:
+    if not _memory_routes and not _alias_to_routing:
         return
     try:
         from app.redis import redis_manager
@@ -135,6 +156,12 @@ async def persist_desktop_routes_to_redis() -> None:
     for digest, routing_name in _memory_routes.items():
         key = _REDIS_ROUTE_KEY.format(hash=digest)
         await redis_manager.set(key, routing_name, expire=_REDIS_ROUTE_TTL_SEC)
+    for alias, routing_name in _alias_to_routing.items():
+        await redis_manager.set(
+            _REDIS_ALIAS_KEY.format(alias=alias),
+            routing_name,
+            expire=_REDIS_ROUTE_TTL_SEC,
+        )
 
 
 async def resolve_desktop_public_id(public_id: str) -> str:
@@ -142,6 +169,9 @@ async def resolve_desktop_public_id(public_id: str) -> str:
     raw = (public_id or "").strip()
     if not raw:
         return raw
+
+    if not _alias_to_routing:
+        await _load_aliases_from_redis()
 
     if is_maestro_desktop_route_id(raw):
         digest = raw[len(MAESTRO_ROUTE_PREFIX) :]

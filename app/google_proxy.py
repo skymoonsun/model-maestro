@@ -784,6 +784,14 @@ async def resolve_antigravity_model_name(
     if not requested:
         return requested
 
+    from app.config import model_mapper
+
+    await model_mapper.ensure_loaded()
+    mapped = model_mapper.get_real_model_name(requested)
+    if mapped != requested:
+        logger.info(f"[Antigravity] Model mapping before catalog: '{requested}' -> '{mapped}'")
+        requested = mapped
+
     catalog: Set[str] = set()
     if known_model_names is not None:
         catalog.update(known_model_names)

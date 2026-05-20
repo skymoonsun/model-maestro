@@ -1194,6 +1194,15 @@ class OllamaProxy:
         return list(dict.fromkeys(inter))
 
     @staticmethod
+    def _prioritize_specialized_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Try antigravity/bedrock/vllm before ollama when the model is on multiple node types."""
+        order = {"antigravity": 0, "bedrock": 1, "vllm": 2, "ollama": 3}
+        return sorted(
+            nodes,
+            key=lambda n: order.get((n.get("node_type") or "ollama"), 99),
+        )
+
+    @staticmethod
     def _node_dict_from_orm(node: Any) -> Dict[str, Any]:
         """Build load-balancer node dict from ``OllamaNode`` ORM row."""
         return {
@@ -1468,6 +1477,8 @@ class OllamaProxy:
                         return self.base_url, None, 'ollama', None, False
                     logger.debug(f"[LB] All nodes excluded for model {model_name}, no alternatives")
                     return "", None, 'ollama', None, False
+
+            nodes = self._prioritize_specialized_nodes(nodes)
 
             # Select best node using load balancer (Redis-first, no session)
             selected_node = await load_balancer.select_node(
@@ -2491,18 +2502,20 @@ class OllamaProxy:
                 if not node_info or not node_info.oauth_tokens:
                     raise HTTPException(status_code=500, detail="Antigravity node missing OAuth tokens")
 
-                return await proxy_antigravity_request(
-                    data=data,
-                    stream=stream,
-                    endpoint=endpoint,
-                    base_url=base_url,
-                    oauth_tokens=node_info.oauth_tokens,
-                    project_id=node_info.project_id,
-                    node_headers=node_headers,
-                    model_name=model_name or data.get('model', 'unknown'),
-                    username=username,
-                    node_id=node_info.id,
-                )
+                # Non-streaming: use failover wrapper so catalog 404 can retry another node
+                if stream:
+                    return await proxy_antigravity_request(
+                        data=data,
+                        stream=stream,
+                        endpoint=endpoint,
+                        base_url=base_url,
+                        oauth_tokens=node_info.oauth_tokens,
+                        project_id=node_info.project_id,
+                        node_headers=node_headers,
+                        model_name=model_name or data.get('model', 'unknown'),
+                        username=username,
+                        node_id=node_info.id,
+                    )
             else:
                 raise HTTPException(
                     status_code=400,
@@ -2540,20 +2553,21 @@ class OllamaProxy:
                 ):
                     raise HTTPException(status_code=500, detail="Bedrock node missing AWS credentials or region")
 
-                return await proxy_bedrock_request(
-                    data=data,
-                    stream=stream,
-                    endpoint=endpoint,
-                    base_url=base_url,
-                    access_key=node_info.api_key,
-                    secret_key=node_info.aws_secret_key,
-                    region=node_info.aws_region,
-                    session_token=node_info.aws_session_token,
-                    model_name=mapped_model_name or data.get('model', 'unknown'),
-                    username=username,
-                    node_headers=node_headers,
-                    bedrock_auth_mode=getattr(node_info, "bedrock_auth_mode", None),
-                )
+                if stream:
+                    return await proxy_bedrock_request(
+                        data=data,
+                        stream=stream,
+                        endpoint=endpoint,
+                        base_url=base_url,
+                        access_key=node_info.api_key,
+                        secret_key=node_info.aws_secret_key,
+                        region=node_info.aws_region,
+                        session_token=node_info.aws_session_token,
+                        model_name=mapped_model_name or data.get('model', 'unknown'),
+                        username=username,
+                        node_headers=node_headers,
+                        bedrock_auth_mode=getattr(node_info, "bedrock_auth_mode", None),
+                    )
             else:
                 raise HTTPException(
                     status_code=400,
@@ -3722,18 +3736,58 @@ class OllamaProxy:
                 current_url, endpoint, url.rsplit(endpoint, 1)[0] if endpoint in url else ""
             )
 
-            specialized = await self._try_specialized_node_proxy(
-                node_type=current_node_type,
-                base_url=current_base_url,
-                data=current_data,
-                stream=False,
-                endpoint=endpoint,
-                model_name=current_model,
-                username=username,
-                node_headers=current_headers,
-            )
-            if specialized is not None:
-                return specialized
+            try:
+                specialized = await self._try_specialized_node_proxy(
+                    node_type=current_node_type,
+                    base_url=current_base_url,
+                    data=current_data,
+                    stream=False,
+                    endpoint=endpoint,
+                    model_name=current_model,
+                    username=username,
+                    node_headers=current_headers,
+                )
+                if specialized is not None:
+                    return specialized
+            except HTTPException as spec_err:
+                will_node_retry = (
+                    not strict_allowed_nodes
+                    and spec_err.status_code in self.NODE_RETRYABLE_STATUS_CODES
+                    and attempt < MAX_FAILOVER_RETRIES
+                )
+                self._short_upstream_error(
+                    current_node_type.capitalize() if current_node_type else "Upstream",
+                    spec_err.status_code,
+                    current_base_url,
+                    current_model,
+                    str(spec_err.detail),
+                    will_retry=will_node_retry,
+                )
+                if will_node_retry:
+                    tried_nodes.add(current_base_url)
+                    new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
+                        current_model,
+                        exclude_nodes=list(tried_nodes),
+                        exclude_scoped=exclude_scoped,
+                        allowed_node_ids=allowed_node_ids,
+                        routing_catalog_names=routing_catalog_names,
+                        strict_allowed_nodes=strict_allowed_nodes,
+                    )
+                    if new_base_url:
+                        logger.info(
+                            f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                            f"({new_node_type}) model={current_model}"
+                        )
+                        current_url = f"{new_base_url}{endpoint}"
+                        current_api_key = new_api_key
+                        current_headers = new_headers
+                        current_node_type = new_node_type
+                        current_data = await self._rebind_body_to_node(
+                            current_data, rsnap, new_base_url
+                        )
+                        last_error = spec_err
+                        continue
+                raise
 
             try:
                 provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
