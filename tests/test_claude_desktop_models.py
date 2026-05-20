@@ -64,9 +64,10 @@ def test_opaque_id_not_found_without_desktop_header() -> None:
 def test_opaque_id_resolves_with_desktop_header() -> None:
     internal = "google/codegemma-7b"
     public = to_desktop_public_id(internal)
-    resolved = asyncio.run(_resolve_claude_request_model(public, desktop=True))
+    resolved, pids = asyncio.run(_resolve_claude_request_model(public, desktop=True))
     assert resolved == normalize_routing_name(internal)
     assert not is_maestro_desktop_route_id(resolved)
+    assert pids is None
 
 
 def test_display_alias_resolves_to_canonical_routing_name() -> None:
@@ -76,13 +77,13 @@ def test_display_alias_resolves_to_canonical_routing_name() -> None:
     public = to_desktop_public_id(canonical)
     assert peek_routing_name_from_public_id(public) == canonical
 
-    resolved_opaque = asyncio.run(_resolve_claude_request_model(public, desktop=True))
+    resolved_opaque, _ = asyncio.run(_resolve_claude_request_model(public, desktop=True))
     assert resolved_opaque == canonical
 
-    resolved_alias = asyncio.run(_resolve_claude_request_model(alias, desktop=True))
+    resolved_alias, _ = asyncio.run(_resolve_claude_request_model(alias, desktop=True))
     assert resolved_alias == canonical
 
-    resolved_legacy = asyncio.run(
+    resolved_legacy, _ = asyncio.run(
         _resolve_claude_request_model(f"claude-{alias}", desktop=True)
     )
     assert resolved_legacy == canonical
