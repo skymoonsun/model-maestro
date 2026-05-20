@@ -699,13 +699,16 @@ async def proxy_bedrock_request(
     ):
         raise HTTPException(status_code=500, detail="Bedrock node missing credentials or region")
 
-    client, _ = await _get_bedrock_clients(
-        access_key=access_key,
-        secret_key=secret_key,
-        region=region,
-        session_token=session_token,
-        bedrock_auth_mode=bedrock_auth_mode,
-    )
+    auth_mode = resolve_bedrock_auth_mode(bedrock_auth_mode, secret_key)
+    iam_runtime_client = None
+    if auth_mode == "iam":
+        iam_runtime_client, _ = await _get_bedrock_clients(
+            access_key=access_key,
+            secret_key=secret_key,
+            region=region,
+            session_token=session_token,
+            bedrock_auth_mode=bedrock_auth_mode,
+        )
 
     bedrock_request = _build_bedrock_request(data)
 
@@ -735,9 +738,27 @@ async def proxy_bedrock_request(
 
     async def _run_converse(target_model_id: str, streaming: bool) -> Any:
         kwargs = _converse_kwargs(target_model_id)
+
+        # API key auth uses AWS_BEARER_TOKEN_BEDROCK at request time — must run Converse
+        # inside _run_boto3_with_bedrock_api_key (client created after env is cleared otherwise).
+        if auth_mode == "api_key":
+
+            def _sync_converse(region_name: str) -> Any:
+                import boto3
+
+                runtime = boto3.client("bedrock-runtime", region_name=region_name)
+                if streaming:
+                    return runtime.converse_stream(**kwargs)
+                return runtime.converse(**kwargs)
+
+            return await _run_boto3_with_bedrock_api_key(access_key, region, _sync_converse)
+
+        if iam_runtime_client is None:
+            raise HTTPException(status_code=500, detail="Bedrock IAM client not initialized")
+
         if streaming:
-            return await asyncio.to_thread(client.converse_stream, **kwargs)
-        return await asyncio.to_thread(client.converse, **kwargs)
+            return await asyncio.to_thread(iam_runtime_client.converse_stream, **kwargs)
+        return await asyncio.to_thread(iam_runtime_client.converse, **kwargs)
 
     if stream:
         try:
