@@ -24,6 +24,9 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Bump when picker label logic changes; exposed as ``X-Maestro-Desktop-Labels`` for deploy checks.
+DESKTOP_PICKER_LABEL_VERSION = "picker-v2"
+
 # Public id prefix — must include ``claude`` for Desktop gateway validation.
 MAESTRO_ROUTE_PREFIX = "claude-route-"
 _LEGACY_MAESTRO_ROUTE_PREFIX = "claude-maestro-"
