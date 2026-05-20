@@ -33,6 +33,7 @@ from app.claude_desktop_models import (
     peek_routing_name_from_public_id,
     persist_desktop_routes_to_redis,
     resolve_desktop_public_id,
+    to_desktop_display_name,
     to_desktop_public_id,
 )
 
@@ -172,7 +173,7 @@ def _desktop_listing_entry(
     """Build one Anthropic ModelInfo object for GET /v1/models."""
     if desktop:
         public_id = to_desktop_public_id(internal_name)
-        display = internal_name
+        display = to_desktop_display_name(internal_name)
     else:
         public_id = (
             internal_name

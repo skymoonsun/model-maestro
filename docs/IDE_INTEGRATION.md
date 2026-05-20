@@ -111,7 +111,9 @@ Maestro with `X-Maestro-Client: claude-desktop` uses **opaque ids** so Desktop n
 | Field | Example |
 |-------|---------|
 | `id` | `claude-maestro-a1b2c3d4e5f6` (SHA-256 of routing name, first 12 hex chars) |
-| `display_name` | `google/codegemma-7b` (real name, unchanged) |
+| `display_name` | Desktop-safe label (e.g. `g3-3.5-flash-low` instead of `gemini-3.5-flash-low`; `z-ai · glm-5.1` instead of `z-ai/glm-5.1`) |
+
+If `display_name` still contains tokens Desktop rejects (`gemini`, `claude`, `opus`, `gpt`, …), the picker falls back to **"Maestro 95"** style labels parsed from the hash — not a Maestro API bug.
 
 Mappings are stored in Redis (`maestro:claude_desktop_route:{hash}`) and resolved on `POST /v1/messages` **only when** `X-Maestro-Client: claude-desktop` is sent. Without that header, `claude-maestro-…` is not resolved (plain **404 model not found**). Re-run model discovery after deploy so Desktop picks up new ids.
 
