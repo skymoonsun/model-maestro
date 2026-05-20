@@ -35,7 +35,102 @@ settings = get_settings()
 # ISO 8601 timestamp for model listings (static so IDs remain stable across calls)
 _MODEL_LIST_TIMESTAMP = "2024-01-01T00:00:00Z"
 
+# Claude Desktop (Cowork 3P) sends these via inferenceCustomHeaders — see docs/IDE_INTEGRATION.md
+MAESTRO_CLIENT_HEADER = "x-maestro-client"
+DESKTOP_CLIENT_VALUES = frozenset({"claude-desktop", "cowork", "desktop"})
+
 router = APIRouter(prefix="/claude", tags=["Claude API"])
+
+
+def _cap(supported: bool) -> Dict[str, bool]:
+    return {"supported": supported}
+
+
+def _is_claude_desktop_client(request: Request) -> bool:
+    """True when Claude Desktop/Cowork identifies itself via custom headers."""
+    raw = (request.headers.get(MAESTRO_CLIENT_HEADER) or "").strip().lower()
+    if raw in DESKTOP_CLIENT_VALUES:
+        return True
+    # Cowork inferenceCustomHeaders also supports "Name: Value" lines in some builds;
+    # FastAPI normalizes to x-maestro-client when configured as JSON {"X-Maestro-Client":"..."}.
+    return False
+
+
+def _is_embedding_catalog_model(model_id: str) -> bool:
+    n = (model_id or "").lower()
+    return "embed" in n
+
+
+def _model_list_capabilities(model_id: str, *, desktop: bool) -> Dict[str, Any]:
+    """
+    Capabilities for GET /v1/models.
+
+    Claude Code is permissive; Claude Desktop (Cowork) filters the picker client-side
+    using Anthropic-shaped capability flags (thinking, effort, tools, etc.).
+    Maestro's default listing marks almost everything unsupported, so Desktop hides
+    most gateway models even though the API returns them.
+    """
+    if not desktop:
+        return {
+            "batch": _cap(False),
+            "citations": _cap(False),
+            "code_execution": _cap(False),
+            "context_management": _cap(False),
+            "effort": _cap(False),
+            "image_input": _cap(False),
+            "pdf_input": _cap(False),
+            "structured_outputs": _cap(True),
+            "thinking": _cap(False),
+        }
+
+    if _is_embedding_catalog_model(model_id):
+        return {
+            "batch": _cap(False),
+            "citations": _cap(False),
+            "code_execution": _cap(False),
+            "context_management": _cap(False),
+            "effort": _cap(False),
+            "image_input": _cap(False),
+            "pdf_input": _cap(False),
+            "structured_outputs": _cap(True),
+            "thinking": _cap(False),
+        }
+
+    n = (model_id or "").lower()
+    vision = any(k in n for k in ("vision", "vl", "multimodal", "image"))
+    thinking = any(
+        k in n
+        for k in ("thinking", "reason", "r1", "opus", "sonnet", "haiku", "prime")
+    ) or not _is_embedding_catalog_model(model_id)
+
+    return {
+        "batch": _cap(False),
+        "citations": _cap(True),
+        "code_execution": _cap(True),
+        "context_management": {
+            "supported": True,
+            "clear_thinking_20251015": _cap(thinking),
+            "clear_tool_uses_20250919": _cap(True),
+            "compact_20260112": _cap(True),
+        },
+        "effort": {
+            "supported": True,
+            "low": _cap(True),
+            "medium": _cap(True),
+            "high": _cap(True),
+            "max": _cap("opus" in n or "thinking" in n),
+        },
+        "image_input": _cap(vision),
+        "pdf_input": _cap(True),
+        "structured_outputs": _cap(True),
+        "thinking": {
+            "supported": thinking,
+            "types": {
+                "enabled": _cap(thinking),
+                "adaptive": _cap(thinking),
+            },
+        },
+    }
 
 
 def _map_finish_reason(finish_reason: str | None) -> str:
@@ -108,6 +203,7 @@ async def get_claude_user(request: Request) -> str:
 
 @router.get("/v1/models")
 async def claude_list_models(
+    request: Request,
     username: str = Depends(get_claude_user),
     limit: int = 1000,
 ):
@@ -115,7 +211,11 @@ async def claude_list_models(
     List available models in Anthropic format.
     Claude Code extension expects integer timestamps, max_tokens and provider fields.
     """
-    logger.info(f"[Claude] User {username} requesting model list (limit={limit})")
+    desktop = _is_claude_desktop_client(request)
+    logger.info(
+        f"[Claude] User {username} requesting model list (limit={limit}, "
+        f"client={'desktop' if desktop else 'default'})"
+    )
 
     # Get all models from DB (includes antigravity, bedrock, vllm, ollama)
     from app.node_manager import node_manager
@@ -140,24 +240,15 @@ async def claude_list_models(
                 ids_to_add = display_names if display_names else [model_id]
                 for name in ids_to_add:
                     ctx_len = get_context_length_for_model(name) or 131072
+                    model_id = name if name.startswith("claude-") else f"claude-{name}"
                     models_list.append({
                         "type": "model",
-                        "id": name if name.startswith("claude-") else f"claude-{name}",
+                        "id": model_id,
                         "display_name": name,
                         "created_at": _MODEL_LIST_TIMESTAMP,
                         "max_input_tokens": ctx_len,
                         "max_tokens": 8192,
-                        "capabilities": {
-                            "batch": {"supported": False},
-                            "citations": {"supported": False},
-                            "code_execution": {"supported": False},
-                            "context_management": {"supported": False},
-                            "effort": {"supported": False},
-                            "image_input": {"supported": False},
-                            "pdf_input": {"supported": False},
-                            "structured_outputs": {"supported": True},
-                            "thinking": {"supported": False},
-                        },
+                        "capabilities": _model_list_capabilities(model_id, desktop=desktop),
                     })
 
     # Filter by user access (strip claude- prefix for comparison)
@@ -174,24 +265,15 @@ async def claude_list_models(
         if any(m["display_name"] == group_name for m in models_list):
             continue
         ctx_len = get_context_length_for_model(group_name) or 131072
+        gid = group_name if group_name.startswith("claude-") else f"claude-{group_name}"
         models_list.append({
             "type": "model",
-            "id": group_name if group_name.startswith("claude-") else f"claude-{group_name}",
+            "id": gid,
             "display_name": group_name,
             "created_at": _MODEL_LIST_TIMESTAMP,
             "max_input_tokens": ctx_len,
             "max_tokens": 8192,
-            "capabilities": {
-                "batch": {"supported": False},
-                "citations": {"supported": False},
-                "code_execution": {"supported": False},
-                "context_management": {"supported": False},
-                "effort": {"supported": False},
-                "image_input": {"supported": False},
-                "pdf_input": {"supported": False},
-                "structured_outputs": {"supported": True},
-                "thinking": {"supported": False},
-            },
+            "capabilities": _model_list_capabilities(gid, desktop=desktop),
         })
 
     first_id = models_list[0]["id"] if models_list else None
