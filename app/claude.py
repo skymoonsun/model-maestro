@@ -32,6 +32,7 @@ from app.claude_desktop_models import (
     is_maestro_desktop_route_id,
     peek_routing_name_from_public_id,
     persist_desktop_routes_to_redis,
+    register_desktop_route_alias,
     resolve_desktop_public_id,
     to_desktop_public_id,
 )
@@ -168,11 +169,12 @@ def _desktop_listing_entry(
     *,
     desktop: bool,
     ctx_len: int,
+    display_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build one Anthropic ModelInfo object for GET /v1/models."""
     if desktop:
         public_id = to_desktop_public_id(internal_name)
-        display = internal_name
+        display = display_name if display_name is not None else internal_name
     else:
         public_id = (
             internal_name
@@ -298,7 +300,14 @@ async def claude_list_models(
                 ids_to_add = display_names if display_names else [model_id]
                 for name in ids_to_add:
                     ctx_len = get_context_length_for_model(name) or 131072
-                    entry = _desktop_listing_entry(name, desktop=desktop, ctx_len=ctx_len)
+                    entry = _desktop_listing_entry(
+                        model_id,
+                        desktop=desktop,
+                        ctx_len=ctx_len,
+                        display_name=name if name != model_id else None,
+                    )
+                    if desktop and name != model_id:
+                        register_desktop_route_alias(name, model_id)
                     if desktop and not desktop_name_passes_client_validation(entry["id"]):
                         logger.warning(
                             f"[Claude][Desktop] Skipping model '{name}' — public id failed validation: "
