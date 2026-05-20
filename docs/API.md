@@ -472,7 +472,7 @@ Returns Anthropic-style model objects (`id`, `display_name`, `capabilities`, `ma
 **Claude Desktop only:** When the client sends `X-Maestro-Client: claude-desktop` (see below), Maestro:
 
 - Assigns **opaque** `id` values: `claude-maestro-{hash}` (12 hex chars from SHA-256 of the routing name)
-- Keeps **`display_name`** as the real catalog name (e.g. `google/codegemma-7b`, `kimi-k2.6:latest`)
+- Sets **`display_name`** to a Desktop-safe label (brand tokens like `gemini`/`claude`/`gpt` shortened, `/` → ` · `) so the picker does not fall back to **"Maestro 95"** parsed from the hash
 - Stores hash → routing name in Redis (`maestro:claude_desktop_route:{hash}`)
 
 Without the Desktop header, list entries use the legacy `claude-{name}` id format (Claude Code).

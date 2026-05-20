@@ -5,7 +5,7 @@ Desktop rejects model ids containing third-party substrings (kimi, qwen, gemma, 
 even when prefixed with ``claude-``. We expose stable opaque ids:
 
   id: ``claude-maestro-{sha256(routing_name)[:12]}``
-  display_name: real catalog name (unchanged)
+  display_name: Desktop-safe label (sanitized; routing still uses real name)
 
 Routing names are registered in memory (same request) and Redis (cross-request).
 """
@@ -50,6 +50,36 @@ DESKTOP_BLOCKED_SUBSTRINGS = (
     "codegemma",
 )
 
+# Desktop rejects these in ``display_name`` → fallback label "Maestro {hash digits}".
+_DISPLAY_BLOCKED_SUBSTRINGS = (
+    "gemini",
+    "anthropic",
+    "claude",
+    "sonnet",
+    "opus",
+    "haiku",
+    "openai",
+    "google",
+    "gpt-",
+    "gpt4",
+    "gpt3",
+)
+
+_DISPLAY_SAFE_TOKENS: tuple[tuple[str, str], ...] = (
+    ("anthropic", "anth"),
+    ("gemini", "g3"),
+    ("openai", "oai"),
+    ("google", "ggl"),
+    ("claude", "cd"),
+    ("sonnet", "sn"),
+    ("opus", "op"),
+    ("haiku", "hk"),
+    ("gpt4", "gt4"),
+    ("gpt3", "gt3"),
+    ("gpt-", "gt-"),
+    ("gpt", "gt"),
+)
+
 _REDIS_ROUTE_KEY = "maestro:claude_desktop_route:{hash}"
 _REDIS_ROUTE_TTL_SEC = 60 * 60 * 24 * 30  # 30 days
 
@@ -90,6 +120,36 @@ def peek_routing_name_from_public_id(public_id: str) -> Optional[str]:
         return None
     digest = raw[len(MAESTRO_ROUTE_PREFIX) :]
     return _memory_routes.get(digest)
+
+
+def _display_contains_blocked_substring(label: str) -> bool:
+    lower = (label or "").lower()
+    return any(block in lower for block in _DISPLAY_BLOCKED_SUBSTRINGS)
+
+
+def to_desktop_display_name(routing_name: str) -> str:
+    """
+    Picker label safe for Claude Desktop.
+
+    Desktop hides ``display_name`` when it contains gateway-competitor /
+    Anthropic-brand tokens (e.g. gemini, claude, opus) and shows
+    ``Maestro`` + leading digits from ``claude-maestro-{hash}`` instead.
+    """
+    name = (routing_name or "").strip()
+    if not name:
+        return name
+    # Slashes in catalog names (org/model) can also break picker labels.
+    out = name.replace("/", " · ")
+    for blocked, safe in _DISPLAY_SAFE_TOKENS:
+        out = re.sub(re.escape(blocked), safe, out, flags=re.IGNORECASE)
+    return out.strip()
+
+
+def desktop_display_name_passes_validation(label: str) -> bool:
+    """Approximate whether Desktop will show ``display_name`` as-is."""
+    if not label:
+        return False
+    return not _display_contains_blocked_substring(label)
 
 
 def desktop_name_passes_client_validation(model_id: str) -> bool:
