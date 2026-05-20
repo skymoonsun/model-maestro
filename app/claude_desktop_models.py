@@ -56,6 +56,9 @@ _REDIS_ROUTE_TTL_SEC = 60 * 60 * 24 * 30  # 30 days
 # hash12 -> Maestro routing name (no claude- prefix)
 _memory_routes: Dict[str, str] = {}
 
+# Client-visible alias (display name, legacy claude- id) -> canonical routing name
+_alias_to_routing: Dict[str, str] = {}
+
 
 def normalize_routing_name(internal_name: str) -> str:
     """Canonical routing key used for hashing and proxy dispatch."""
@@ -76,6 +79,17 @@ def _remember_route(routing_name: str) -> str:
     digest = route_hash(core)
     _memory_routes[digest] = core
     return f"{MAESTRO_ROUTE_PREFIX}{digest}"
+
+
+def register_desktop_route_alias(alias: str, canonical_routing_name: str) -> None:
+    """Map picker label / legacy id to the node catalog name used for proxy routing."""
+    alias_key = (alias or "").strip()
+    canonical = normalize_routing_name(canonical_routing_name)
+    if not alias_key or not canonical or alias_key == canonical:
+        return
+    _alias_to_routing[alias_key] = canonical
+    if alias_key.startswith("claude-"):
+        _alias_to_routing[normalize_routing_name(alias_key)] = canonical
 
 
 def to_desktop_public_id(internal_name: str) -> str:
@@ -161,6 +175,14 @@ async def resolve_desktop_public_id(public_id: str) -> str:
                 pass
 
     if raw.startswith("claude-"):
-        return normalize_routing_name(raw)
+        stripped = normalize_routing_name(raw)
+        if stripped in _alias_to_routing:
+            return _alias_to_routing[stripped]
+        return stripped
 
-    return normalize_routing_name(raw)
+    normalized = normalize_routing_name(raw)
+    if normalized in _alias_to_routing:
+        return _alias_to_routing[normalized]
+    if raw in _alias_to_routing:
+        return _alias_to_routing[raw]
+    return normalized
