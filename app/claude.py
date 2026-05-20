@@ -147,8 +147,8 @@ async def _resolve_claude_request_model(raw_model: str, *, desktop: bool) -> str
     """
     Normalize model id from Claude clients to Maestro internal routing name.
 
-    Opaque ``claude-maestro-{hash}`` ids are resolved only with the Desktop header;
-    without it the model is treated as not found (no hash lookup).
+    Opaque ``anthropic/claude-{slug}`` (12 letters) and legacy ``claude-route-{hex}``
+    ids resolve only with the Desktop header; without it → 404.
     """
     model_name = (raw_model or "").strip()
     if is_maestro_desktop_route_id(model_name):
@@ -159,6 +159,10 @@ async def _resolve_claude_request_model(raw_model: str, *, desktop: bool) -> str
             )
         return await resolve_desktop_public_id(model_name)
     if desktop:
+        return await resolve_desktop_public_id(model_name)
+    from app.claude_desktop_models import ANTHROPIC_CLAUDE_PREFIX
+
+    if model_name.startswith(ANTHROPIC_CLAUDE_PREFIX):
         return await resolve_desktop_public_id(model_name)
     if model_name.startswith("claude-"):
         return model_name[7:]
