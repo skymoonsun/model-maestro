@@ -82,6 +82,40 @@ claude`,
         note: 'Maestro forwards the model id Claude Code sends; it does not guess unknown names. Subagents and background tasks use Haiku/subagent env vars — configure them or requests may fail with 404.',
     },
     {
+        id: 'claude-desktop',
+        name: 'Claude Desktop (Cowork 3P)',
+        logo: '/guide/claude.svg',
+        color: 'text-amber-300',
+        bg: 'bg-amber-300/10 border-amber-300/30',
+        description:
+            'Claude Desktop app in third-party inference mode — routes chat through Maestro as an Anthropic-compatible gateway.',
+        steps: [
+            'Enable Developer Mode: Help → Troubleshooting → Enable Developer Mode.',
+            'Developer → Configure third-party inference.',
+            'Set Inference provider to Gateway.',
+            'Gateway base URL: https://maestro.example.com/claude (Maestro JWT as API key).',
+            'Under Custom inference headers, add X-Maestro-Client: claude-desktop (required).',
+            'Apply locally and restart Desktop. Run Test model discovery.',
+            'Pick models from the list — use the opaque id (claude-maestro-…), not the raw Ollama name.',
+        ],
+        code: `Inference provider:     gateway
+Gateway base URL:       https://maestro.example.com/claude
+Gateway API key:        <your-maestro-jwt-token>
+Gateway auth scheme:    bearer
+
+Custom inference headers (inferenceCustomHeaders):
+{
+  "X-Maestro-Client": "claude-desktop"
+}
+
+Optional explicit model list (inferenceModels) — use opaque ids from discovery:
+[
+  "claude-maestro-2bf4c98a7478",
+  "claude-maestro-8f3a2b1c4d5e"
+]`,
+        note: 'Without X-Maestro-Client, Maestro does not resolve claude-maestro-{hash} ids (404 model not found). Discovery returns opaque ids so Desktop accepts Kimi/Qwen/Gemma models; display_name shows the real catalog name.',
+    },
+    {
         id: 'openclaw',
         name: 'OpenClaw',
         logo: '/guide/openclaw.svg',
@@ -276,7 +310,7 @@ export default function GuidePage() {
             <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Integration Guide</h1>
                 <p className="text-muted-foreground mt-2 max-w-2xl">
-                    Connect your favorite IDEs and tools to Model Maestro. Supports Ollama, vLLM, Antigravity, and Bedrock providers out of the box.
+                    Connect your favorite IDEs and tools to Model Maestro — including Claude Code, Claude Desktop (Cowork 3P), VS Code, Cursor, and OpenClaw. Supports Ollama, vLLM, Antigravity, and Bedrock providers out of the box.
                 </p>
             </div>
 
@@ -403,7 +437,7 @@ export default function GuidePage() {
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <ExternalLink className="h-4 w-4" />
                     <span>
-                        For detailed configuration examples and troubleshooting, see{' '}
+                        For detailed configuration, Claude Desktop header behavior, and troubleshooting, see{' '}
                         <a
                             href="https://github.com/skymoonsun/model-maestro/blob/main/docs/IDE_INTEGRATION.md"
                             target="_blank"
@@ -411,6 +445,15 @@ export default function GuidePage() {
                             className="text-foreground underline underline-offset-4 hover:text-primary"
                         >
                             docs/IDE_INTEGRATION.md
+                        </a>
+                        {' '}and{' '}
+                        <a
+                            href="https://github.com/skymoonsun/model-maestro/blob/main/docs/API.md#claude-desktop-header"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-foreground underline underline-offset-4 hover:text-primary"
+                        >
+                            docs/API.md (Claude API)
                         </a>
                     </span>
                 </div>
