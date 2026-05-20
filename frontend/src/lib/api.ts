@@ -835,6 +835,7 @@ export interface OllamaNodeResponse {
   aws_secret_key?: string | null;
   aws_region?: string | null;
   aws_session_token?: string | null;
+  bedrock_auth_mode?: 'iam' | 'api_key' | null;
   scoped_models?: boolean;
   auto_cookie_refresh?: boolean;
 }
@@ -898,6 +899,7 @@ export interface CreateNode {
   aws_secret_key?: string | null;
   aws_region?: string | null;
   aws_session_token?: string | null;
+  bedrock_auth_mode?: 'iam' | 'api_key' | null;
   scoped_models?: boolean;
   auto_cookie_refresh?: boolean;
 }

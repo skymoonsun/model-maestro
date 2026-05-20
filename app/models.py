@@ -527,6 +527,7 @@ class OllamaNodeCreate(BaseModel):
     aws_secret_key: Optional[str] = None
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
+    bedrock_auth_mode: Optional[str] = None  # 'iam' | 'api_key'
     scoped_models: Optional[bool] = False
     auto_cookie_refresh: Optional[bool] = False
 
@@ -550,6 +551,7 @@ class OllamaNodeUpdate(BaseModel):
     aws_secret_key: Optional[str] = None
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
+    bedrock_auth_mode: Optional[str] = None
     scoped_models: Optional[bool] = False
     auto_cookie_refresh: Optional[bool] = False
 
@@ -578,6 +580,7 @@ class OllamaNodeResponse(BaseModel):
     aws_secret_key: Optional[str] = None
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
+    bedrock_auth_mode: Optional[str] = None
     scoped_models: bool = False
     auto_cookie_refresh: bool = False
 
@@ -614,6 +617,7 @@ class OllamaNodeDetailResponse(BaseModel):
     aws_secret_key: Optional[str] = None
     aws_region: Optional[str] = None
     aws_session_token: Optional[str] = None
+    bedrock_auth_mode: Optional[str] = None
     scoped_models: bool = False
     auto_cookie_refresh: bool = False
     model_count: int = 0

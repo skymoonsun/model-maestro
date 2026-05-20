@@ -39,6 +39,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/nodes", tags=["Admin - Nodes"])
 
 
+def _validate_bedrock_node_fields(
+    *,
+    api_key: Optional[str],
+    aws_secret_key: Optional[str],
+    aws_region: Optional[str],
+    bedrock_auth_mode: Optional[str],
+) -> str:
+    """Normalize auth mode and raise if credentials are incomplete."""
+    from app.bedrock_proxy import bedrock_credentials_configured, resolve_bedrock_auth_mode
+
+    mode = resolve_bedrock_auth_mode(bedrock_auth_mode, aws_secret_key)
+    if not bedrock_credentials_configured(
+        api_key=api_key,
+        secret_key=aws_secret_key,
+        region=aws_region,
+        bedrock_auth_mode=mode,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Bedrock node requires AWS region and either IAM access key + secret, or a Bedrock API key",
+        )
+    return mode
+
+
 # ==================== NODE MANAGEMENT ====================
 
 @router.post("", response_model=OllamaNodeResponse)
@@ -77,6 +101,20 @@ async def create_node(
             region = request.aws_region or 'us-east-1'
             base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
 
+        bedrock_mode: Optional[str] = request.bedrock_auth_mode
+        aws_secret = request.aws_secret_key
+        aws_session = request.aws_session_token
+        if request.node_type == 'bedrock':
+            bedrock_mode = _validate_bedrock_node_fields(
+                api_key=request.api_key,
+                aws_secret_key=request.aws_secret_key,
+                aws_region=request.aws_region,
+                bedrock_auth_mode=request.bedrock_auth_mode,
+            )
+            if bedrock_mode == 'api_key':
+                aws_secret = None
+                aws_session = None
+
         # Create node
         node = await repo.create(
             name=request.name,
@@ -93,9 +131,10 @@ async def create_node(
             headers=request.headers,
             oauth_tokens=request.oauth_tokens.model_dump() if request.oauth_tokens else None,
             project_id=request.project_id,
-            aws_secret_key=request.aws_secret_key,
+            aws_secret_key=aws_secret,
             aws_region=request.aws_region,
-            aws_session_token=request.aws_session_token,
+            aws_session_token=aws_session,
+            bedrock_auth_mode=bedrock_mode,
             scoped_models=request.scoped_models if request.scoped_models is not None else False,
             auto_cookie_refresh=request.auto_cookie_refresh if request.auto_cookie_refresh is not None else False
         )
@@ -137,6 +176,7 @@ async def create_node(
             aws_secret_key=node.aws_secret_key,
             aws_region=node.aws_region,
             aws_session_token=node.aws_session_token,
+            bedrock_auth_mode=getattr(node, "bedrock_auth_mode", None),
             scoped_models=node.scoped_models if node.scoped_models is not None else False,
             auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
         )
@@ -201,6 +241,7 @@ async def get_node(
             aws_secret_key=node.aws_secret_key,
             aws_region=node.aws_region,
             aws_session_token=node.aws_session_token,
+            bedrock_auth_mode=getattr(node, "bedrock_auth_mode", None),
             auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False,
             model_count=len(models),
             models=[
@@ -228,7 +269,10 @@ async def update_node(
     """
     async with async_session_maker() as session:
         repo = NodeRepository(session)
-        
+        existing_node = await repo.get_by_id(node_id)
+        if not existing_node:
+            raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
         # Build update dict
         update_data = {}
         if request.name is not None:
@@ -294,6 +338,24 @@ async def update_node(
         if request.aws_session_token is not None:
             update_data["aws_session_token"] = request.aws_session_token
 
+        if request.bedrock_auth_mode is not None:
+            update_data["bedrock_auth_mode"] = request.bedrock_auth_mode
+
+        effective_type = update_data.get("node_type", existing_node.node_type)
+        if effective_type == "bedrock":
+            mode = _validate_bedrock_node_fields(
+                api_key=update_data.get("api_key", existing_node.api_key),
+                aws_secret_key=update_data.get("aws_secret_key", existing_node.aws_secret_key),
+                aws_region=update_data.get("aws_region", existing_node.aws_region),
+                bedrock_auth_mode=update_data.get(
+                    "bedrock_auth_mode", getattr(existing_node, "bedrock_auth_mode", None)
+                ),
+            )
+            update_data["bedrock_auth_mode"] = mode
+            if mode == "api_key":
+                update_data["aws_secret_key"] = None
+                update_data["aws_session_token"] = None
+
         if request.scoped_models is not None:
             update_data["scoped_models"] = request.scoped_models
 
@@ -342,6 +404,7 @@ async def update_node(
             aws_secret_key=node.aws_secret_key,
             aws_region=node.aws_region,
             aws_session_token=node.aws_session_token,
+            bedrock_auth_mode=getattr(node, "bedrock_auth_mode", None),
             scoped_models=node.scoped_models if node.scoped_models is not None else False,
             auto_cookie_refresh=node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False
         )
@@ -415,6 +478,7 @@ async def check_node_health(
             aws_secret_key=getattr(node, 'aws_secret_key', None),
             aws_region=getattr(node, 'aws_region', None),
             aws_session_token=getattr(node, 'aws_session_token', None),
+            bedrock_auth_mode=getattr(node, 'bedrock_auth_mode', None),
             health_check_url=getattr(node, 'health_check_url', None),
             auto_cookie_refresh=getattr(node, 'auto_cookie_refresh', False),
         )

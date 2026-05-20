@@ -2,6 +2,12 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { nodesApi, type Node, type CreateNode } from '@/lib/api';
+import {
+    BedrockAuthFields,
+    inferBedrockAuthMode,
+    isBedrockNodeFormValid,
+    type BedrockAuthMode,
+} from '@/components/nodes/bedrock-auth-fields';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -154,6 +160,9 @@ function NodeCard({
     const [headersStr, setHeadersStr] = useState<string>(
         node.headers ? JSON.stringify(node.headers, null, 2) : ''
     );
+    const [bedrockAuthMode, setBedrockAuthMode] = useState<BedrockAuthMode>(() =>
+        inferBedrockAuthMode(node),
+    );
 
     const updateMut = useMutation({
         mutationFn: (data: Partial<CreateNode>) => nodesApi.update(node.id, data),
@@ -195,8 +204,9 @@ function NodeCard({
                 auto_cookie_refresh: node.auto_cookie_refresh,
             });
             setHeadersStr(node.headers ? JSON.stringify(node.headers, null, 2) : '');
+            setBedrockAuthMode(inferBedrockAuthMode(node));
         }
-    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.auto_sync_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.scoped_models, node.auto_cookie_refresh]);
+    }, [editOpen, node.name, node.base_url, node.api_key, node.priority, node.weight, node.is_active, node.node_type, node.warmup_enabled, node.auto_sync_enabled, node.code, node.headers, node.aws_secret_key, node.aws_region, node.aws_session_token, node.bedrock_auth_mode, node.scoped_models, node.auto_cookie_refresh]);
 
     const isInactive = !node.is_active;
 
@@ -397,44 +407,21 @@ function NodeCard({
                                     </Select>
                                 </div>
                                 {form.node_type === 'bedrock' && (
-                                    <>
-                                        <div>
-                                            <Label>AWS Access Key ID</Label>
-                                            <Input
-                                                placeholder="AKIA..."
-                                                value={form.api_key || ''}
-                                                onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
-                                            />
-                                        </div>
-                                        <div>
-                                            <Label>AWS Secret Access Key</Label>
-                                            <Input
-                                                type="password"
-                                                placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-                                                value={form.aws_secret_key || ''}
-                                                onChange={(e) => setForm((f) => ({ ...f, aws_secret_key: e.target.value || undefined }))}
-                                            />
-                                        </div>
-                                        <div>
-                                            <Label>AWS Region</Label>
-                                            <Input
-                                                placeholder="us-east-1"
-                                                value={form.aws_region || ''}
-                                                onChange={(e) => setForm((f) => ({ ...f, aws_region: e.target.value || undefined }))}
-                                            />
-                                            <p className="text-xs text-muted-foreground mt-1">
-                                                {`Base URL will be auto-generated as https://bedrock-runtime.${'{region}'}.amazonaws.com if left empty.`}
-                                            </p>
-                                        </div>
-                                        <div>
-                                            <Label>AWS Session Token (optional)</Label>
-                                            <Input
-                                                placeholder="FwoGZXIvYXdzEBYaDK..."
-                                                value={form.aws_session_token || ''}
-                                                onChange={(e) => setForm((f) => ({ ...f, aws_session_token: e.target.value || undefined }))}
-                                            />
-                                        </div>
-                                    </>
+                                    <BedrockAuthFields
+                                        form={form}
+                                        setForm={setForm}
+                                        authMode={bedrockAuthMode}
+                                        onAuthModeChange={(mode) => {
+                                            setBedrockAuthMode(mode);
+                                            if (mode === 'api_key') {
+                                                setForm((f) => ({
+                                                    ...f,
+                                                    aws_secret_key: undefined,
+                                                    aws_session_token: undefined,
+                                                }));
+                                            }
+                                        }}
+                                    />
                                 )}
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
@@ -520,9 +507,20 @@ function NodeCard({
                                         } else {
                                             payload.headers = undefined;
                                         }
+                                        if (form.node_type === 'bedrock') {
+                                            payload.bedrock_auth_mode = bedrockAuthMode;
+                                            if (bedrockAuthMode === 'api_key') {
+                                                payload.aws_secret_key = undefined;
+                                                payload.aws_session_token = undefined;
+                                            }
+                                        }
                                         updateMut.mutate(payload);
                                     }}
-                                    disabled={updateMut.isPending}
+                                    disabled={
+                                        updateMut.isPending ||
+                                        (form.node_type === 'bedrock' &&
+                                            !isBedrockNodeFormValid(form, bedrockAuthMode))
+                                    }
                                 >
                                     Save
                                 </Button>
@@ -583,6 +581,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
         auto_cookie_refresh: false,
     });
     const [headersStr, setHeadersStr] = useState('');
+    const [bedrockAuthMode, setBedrockAuthMode] = useState<BedrockAuthMode>('iam');
     const qc = useQueryClient();
     const mut = useMutation({
         mutationFn: nodesApi.create,
@@ -706,44 +705,21 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                         </Select>
                     </div>
                     {form.node_type === 'bedrock' && (
-                        <>
-                            <div>
-                                <Label>AWS Access Key ID</Label>
-                                <Input
-                                    placeholder="AKIA..."
-                                    value={form.api_key || ''}
-                                    onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value || undefined }))}
-                                />
-                            </div>
-                            <div>
-                                <Label>AWS Secret Access Key</Label>
-                                <Input
-                                    type="password"
-                                    placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-                                    value={form.aws_secret_key || ''}
-                                    onChange={(e) => setForm((f) => ({ ...f, aws_secret_key: e.target.value || undefined }))}
-                                />
-                            </div>
-                            <div>
-                                <Label>AWS Region</Label>
-                                <Input
-                                    placeholder="us-east-1"
-                                    value={form.aws_region || ''}
-                                    onChange={(e) => setForm((f) => ({ ...f, aws_region: e.target.value || undefined }))}
-                                />
-                                <p className="text-xs text-muted-foreground mt-1">
-                                    {`Base URL will be auto-generated as https://bedrock-runtime.${'{region}'}.amazonaws.com if left empty.`}
-                                </p>
-                            </div>
-                            <div>
-                                <Label>AWS Session Token (optional)</Label>
-                                <Input
-                                    placeholder="FwoGZXIvYXdzEBYaDK..."
-                                    value={form.aws_session_token || ''}
-                                    onChange={(e) => setForm((f) => ({ ...f, aws_session_token: e.target.value || undefined }))}
-                                />
-                            </div>
-                        </>
+                        <BedrockAuthFields
+                            form={form}
+                            setForm={setForm}
+                            authMode={bedrockAuthMode}
+                            onAuthModeChange={(mode) => {
+                                setBedrockAuthMode(mode);
+                                if (mode === 'api_key') {
+                                    setForm((f) => ({
+                                        ...f,
+                                        aws_secret_key: undefined,
+                                        aws_session_token: undefined,
+                                    }));
+                                }
+                            }}
+                        />
                     )}
                     <div className="flex items-center gap-2">
                         <Switch
@@ -807,9 +783,24 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             } else {
                                 payload.headers = undefined;
                             }
+                            if (form.node_type === 'bedrock') {
+                                payload.bedrock_auth_mode = bedrockAuthMode;
+                                if (bedrockAuthMode === 'api_key') {
+                                    payload.aws_secret_key = undefined;
+                                    payload.aws_session_token = undefined;
+                                }
+                            }
                             mut.mutate(payload);
                         }}
-                        disabled={!form.name || (form.node_type !== 'antigravity' && form.node_type !== 'bedrock' && !form.base_url) || (form.node_type === 'bedrock' && !form.aws_region && !form.base_url) || mut.isPending}
+                        disabled={
+                            !form.name ||
+                            (form.node_type !== 'antigravity' &&
+                                form.node_type !== 'bedrock' &&
+                                !form.base_url) ||
+                            (form.node_type === 'bedrock' &&
+                                !isBedrockNodeFormValid(form, bedrockAuthMode)) ||
+                            mut.isPending
+                        }
                     >
                         Create
                     </Button>

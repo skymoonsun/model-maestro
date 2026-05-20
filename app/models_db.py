@@ -297,9 +297,10 @@ class OllamaNode(Base):
     headers = Column(JSONB, nullable=True)  # Custom HTTP headers as {"X-Custom": "value"}
     oauth_tokens = Column(JSONB, nullable=True)  # Google OAuth tokens {"access_token": "...", "refresh_token": "...", "expires_in": 3600}
     project_id = Column(String(100), nullable=True)  # Google cloudaicompanionProject ID
-    aws_secret_key = Column(String(2000), nullable=True)  # AWS Secret Access Key for Bedrock
+    aws_secret_key = Column(String(2000), nullable=True)  # AWS Secret Access Key for Bedrock (IAM mode)
     aws_region = Column(String(50), nullable=True)  # AWS Region for Bedrock (e.g. us-east-1)
     aws_session_token = Column(String(4000), nullable=True)  # AWS Session Token (optional, for STS temp creds)
+    bedrock_auth_mode = Column(String(20), nullable=True)  # 'iam' | 'api_key'
     scoped_models = Column(Boolean, default=False, nullable=True, server_default='false')  # If True, models only accessible via node:code:model prefix
     auto_cookie_refresh = Column(Boolean, default=False, nullable=False, server_default='false')  # Auto-capture WAF challenge cookies
     last_health_check = Column(DateTime(timezone=True), nullable=True)
