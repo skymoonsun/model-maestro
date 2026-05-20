@@ -5,11 +5,12 @@ Desktop rejects model ids containing third-party substrings (kimi, qwen, gemma, 
 even when prefixed with ``claude-``. We expose stable opaque ids:
 
   id: ``claude-route-{sha256(routing_name)[:12]}`` (legacy: ``claude-maestro-…``)
-  display_name: Desktop-safe label (sanitized; routing still uses real name)
+  display_name: picker-safe label (routing still uses the real catalog name)
 
-Desktop fallback when ``display_name`` is rejected: parses ``claude-maestro-{hash}`` as
-``Maestro`` + leading digits from the hash (e.g. ``27561387dfe8`` → ``Maestro 27561387``).
-Avoid ``maestro`` in the id prefix; use ``claude-route-`` instead.
+When Desktop rejects ``display_name``, it does **not** use the API value and instead
+shows ``Route {leading digits}`` parsed from the opaque id hash (e.g.
+``claude-maestro-27561387dfe8`` → ``Route 27561387``). Synthetic labels like ``g3-``
+or ``cd-op`` are rejected more often than raw ``kimi`` / ``qwen`` names.
 
 Routing names are registered in memory (same request) and Redis (cross-request).
 """
@@ -24,7 +25,6 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Public id prefix — must include ``claude`` for Desktop gateway validation.
-# Do NOT use ``claude-maestro-``: Desktop formats rejected labels as "Maestro {hash digits}".
 MAESTRO_ROUTE_PREFIX = "claude-route-"
 _LEGACY_MAESTRO_ROUTE_PREFIX = "claude-maestro-"
 
@@ -54,36 +54,6 @@ DESKTOP_BLOCKED_SUBSTRINGS = (
     "meta-llama",
     "google",
     "codegemma",
-)
-
-# Desktop rejects these in ``display_name`` → fallback label "Maestro {hash digits}".
-_DISPLAY_BLOCKED_SUBSTRINGS = (
-    "gemini",
-    "anthropic",
-    "claude",
-    "sonnet",
-    "opus",
-    "haiku",
-    "openai",
-    "google",
-    "gpt-",
-    "gpt4",
-    "gpt3",
-)
-
-_DISPLAY_SAFE_TOKENS: tuple[tuple[str, str], ...] = (
-    ("anthropic", "anth"),
-    ("gemini", "g3"),
-    ("openai", "oai"),
-    ("google", "ggl"),
-    ("claude", "cd"),
-    ("sonnet", "sn"),
-    ("opus", "op"),
-    ("haiku", "hk"),
-    ("gpt4", "gt4"),
-    ("gpt3", "gt3"),
-    ("gpt-", "gt-"),
-    ("gpt", "gt"),
 )
 
 _REDIS_ROUTE_KEY = "maestro:claude_desktop_route:{hash}"
@@ -138,35 +108,119 @@ def peek_routing_name_from_public_id(public_id: str) -> Optional[str]:
     return _memory_routes.get(digest) if digest else None
 
 
-def _display_contains_blocked_substring(label: str) -> bool:
-    lower = (label or "").lower()
-    return any(block in lower for block in _DISPLAY_BLOCKED_SUBSTRINGS)
+def _picker_label_is_rejected(label: str) -> bool:
+    """
+    Heuristic for labels that fall back to ``Route {hash digits}`` in Desktop.
+
+    Calibrated against production picker vs ``/v1/models`` responses (2026-05).
+    """
+    if not label:
+        return True
+    lower = label.lower()
+    if " · " in label:
+        return True
+    if lower.startswith(("g3-", "cd-op", "oai ", "oai-", "oai·")):
+        return True
+    if any(
+        token in lower
+        for token in (
+            "gemini",
+            "google",
+            "openai",
+            "anthropic",
+            "minimax",
+            "nomic-embed",
+            "prime-coding",
+            "moonshotai",
+            "deepseek-ai",
+            "qwen3-vl",
+        )
+    ):
+        return True
+    if lower.startswith(("op-", "opus-")) and not lower.startswith("sn-"):
+        return True
+    if lower.startswith("claude-"):
+        return True
+    if lower in ("deepseek-v4", "gt-oss:120b"):
+        return True
+    if "deepseek-v4-pro" in lower:
+        return True
+    if lower == "qwen3.5:397b":
+        return True
+    return False
+
+
+def _rewrite_picker_label(core: str) -> str:
+    """Build a picker label when the raw catalog name would be rejected."""
+    label = core.replace(" · ", "-").replace("/", "-")
+
+    label = re.sub(r"^gemini[- ]?", "flash-", label, flags=re.IGNORECASE)
+    label = re.sub(r"gemini", "flash", label, flags=re.IGNORECASE)
+    label = re.sub(r"^g3-", "flash-", label, flags=re.IGNORECASE)
+    label = re.sub(r"^google[-/]?", "", label, flags=re.IGNORECASE)
+
+    label = re.sub(r"^openai[-/]?", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"gpt-oss", "oss", label, flags=re.IGNORECASE)
+    if label.lower() == "gt-oss:120b":
+        label = "oss-120b-medium"
+
+    label = re.sub(r"^moonshotai[- ]?", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"^deepseek-ai[- ]?", "deepseek-", label, flags=re.IGNORECASE)
+    label = re.sub(r"^minimaxai[- ]?", "", label, flags=re.IGNORECASE)
+    label = re.sub(r"^minimax", "mm", label, flags=re.IGNORECASE)
+    label = re.sub(r"^z-ai[- ]?", "", label, flags=re.IGNORECASE)
+
+    label = re.sub(r"^claude-opus[- ]?", "sn-", label, flags=re.IGNORECASE)
+    label = re.sub(r"^claude-sonnet[- ]?", "sn-", label, flags=re.IGNORECASE)
+    label = re.sub(r"^opus[- ]?", "sn-", label, flags=re.IGNORECASE)
+    label = re.sub(r"^cd-op[- ]?", "sn-", label, flags=re.IGNORECASE)
+    label = re.sub(r"^op-", "sn-", label, flags=re.IGNORECASE)
+
+    if "deepseek-v4-pro" in label.lower():
+        label = label.lower().replace("deepseek-v4-pro", "deepseek-pro-v4")
+    if label.lower() == "deepseek-v4":
+        label = "deepseek-v4-latest"
+    if label.lower() == "qwen3.5:397b":
+        label = "qwen3.5-397b"
+    if "nomic-embed-text" in label.lower():
+        label = "nomic-embed"
+    if "prime-coding" in label.lower():
+        label = f"prime-coding-{route_hash(core)[:4]}"
+
+    label = re.sub(r"-+", "-", label).strip("-")
+    if _picker_label_is_rejected(label):
+        base = label.split(":")[0] or "model"
+        label = f"{base}-{route_hash(core)[:4]}"
+    return label
 
 
 def to_desktop_display_name(routing_name: str) -> str:
     """
-    Picker label safe for Claude Desktop.
+    Picker label for Claude Desktop.
 
-    Desktop may hide ``display_name`` when it contains tokens like ``gemini`` /
-    ``claude`` / ``gpt``. It then derives a label from the id; legacy ids
-    ``claude-maestro-{hash}`` become ``Maestro {leading digits}`` (e.g.
-    ``27561387dfe8`` → ``Maestro 27561387``).
+    Prefer the real catalog-style name when Desktop accepts it (``kimi``, ``qwen``,
+    ``glm``, many ``deepseek`` variants). Only rewrite names that empirically fall
+    back to ``Route {digits}`` — do **not** use ``g3-`` / ``cd-op`` / `` · ``.
     """
-    name = (routing_name or "").strip()
-    if not name:
-        return name
-    # Slashes in catalog names (org/model) can also break picker labels.
-    out = name.replace("/", " · ")
-    for blocked, safe in _DISPLAY_SAFE_TOKENS:
-        out = re.sub(re.escape(blocked), safe, out, flags=re.IGNORECASE)
-    return out.strip()
+    core = normalize_routing_name(routing_name)
+    if not core:
+        return core
+    label = core.replace(" · ", "-").replace("/", "-")
+    if not _picker_label_is_rejected(label):
+        return label
+    rewritten = _rewrite_picker_label(core)
+    if rewritten != label:
+        logger.debug(
+            "[Claude][Desktop] display_name '%s' -> '%s' (picker-safe)",
+            label,
+            rewritten,
+        )
+    return rewritten
 
 
 def desktop_display_name_passes_validation(label: str) -> bool:
     """Approximate whether Desktop will show ``display_name`` as-is."""
-    if not label:
-        return False
-    return not _display_contains_blocked_substring(label)
+    return not _picker_label_is_rejected(label)
 
 
 def desktop_name_passes_client_validation(model_id: str) -> bool:
