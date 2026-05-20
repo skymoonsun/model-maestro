@@ -110,17 +110,17 @@ Maestro with `X-Maestro-Client: claude-desktop` uses **opaque ids** so Desktop n
 
 | Field | Example |
 |-------|---------|
-| `id` | `claude-maestro-a1b2c3d4e5f6` (SHA-256 of routing name, first 12 hex chars) |
+| `id` | `anthropic/claude-abcdefghijkl` (12 lowercase letters from SHA-256) or `anthropic/claude-prime-coding` when safe |
 | `display_name` | Desktop-safe label (e.g. `g3-3.5-flash-low` instead of `gemini-3.5-flash-low`; `z-ai · glm-5.1` instead of `z-ai/glm-5.1`) |
 
 If `display_name` is rejected (e.g. still contains `gemini`, `claude`, `gpt`), Desktop **does not** invent a name from nothing — it parses the **`id`**:
 
 | `id` | Desktop fallback label |
 |------|------------------------|
-| `claude-maestro-27561387dfe8` | **Maestro 27561387** (`maestro` segment + leading digits of hash) |
-| `claude-maestro-95e05954f490` | **Maestro 95** |
+| `claude-maestro-27561387dfe8` | **Maestro 27561387** (legacy hex id) |
+| `claude-route-3e0f22781c4a` | **Route 3** (legacy; Desktop parses the middle segment) |
 
-So **"Maestro" in the picker comes from our old id prefix `claude-maestro-`**, not from the API `display_name`. New builds use `claude-route-{hash}` and sanitize `display_name` (e.g. `g3-3.5-flash-low`). Re-run model discovery after deploy.
+Picker garbage labels come from the **id** (`route` / `maestro` + digits), not from `display_name`. Current builds use **`anthropic/claude-{12 letters}`** (no digits) and pass through the real catalog name as `display_name`. Re-run model discovery after deploy.
 
 Mappings are stored in Redis (`maestro:claude_desktop_route:{hash}`) and resolved on `POST /v1/messages` **only when** `X-Maestro-Client: claude-desktop` is sent. Without that header, `claude-maestro-…` is not resolved (plain **404 model not found**). Re-run model discovery after deploy so Desktop picks up new ids.
 

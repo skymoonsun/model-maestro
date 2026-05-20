@@ -1,20 +1,22 @@
 """Tests for Claude Desktop opaque model ids."""
 
 import asyncio
+import re
 
 import pytest
 from fastapi import HTTPException
 
 from app.claude import _resolve_claude_request_model
 from app.claude_desktop_models import (
+    ANTHROPIC_CLAUDE_PREFIX,
     _memory_routes,
-    _picker_label_is_rejected,
-    desktop_display_name_passes_validation,
+    _public_id_to_core,
     desktop_name_passes_client_validation,
-    is_maestro_desktop_route_id,
+    is_maestro_desktop_opaque_id,
     normalize_routing_name,
     peek_routing_name_from_public_id,
     resolve_desktop_public_id,
+    route_alphabetic_slug,
     route_hash,
     to_desktop_display_name,
     to_desktop_public_id,
@@ -24,23 +26,32 @@ from app.claude_desktop_models import (
 @pytest.fixture(autouse=True)
 def clear_memory_routes() -> None:
     _memory_routes.clear()
+    _public_id_to_core.clear()
     yield
     _memory_routes.clear()
+    _public_id_to_core.clear()
 
 
-def test_opaque_id_avoids_blocked_substrings() -> None:
+def test_opaque_id_uses_anthropic_prefix_and_letters_only() -> None:
     internal = "google/codegemma-7b"
     public = to_desktop_public_id(internal)
-    assert public.startswith("claude-route-")
+    assert public.startswith(ANTHROPIC_CLAUDE_PREFIX)
+    tail = public[len(ANTHROPIC_CLAUDE_PREFIX) :]
+    assert re.fullmatch(r"[a-z]{12}", tail)
+    assert not re.search(r"\d", tail)
     assert "gemma" not in public
     assert "google" not in public
     assert desktop_name_passes_client_validation(public)
 
 
+def test_alphabetic_slug_stable() -> None:
+    internal = "kimi-k2.6:latest"
+    assert route_alphabetic_slug(internal) == route_alphabetic_slug("claude-kimi-k2.6:latest")
+    assert route_hash(internal) == route_hash("claude-kimi-k2.6:latest")
+
+
 def test_hash_stable_and_routing_roundtrip() -> None:
     internal = "kimi-k2.6:latest"
-    h = route_hash(internal)
-    assert h == route_hash("claude-kimi-k2.6:latest")
     public = to_desktop_public_id(internal)
     assert peek_routing_name_from_public_id(public) == normalize_routing_name(internal)
 
@@ -60,42 +71,27 @@ def test_opaque_id_not_found_without_desktop_header() -> None:
     assert "not found" in exc.value.detail.lower()
 
 
-def test_picker_rejects_synthetic_g3_and_middle_dot() -> None:
-    assert _picker_label_is_rejected("g3-3.5-flash-low")
-    assert _picker_label_is_rejected("z-ai · glm-5.1")
-    assert not _picker_label_is_rejected("kimi-k2.6:latest")
-    assert not _picker_label_is_rejected("qwen3.5:latest")
-
-
-def test_desktop_display_name_passes_through_kimi() -> None:
+def test_desktop_display_name_is_catalog_name() -> None:
     assert to_desktop_display_name("kimi-k2.6:latest") == "kimi-k2.6:latest"
+    assert to_desktop_display_name("prime-coding") == "prime-coding"
+    assert to_desktop_display_name("gemini-3.5-flash-low") == "gemini-3.5-flash-low"
 
 
-def test_desktop_display_name_rewrites_gemini_not_g3() -> None:
-    label = to_desktop_display_name("gemini-3.5-flash-low")
-    assert "gemini" not in label.lower()
-    assert not label.lower().startswith("g3-")
-    assert desktop_display_name_passes_validation(label)
+def test_readable_anthropic_id_for_prime_coding() -> None:
+    public = to_desktop_public_id("prime-coding")
+    assert public == "anthropic/claude-prime-coding"
+    assert not is_maestro_desktop_opaque_id(public)
+    assert peek_routing_name_from_public_id(public) == "prime-coding"
 
 
-def test_desktop_display_name_rewrites_opus_catalog_name() -> None:
-    label = to_desktop_display_name("claude-opus-4-6-thinking")
-    assert not label.lower().startswith(("cd-op", "opus-"))
-    assert label.lower().startswith("sn-")
-
-
-def test_desktop_display_name_org_slash_to_hyphen() -> None:
-    label = to_desktop_display_name("z-ai/glm-5.1")
-    assert " · " not in label
-    assert "glm" in label.lower()
-
-
-def test_legacy_maestro_prefix_still_resolves() -> None:
+def test_legacy_maestro_hex_prefix_still_resolves() -> None:
     internal = "gemini-3.5-flash-low"
-    public = to_desktop_public_id(internal)
-    legacy = public.replace("claude-route-", "claude-maestro-", 1)
+    slug = route_alphabetic_slug(internal)
+    _memory_routes[route_hash(internal)] = normalize_routing_name(internal)
+    legacy = f"claude-maestro-{route_hash(internal)}"
     resolved = asyncio.run(resolve_desktop_public_id(legacy))
     assert resolved == normalize_routing_name(internal)
+    assert slug  # alphabetic slug exists for new ids
 
 
 def test_opaque_id_resolves_with_desktop_header() -> None:
@@ -103,4 +99,4 @@ def test_opaque_id_resolves_with_desktop_header() -> None:
     public = to_desktop_public_id(internal)
     resolved = asyncio.run(_resolve_claude_request_model(public, desktop=True))
     assert resolved == normalize_routing_name(internal)
-    assert not is_maestro_desktop_route_id(resolved)
+    assert not is_maestro_desktop_opaque_id(resolved)
