@@ -1110,11 +1110,17 @@ class OllamaProxy:
             )
 
         if node_type == "bedrock":
+            from app.bedrock_proxy import bedrock_credentials_configured, proxy_bedrock_request
+
             node = await self._get_active_node_by_base_url(base_url)
-            if not node or not node.api_key or not node.aws_secret_key or not node.aws_region:
+            if not node or not bedrock_credentials_configured(
+                api_key=node.api_key,
+                secret_key=node.aws_secret_key,
+                region=node.aws_region,
+                bedrock_auth_mode=getattr(node, "bedrock_auth_mode", None),
+            ):
                 logger.warning(f"[Bedrock] Missing AWS credentials on node {base_url}")
                 return None
-            from app.bedrock_proxy import proxy_bedrock_request
 
             logger.info(f"[Bedrock] Routing request to AWS Bedrock for model={model_name}")
             return await proxy_bedrock_request(
@@ -1122,11 +1128,13 @@ class OllamaProxy:
                 stream=stream,
                 endpoint=endpoint,
                 base_url=base_url,
-                aws_access_key_id=node.api_key,
-                aws_secret_access_key=node.aws_secret_key,
-                aws_region=node.aws_region,
+                access_key=node.api_key,
+                secret_key=node.aws_secret_key,
+                region=node.aws_region,
+                session_token=node.aws_session_token,
                 model_name=model_name or data.get("model", "unknown"),
                 username=username,
+                bedrock_auth_mode=getattr(node, "bedrock_auth_mode", None),
             )
 
         return None
@@ -2521,10 +2529,16 @@ class OllamaProxy:
                 except Exception as e:
                     logger.warning(f"[Bedrock] Failed to look up node info: {e}")
 
-                if not node_info or not node_info.api_key or not node_info.aws_secret_key or not node_info.aws_region:
+                from app.bedrock_proxy import bedrock_credentials_configured, proxy_bedrock_request
+
+                if not node_info or not bedrock_credentials_configured(
+                    api_key=node_info.api_key,
+                    secret_key=node_info.aws_secret_key,
+                    region=node_info.aws_region,
+                    bedrock_auth_mode=getattr(node_info, "bedrock_auth_mode", None),
+                ):
                     raise HTTPException(status_code=500, detail="Bedrock node missing AWS credentials or region")
 
-                from app.bedrock_proxy import proxy_bedrock_request
                 return await proxy_bedrock_request(
                     data=data,
                     stream=stream,
@@ -2537,6 +2551,7 @@ class OllamaProxy:
                     model_name=mapped_model_name or data.get('model', 'unknown'),
                     username=username,
                     node_headers=node_headers,
+                    bedrock_auth_mode=getattr(node_info, "bedrock_auth_mode", None),
                 )
             else:
                 raise HTTPException(

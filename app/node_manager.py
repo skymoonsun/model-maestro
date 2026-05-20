@@ -62,6 +62,7 @@ class NodeManager:
         aws_secret_key: Optional[str] = None,
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
+        bedrock_auth_mode: Optional[str] = None,
         health_check_url: Optional[str] = None,
         auto_cookie_refresh: bool = False,
     ) -> Tuple[bool, Optional[str], Optional[Dict[str, str]]]:
@@ -92,17 +93,26 @@ class NodeManager:
             is_healthy, error = await health_check_antigravity(oauth_tokens, timeout=timeout)
             return is_healthy, error, None
 
-        # Bedrock nodes use AWS ListFoundationModels health check
+        # Bedrock nodes: IAM or API key + region (secret not required for api_key mode)
         if node_type == 'bedrock':
-            if not api_key or not aws_secret_key or not aws_region:
-                return False, "Missing AWS credentials or region for bedrock node", None
-            from app.bedrock_proxy import health_check_bedrock
-            is_healthy, error = await health_check_bedrock(
-                access_key=api_key,
+            from app.bedrock_proxy import bedrock_credentials_configured, health_check_bedrock
+
+            if not bedrock_credentials_configured(
+                api_key=api_key,
                 secret_key=aws_secret_key,
                 region=aws_region,
+                bedrock_auth_mode=bedrock_auth_mode,
+            ):
+                return False, "Missing Bedrock credentials or region for bedrock node", None
+
+            bedrock_timeout = max(timeout, 12.0)
+            is_healthy, error = await health_check_bedrock(
+                access_key=api_key or "",
+                secret_key=aws_secret_key,
+                region=aws_region or "",
                 session_token=aws_session_token,
-                timeout=timeout
+                timeout=bedrock_timeout,
+                bedrock_auth_mode=bedrock_auth_mode,
             )
             return is_healthy, error, None
 
@@ -180,6 +190,7 @@ class NodeManager:
         aws_secret_key: Optional[str] = None,
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
+        bedrock_auth_mode: Optional[str] = None,
         auto_cookie_refresh: bool = False,
     ) -> Tuple[bool, List[Dict[str, Any]], Optional[str], Optional[Dict[str, str]]]:
         """
@@ -210,14 +221,21 @@ class NodeManager:
 
         # Bedrock nodes use AWS ListFoundationModels discovery
         if node_type == 'bedrock':
-            if not api_key or not aws_secret_key or not aws_region:
+            from app.bedrock_proxy import bedrock_credentials_configured, discover_bedrock_models
+
+            if not bedrock_credentials_configured(
+                api_key=api_key,
+                secret_key=aws_secret_key,
+                region=aws_region,
+                bedrock_auth_mode=bedrock_auth_mode,
+            ):
                 return False, [], "Missing AWS credentials or region for bedrock node", None
-            from app.bedrock_proxy import discover_bedrock_models
             success, models, error = await discover_bedrock_models(
                 access_key=api_key,
                 secret_key=aws_secret_key,
                 region=aws_region,
-                session_token=aws_session_token
+                session_token=aws_session_token,
+                bedrock_auth_mode=bedrock_auth_mode,
             )
             return success, models, error, None
 
@@ -363,6 +381,7 @@ class NodeManager:
             aws_secret_key=getattr(node, 'aws_secret_key', None),
             aws_region=getattr(node, 'aws_region', None),
             aws_session_token=getattr(node, 'aws_session_token', None),
+            bedrock_auth_mode=getattr(node, 'bedrock_auth_mode', None),
             auto_cookie_refresh=getattr(node, 'auto_cookie_refresh', False),
         )
 

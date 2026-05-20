@@ -34,6 +34,7 @@ class NodeRepository:
         aws_secret_key: Optional[str] = None,
         aws_region: Optional[str] = None,
         aws_session_token: Optional[str] = None,
+        bedrock_auth_mode: Optional[str] = None,
         scoped_models: bool = False,
         auto_cookie_refresh: bool = False
     ) -> OllamaNode:
@@ -56,6 +57,7 @@ class NodeRepository:
             aws_secret_key=aws_secret_key,
             aws_region=aws_region,
             aws_session_token=aws_session_token,
+            bedrock_auth_mode=bedrock_auth_mode,
             scoped_models=scoped_models,
             auto_cookie_refresh=auto_cookie_refresh,
             health_status='unknown'
@@ -168,6 +170,7 @@ class NodeRepository:
                 "aws_secret_key": node.aws_secret_key,
                 "aws_region": node.aws_region,
                 "aws_session_token": node.aws_session_token,
+                "bedrock_auth_mode": node.bedrock_auth_mode,
                 "scoped_models": node.scoped_models,
                 "auto_cookie_refresh": node.auto_cookie_refresh if node.auto_cookie_refresh is not None else False,
                 "health_status": node.health_status,

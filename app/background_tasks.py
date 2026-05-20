@@ -298,17 +298,20 @@ async def node_health_check_task():
 
                 # Check all nodes concurrently instead of sequentially
                 async def _check_one(node):
+                    node_type = getattr(node, 'node_type', 'ollama')
+                    check_timeout = 12.0 if node_type == 'bedrock' else 3.0
                     is_healthy, error, updated_headers = await node_manager.health_check_node(
                         node.base_url,
                         node.api_key,
-                        timeout=3.0,
-                        node_type=getattr(node, 'node_type', 'ollama'),
+                        timeout=check_timeout,
+                        node_type=node_type,
                         headers=getattr(node, 'headers', None),
                         oauth_tokens=getattr(node, 'oauth_tokens', None),
                         project_id=getattr(node, 'project_id', None),
                         aws_secret_key=getattr(node, 'aws_secret_key', None),
                         aws_region=getattr(node, 'aws_region', None),
                         aws_session_token=getattr(node, 'aws_session_token', None),
+                        bedrock_auth_mode=getattr(node, 'bedrock_auth_mode', None),
                         health_check_url=getattr(node, 'health_check_url', None),
                         auto_cookie_refresh=getattr(node, 'auto_cookie_refresh', False),
                     )

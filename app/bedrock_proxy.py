@@ -14,6 +14,394 @@ from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
+# Serialize boto3 Bedrock API-key auth (uses process-wide AWS_BEARER_TOKEN_BEDROCK).
+_BEDROCK_API_KEY_LOCK = asyncio.Lock()
+
+# Prevent the default AWS credential chain from overriding Bedrock API keys.
+_IAM_ENV_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+)
+
+
+def resolve_bedrock_auth_mode(
+    bedrock_auth_mode: Optional[str],
+    secret_key: Optional[str],
+) -> str:
+    """Return 'iam' or 'api_key'."""
+    if bedrock_auth_mode in ("iam", "api_key"):
+        return bedrock_auth_mode
+    if secret_key and str(secret_key).strip():
+        return "iam"
+    return "api_key"
+
+
+def bedrock_credentials_configured(
+    *,
+    api_key: Optional[str],
+    secret_key: Optional[str],
+    region: Optional[str],
+    bedrock_auth_mode: Optional[str] = None,
+) -> bool:
+    if not region or not str(region).strip():
+        return False
+    mode = resolve_bedrock_auth_mode(bedrock_auth_mode, secret_key)
+    if mode == "iam":
+        return bool(api_key and str(api_key).strip() and secret_key and str(secret_key).strip())
+    return bool(api_key and str(api_key).strip())
+
+
+def _bedrock_control_plane_url(region: str) -> str:
+    return f"https://bedrock.{region}.amazonaws.com"
+
+
+def _bedrock_runtime_url(region: str) -> str:
+    return f"https://bedrock-runtime.{region}.amazonaws.com"
+
+
+# Inference profile IDs (e.g. us.anthropic.claude-*) are required for many on-demand models.
+_INFERENCE_PROFILE_ID_PREFIXES = ("us.", "eu.", "apac.", "global.", "us-gov.", "au.")
+
+
+def is_bedrock_inference_profile_id(model_id: str) -> bool:
+    """True if model_id is already an inference profile identifier."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return False
+    if mid.startswith("arn:") and "inference-profile" in mid:
+        return True
+    return mid.startswith(_INFERENCE_PROFILE_ID_PREFIXES)
+
+
+def bedrock_region_geo_prefix(region: str) -> str:
+    """Geo prefix for cross-region inference profiles (us., eu., apac., …)."""
+    r = (region or "us-east-1").strip().lower()
+    if r.startswith("us-gov"):
+        return "us-gov"
+    if r.startswith("eu-"):
+        return "eu"
+    if r.startswith("ap-"):
+        return "apac"
+    if r.startswith("us-") or r.startswith("ca-") or r.startswith("sa-"):
+        return "us"
+    return "us"
+
+
+def bedrock_heuristic_inference_profile_id(foundation_model_id: str, region: str) -> str:
+    """Best-effort profile ID when ListInferenceProfiles is unavailable."""
+    return f"{bedrock_region_geo_prefix(region)}.{foundation_model_id}"
+
+
+def resolve_bedrock_converse_model_id(
+    model_id: str,
+    region: str,
+    profile_map: Optional[Dict[str, str]] = None,
+) -> str:
+    """
+    Map a foundation model ID to the inference profile ID required by Converse.
+
+    Newer models (e.g. Claude Opus 4.6) reject raw foundation model IDs for on-demand throughput.
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return mid
+    if is_bedrock_inference_profile_id(mid):
+        return mid
+    if profile_map and mid in profile_map:
+        return profile_map[mid]
+    return bedrock_heuristic_inference_profile_id(mid, region)
+
+
+def _foundation_model_id_from_arn(model_arn: str) -> Optional[str]:
+    if not model_arn:
+        return None
+    marker = "/foundation-model/"
+    if marker in model_arn:
+        return model_arn.split(marker, 1)[1]
+    return None
+
+
+def _parse_inference_profile_summaries(
+    payload: Dict[str, Any],
+    region: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """Parse ListInferenceProfiles response into catalog models + foundation→profile map."""
+    models: List[Dict[str, Any]] = []
+    foundation_to_profile: Dict[str, str] = {}
+    geo = bedrock_region_geo_prefix(region)
+
+    for summary in payload.get("inferenceProfileSummaries", []):
+        profile_id = summary.get("inferenceProfileId", "")
+        if not profile_id:
+            continue
+
+        foundation_ids: List[str] = []
+        for entry in summary.get("models", []):
+            fid = _foundation_model_id_from_arn(entry.get("modelArn", ""))
+            if not fid:
+                continue
+            foundation_ids.append(fid)
+            existing = foundation_to_profile.get(fid)
+            if not existing:
+                foundation_to_profile[fid] = profile_id
+            elif profile_id.startswith(f"{geo}.") and not existing.startswith(f"{geo}."):
+                foundation_to_profile[fid] = profile_id
+
+        provider = "anthropic"
+        if "amazon" in profile_id or "nova" in profile_id:
+            provider = "amazon"
+        elif "meta" in profile_id:
+            provider = "meta"
+
+        models.append({
+            "name": profile_id,
+            "size": None,
+            "digest": None,
+            "modified_at": None,
+            "details": {
+                **summary,
+                "foundation_model_ids": foundation_ids,
+                "inference_profile_id": profile_id,
+            },
+            "family": provider,
+        })
+
+    return models, foundation_to_profile
+
+
+def _parse_foundation_model_summaries(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    models = []
+    for summary in payload.get("modelSummaries", []):
+        model_id = summary.get("modelId", "")
+        if not model_id:
+            continue
+        models.append({
+            "name": model_id,
+            "size": None,
+            "digest": None,
+            "modified_at": None,
+            "details": summary,
+            "family": (summary.get("providerName") or "").lower(),
+        })
+    return models
+
+
+async def _list_inference_profiles_http(
+    api_key: str,
+    region: str,
+    timeout: float,
+) -> Tuple[bool, List[Dict[str, Any]], Dict[str, str], Optional[str]]:
+    """List SYSTEM_DEFINED inference profiles (Bearer auth)."""
+    import httpx
+
+    url = f"{_bedrock_control_plane_url(region)}/inference-profiles"
+    all_summaries: List[Dict[str, Any]] = []
+    next_token: Optional[str] = None
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            while True:
+                params: Dict[str, Any] = {
+                    "typeEquals": "SYSTEM_DEFINED",
+                    "maxResults": 1000,
+                }
+                if next_token:
+                    params["nextToken"] = next_token
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Accept": "application/json",
+                    },
+                )
+                if response.status_code != 200:
+                    body = (response.text or "")[:500]
+                    return False, [], {}, f"HTTP {response.status_code}: {body}"
+                data = response.json()
+                all_summaries.extend(data.get("inferenceProfileSummaries", []))
+                next_token = data.get("nextToken")
+                if not next_token:
+                    break
+
+        merged = {"inferenceProfileSummaries": all_summaries}
+        models, profile_map = _parse_inference_profile_summaries(merged, region)
+        return True, models, profile_map, None
+    except Exception as e:
+        return False, [], {}, str(e)
+
+
+async def _list_foundation_models_http(
+    api_key: str,
+    region: str,
+    timeout: float,
+) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
+    """List models via Bedrock control plane HTTP + Bearer (AnythingLLM-style)."""
+    import httpx
+
+    url = f"{_bedrock_control_plane_url(region)}/foundation-models"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                url,
+                params={"byOutputModality": "TEXT"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Accept": "application/json",
+                },
+            )
+        if response.status_code != 200:
+            body = (response.text or "")[:500]
+            return False, [], f"HTTP {response.status_code}: {body}"
+        data = response.json()
+        return True, _parse_foundation_model_summaries(data), None
+    except Exception as e:
+        return False, [], str(e)
+
+
+async def _probe_converse_http(
+    api_key: str,
+    region: str,
+    model_id: str,
+    timeout: float,
+) -> Tuple[bool, Optional[str]]:
+    """Minimal Converse call — matches what AnythingLLM actually uses."""
+    import httpx
+
+    url = f"{_bedrock_runtime_url(region)}/model/{model_id}/converse"
+    payload = {
+        "messages": [{"role": "user", "content": [{"text": "ping"}]}],
+        "inferenceConfig": {"maxTokens": 1},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                url,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+        if response.status_code == 200:
+            return True, None
+        body = (response.text or "")[:500]
+        return False, f"HTTP {response.status_code}: {body}"
+    except Exception as e:
+        return False, str(e)
+
+
+# Models commonly enabled; first successful probe wins.
+_BEDROCK_API_KEY_PROBE_MODELS = (
+    "us.amazon.nova-micro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "anthropic.claude-3-haiku-20240307-v1:0",
+    "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+)
+
+
+async def _health_check_bedrock_api_key_http(
+    api_key: str,
+    region: str,
+    timeout: float,
+) -> Tuple[bool, Optional[str]]:
+    """Verify API key: list models, or minimal Converse if list is denied."""
+    ok, _models, error = await _list_foundation_models_http(api_key, region, timeout)
+    if ok:
+        return True, None
+
+    list_err = error or ""
+    if "403" not in list_err and "AccessDenied" not in list_err and "Unauthorized" not in list_err:
+        return False, list_err or "Bedrock API key health check failed"
+
+    per_probe = max(timeout / max(len(_BEDROCK_API_KEY_PROBE_MODELS), 1), 3.0)
+    errors: List[str] = [f"list_models: {list_err}"]
+    for model_id in _BEDROCK_API_KEY_PROBE_MODELS:
+        probe_ok, probe_err = await _probe_converse_http(api_key, region, model_id, per_probe)
+        if probe_ok:
+            logger.info(f"[Bedrock] API key health OK via converse probe ({model_id})")
+            return True, None
+        if probe_err:
+            errors.append(f"{model_id}: {probe_err}")
+
+    return False, "; ".join(errors)
+
+
+async def _run_boto3_with_bedrock_api_key(api_key: str, region: str, fn):
+    """Run sync boto3 callable under Bedrock API key (global env + lock)."""
+    import os
+
+    async with _BEDROCK_API_KEY_LOCK:
+
+        def _sync():
+            saved: Dict[str, Optional[str]] = {}
+            for key in _IAM_ENV_KEYS:
+                if key in os.environ:
+                    saved[key] = os.environ.pop(key)
+            prev_bearer = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = api_key
+            try:
+                return fn(region)
+            finally:
+                if prev_bearer is None:
+                    os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+                else:
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = prev_bearer
+                for key, value in saved.items():
+                    if value is not None:
+                        os.environ[key] = value
+
+        return await asyncio.to_thread(_sync)
+
+
+def _boto3_iam_clients(
+    access_key: str,
+    secret_key: str,
+    region: str,
+    session_token: Optional[str],
+):
+    import boto3
+
+    creds = {
+        "aws_access_key_id": access_key,
+        "aws_secret_access_key": secret_key,
+        "region_name": region,
+    }
+    if session_token:
+        creds["aws_session_token"] = session_token
+    runtime = boto3.client("bedrock-runtime", **creds)
+    control = boto3.client("bedrock", **creds)
+    return runtime, control
+
+
+async def _get_bedrock_clients(
+    *,
+    access_key: str,
+    secret_key: Optional[str],
+    region: str,
+    session_token: Optional[str],
+    bedrock_auth_mode: Optional[str] = None,
+):
+    """Return (bedrock-runtime client, bedrock control client)."""
+    mode = resolve_bedrock_auth_mode(bedrock_auth_mode, secret_key)
+    if mode == "api_key":
+
+        def _make(region_name: str):
+            import boto3
+
+            runtime = boto3.client("bedrock-runtime", region_name=region_name)
+            control = boto3.client("bedrock", region_name=region_name)
+            return runtime, control
+
+        return await _run_boto3_with_bedrock_api_key(access_key, region, _make)
+
+    return _boto3_iam_clients(access_key, secret_key or "", region, session_token)
+
+
 # ---------------------------------------------------------------------------
 # Request / response translation helpers
 # ---------------------------------------------------------------------------
@@ -282,57 +670,78 @@ async def proxy_bedrock_request(
     endpoint: str,
     base_url: str,
     access_key: str,
-    secret_key: str,
+    secret_key: Optional[str],
     region: str,
     session_token: Optional[str],
     model_name: str,
     username: Optional[str],
     node_headers: Optional[Dict[str, Any]] = None,
+    bedrock_auth_mode: Optional[str] = None,
 ) -> Any:
     """
     Proxy an OpenAI-compatible request to AWS Bedrock Converse API.
-    """
-    import boto3
 
+    Auth modes:
+    - iam: access_key + secret_key (+ optional session_token)
+    - api_key: Bedrock API key in access_key + region (AnythingLLM-style)
+    """
     if endpoint not in ("/v1/chat/completions", "/cursor/chat/completions"):
         raise HTTPException(
             status_code=400,
             detail=f"Bedrock nodes only support chat completions endpoint, got: {endpoint}"
         )
 
-    # Build credentials
-    creds = {
-        "aws_access_key_id": access_key,
-        "aws_secret_access_key": secret_key,
-        "region_name": region,
-    }
-    if session_token:
-        creds["aws_session_token"] = session_token
+    if not bedrock_credentials_configured(
+        api_key=access_key,
+        secret_key=secret_key,
+        region=region,
+        bedrock_auth_mode=bedrock_auth_mode,
+    ):
+        raise HTTPException(status_code=500, detail="Bedrock node missing credentials or region")
 
-    client = boto3.client("bedrock-runtime", **creds)
+    client, _ = await _get_bedrock_clients(
+        access_key=access_key,
+        secret_key=secret_key,
+        region=region,
+        session_token=session_token,
+        bedrock_auth_mode=bedrock_auth_mode,
+    )
 
     bedrock_request = _build_bedrock_request(data)
 
-    logger.info(f"[Bedrock] Sending Converse request to model={model_name}, region={region}, stream={stream}")
+    converse_model_id = resolve_bedrock_converse_model_id(model_name, region)
+    if converse_model_id != model_name:
+        logger.info(
+            f"[Bedrock] Resolved converse modelId {model_name!r} -> {converse_model_id!r}"
+        )
+
+    logger.info(
+        f"[Bedrock] Sending Converse request to model={converse_model_id}, "
+        f"region={region}, stream={stream}"
+    )
+
+    def _converse_kwargs(target_model_id: str) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "modelId": target_model_id,
+            "messages": bedrock_request.get("messages", []),
+        }
+        if "inferenceConfig" in bedrock_request:
+            kwargs["inferenceConfig"] = bedrock_request["inferenceConfig"]
+        if "system" in bedrock_request:
+            kwargs["system"] = bedrock_request["system"]
+        if "toolConfig" in bedrock_request:
+            kwargs["toolConfig"] = bedrock_request["toolConfig"]
+        return kwargs
+
+    async def _run_converse(target_model_id: str, streaming: bool) -> Any:
+        kwargs = _converse_kwargs(target_model_id)
+        if streaming:
+            return await asyncio.to_thread(client.converse_stream, **kwargs)
+        return await asyncio.to_thread(client.converse, **kwargs)
 
     if stream:
-        # Streaming path
         try:
-            kwargs = {
-                "modelId": model_name,
-                "messages": bedrock_request.get("messages", []),
-            }
-            if "inferenceConfig" in bedrock_request:
-                kwargs["inferenceConfig"] = bedrock_request["inferenceConfig"]
-            if "system" in bedrock_request:
-                kwargs["system"] = bedrock_request["system"]
-            if "toolConfig" in bedrock_request:
-                kwargs["toolConfig"] = bedrock_request["toolConfig"]
-
-            response = await asyncio.to_thread(
-                client.converse_stream,
-                **kwargs,
-            )
+            response = await _run_converse(converse_model_id, streaming=True)
             stream_events = response.get("stream", [])
 
             request_id = f"chatcmpl-bedrock-{asyncio.get_event_loop().time():.0f}"
@@ -351,32 +760,61 @@ async def proxy_bedrock_request(
                 }
             )
         except Exception as e:
+            if (
+                not is_bedrock_inference_profile_id(model_name)
+                and "inference profile" in str(e).lower()
+            ):
+                retry_id = bedrock_heuristic_inference_profile_id(model_name, region)
+                if retry_id != converse_model_id:
+                    logger.info(f"[Bedrock] Retrying stream with inference profile {retry_id!r}")
+                    try:
+                        response = await _run_converse(retry_id, streaming=True)
+                        stream_events = response.get("stream", [])
+                        request_id = f"chatcmpl-bedrock-{asyncio.get_event_loop().time():.0f}"
+
+                        async def _stream_generator_retry():
+                            for chunk in _bedrock_stream_to_sse(stream_events, model_name, request_id):
+                                yield chunk
+
+                        return StreamingResponse(
+                            _stream_generator_retry(),
+                            media_type="text/event-stream; charset=utf-8",
+                            headers={
+                                "Cache-Control": "no-cache, no-transform",
+                                "X-Accel-Buffering": "no",
+                                "Connection": "keep-alive",
+                            },
+                        )
+                    except Exception as retry_e:
+                        e = retry_e
             logger.error(f"[Bedrock] Streaming error: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Bedrock streaming error: {str(e)}")
     else:
-        # Non-streaming path
         try:
-            kwargs = {
-                "modelId": model_name,
-                "messages": bedrock_request.get("messages", []),
-            }
-            if "inferenceConfig" in bedrock_request:
-                kwargs["inferenceConfig"] = bedrock_request["inferenceConfig"]
-            if "system" in bedrock_request:
-                kwargs["system"] = bedrock_request["system"]
-            if "toolConfig" in bedrock_request:
-                kwargs["toolConfig"] = bedrock_request["toolConfig"]
-
-            response = await asyncio.to_thread(
-                client.converse,
-                **kwargs,
-            )
-
+            response = await _run_converse(converse_model_id, streaming=False)
             openai_response = _bedrock_response_to_openai(
-                response, model_name, request_id=f"chatcmpl-bedrock-{asyncio.get_event_loop().time():.0f}"
+                response,
+                model_name,
+                request_id=f"chatcmpl-bedrock-{asyncio.get_event_loop().time():.0f}",
             )
             return openai_response
         except Exception as e:
+            if (
+                not is_bedrock_inference_profile_id(model_name)
+                and "inference profile" in str(e).lower()
+            ):
+                retry_id = bedrock_heuristic_inference_profile_id(model_name, region)
+                if retry_id != converse_model_id:
+                    logger.info(f"[Bedrock] Retrying converse with inference profile {retry_id!r}")
+                    try:
+                        response = await _run_converse(retry_id, streaming=False)
+                        return _bedrock_response_to_openai(
+                            response,
+                            model_name,
+                            request_id=f"chatcmpl-bedrock-{asyncio.get_event_loop().time():.0f}",
+                        )
+                    except Exception as retry_e:
+                        e = retry_e
             logger.error(f"[Bedrock] Converse error: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Bedrock error: {str(e)}")
 
@@ -387,35 +825,36 @@ async def proxy_bedrock_request(
 
 async def health_check_bedrock(
     access_key: str,
-    secret_key: str,
+    secret_key: Optional[str],
     region: str,
     session_token: Optional[str] = None,
-    timeout: float = 5.0
+    timeout: float = 5.0,
+    bedrock_auth_mode: Optional[str] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Health check a Bedrock node by listing foundation models."""
-    import boto3
-
+    mode = resolve_bedrock_auth_mode(bedrock_auth_mode, secret_key)
     try:
-        creds = {
-            "aws_access_key_id": access_key,
-            "aws_secret_access_key": secret_key,
-            "region_name": region,
-        }
-        if session_token:
-            creds["aws_session_token"] = session_token
+        if mode == "api_key":
+            return await _health_check_bedrock_api_key_http(access_key, region, timeout)
 
-        bedrock_client = boto3.client("bedrock", **creds)
+        _, bedrock_client = await _get_bedrock_clients(
+            access_key=access_key,
+            secret_key=secret_key,
+            region=region,
+            session_token=session_token,
+            bedrock_auth_mode=bedrock_auth_mode,
+        )
         await asyncio.wait_for(
             asyncio.to_thread(
                 bedrock_client.list_foundation_models,
-                byOutputModality="TEXT"
+                byOutputModality="TEXT",
             ),
-            timeout=timeout
+            timeout=timeout,
         )
         return True, None
     except Exception as e:
         error_msg = str(e)
-        logger.warning(f"[Bedrock] Health check failed: {error_msg}")
+        logger.warning(f"[Bedrock] Health check failed (mode={mode}): {error_msg}")
         return False, error_msg
 
 
@@ -425,42 +864,64 @@ async def health_check_bedrock(
 
 async def discover_bedrock_models(
     access_key: str,
-    secret_key: str,
+    secret_key: Optional[str],
     region: str,
-    session_token: Optional[str] = None
+    session_token: Optional[str] = None,
+    bedrock_auth_mode: Optional[str] = None,
 ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
-    """Discover available Bedrock foundation models."""
-    import boto3
-
+    """Discover Bedrock models (inference profile IDs preferred for Converse)."""
+    mode = resolve_bedrock_auth_mode(bedrock_auth_mode, secret_key)
     try:
-        creds = {
-            "aws_access_key_id": access_key,
-            "aws_secret_access_key": secret_key,
-            "region_name": region,
-        }
-        if session_token:
-            creds["aws_session_token"] = session_token
+        if mode == "api_key":
+            ok, profile_models, _profile_map, profile_err = await _list_inference_profiles_http(
+                access_key, region, timeout=30.0
+            )
+            if ok and profile_models:
+                logger.info(
+                    f"[Bedrock] Discovered {len(profile_models)} inference profiles (api_key)"
+                )
+                return True, profile_models, None
 
-        bedrock_client = boto3.client("bedrock", **creds)
+            ok, models, error = await _list_foundation_models_http(access_key, region, timeout=30.0)
+            if ok:
+                return True, models, None
+            if error and ("403" in error or "AccessDenied" in error):
+                logger.warning(
+                    "[Bedrock] API key cannot list models (%s). "
+                    "Node can still serve chat if model IDs are known.",
+                    error or profile_err,
+                )
+                return True, [], None
+            return False, [], error or profile_err
+
+        _, bedrock_client = await _get_bedrock_clients(
+            access_key=access_key,
+            secret_key=secret_key,
+            region=region,
+            session_token=session_token,
+            bedrock_auth_mode=bedrock_auth_mode,
+        )
+        try:
+            profile_resp = await asyncio.to_thread(
+                bedrock_client.list_inference_profiles,
+                typeEquals="SYSTEM_DEFINED",
+                maxResults=1000,
+            )
+            profile_models, _profile_map = _parse_inference_profile_summaries(profile_resp, region)
+            if profile_models:
+                logger.info(
+                    f"[Bedrock] Discovered {len(profile_models)} inference profiles (iam)"
+                )
+                return True, profile_models, None
+        except Exception as profile_e:
+            logger.warning(f"[Bedrock] list_inference_profiles failed: {profile_e}")
+
         response = await asyncio.to_thread(
             bedrock_client.list_foundation_models,
-            byOutputModality="TEXT"
+            byOutputModality="TEXT",
         )
-
-        models = []
-        for summary in response.get("modelSummaries", []):
-            model_id = summary.get("modelId", "")
-            models.append({
-                "name": model_id,
-                "size": None,
-                "digest": None,
-                "modified_at": None,
-                "details": summary,
-                "family": summary.get("providerName", "").lower(),
-            })
-
-        return True, models, None
+        return True, _parse_foundation_model_summaries(response), None
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"[Bedrock] Model discovery failed: {error_msg}")
+        logger.error(f"[Bedrock] Model discovery failed (mode={mode}): {error_msg}")
         return False, [], error_msg
