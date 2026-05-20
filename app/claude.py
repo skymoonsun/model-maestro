@@ -16,7 +16,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.auth import get_current_user, check_model_access
 from app.proxy import ollama_proxy
@@ -28,6 +28,7 @@ from app.config import (
 )
 from app.user_manager import user_manager
 from app.claude_desktop_models import (
+    DESKTOP_PICKER_LABEL_VERSION,
     desktop_name_passes_client_validation,
     is_maestro_desktop_route_id,
     peek_routing_name_from_public_id,
@@ -346,12 +347,16 @@ async def claude_list_models(
     first_id = models_list[0]["id"] if models_list else None
     last_id = models_list[-1]["id"] if models_list else None
 
-    return {
+    body = {
         "data": models_list,
         "has_more": False,
         "first_id": first_id,
         "last_id": last_id,
     }
+    headers: Dict[str, str] = {"Cache-Control": "no-store"}
+    if desktop:
+        headers["X-Maestro-Desktop-Labels"] = DESKTOP_PICKER_LABEL_VERSION
+    return JSONResponse(content=body, headers=headers)
 
 
 # =============================================================================
