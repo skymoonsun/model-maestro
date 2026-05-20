@@ -1392,18 +1392,19 @@ class OllamaProxy:
                 if filtered_allow:
                     nodes = filtered_allow
                     logger.debug(f"[LB] Restricted routing to {len(nodes)} allowed node(s) for model {model_name}")
-                elif strict_allowed_nodes:
-                    # node:code:model — pin to requested node even if catalog sync missed the model
+                else:
+                    # Pin preferred/scoped nodes even when catalog sync missed the model
+                    # (model groups, node:code:model, mapping restrictions).
                     pinned = await self._fetch_nodes_by_ids(allowed_node_ids)
                     if pinned:
                         nodes = pinned
                         logger.info(
-                            f"[LB] Node-scoped routing: using pinned node(s) {allowed_node_ids} for model "
+                            f"[LB] Using pinned node(s) {allowed_node_ids} for model "
                             f"'{model_name}' (not in catalog on those nodes)"
                         )
-                    else:
+                    elif strict_allowed_nodes:
                         logger.error(
-                            f"[LB] Node-scoped routing: pinned node(s) {allowed_node_ids} not found or inactive"
+                            f"[LB] Pinned node(s) {allowed_node_ids} not found or inactive for model '{model_name}'"
                         )
                         raise HTTPException(
                             status_code=404,
@@ -1412,9 +1413,8 @@ class OllamaProxy:
                                 "Check that the node exists, is active, and healthy."
                             ),
                         )
-                else:
-                    # For unmapped/ungrouped models, don't 503; widen the pool instead
-                    if not has_mapping and not is_grouped:
+                    elif not has_mapping and not is_grouped:
+                        # Legacy: unmapped models with stale restrict ids — widen pool
                         logger.warning(
                             f"[LB] allowed_node_ids={allowed_node_ids} produced no candidates for unmapped/ungrouped model "
                             f"'{model_name}' (mapped real '{real_model_name}'). Using all {len(nodes)} found node(s) instead."
@@ -2395,7 +2395,8 @@ class OllamaProxy:
             exclude_scoped=not is_node_scoped and not is_group_request,
             allowed_node_ids=routing_allowed_node_ids,
             routing_catalog_names=routing_catalog_names,
-            strict_allowed_nodes=is_node_scoped,
+            strict_allowed_nodes=is_node_scoped
+            or (is_group_request and bool(routing_allowed_node_ids)),
         )
 
         # Block if no node found (model unavailable)
