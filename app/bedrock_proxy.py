@@ -239,7 +239,7 @@ async def _list_foundation_models_http(
     region: str,
     timeout: float,
 ) -> Tuple[bool, List[Dict[str, Any]], Optional[str]]:
-    """List models via Bedrock control plane HTTP + Bearer (AnythingLLM-style)."""
+    """List models via Bedrock control plane HTTP + Bearer."""
     import httpx
 
     url = f"{_bedrock_control_plane_url(region)}/foundation-models"
@@ -268,7 +268,7 @@ async def _probe_converse_http(
     model_id: str,
     timeout: float,
 ) -> Tuple[bool, Optional[str]]:
-    """Minimal Converse call — matches what AnythingLLM actually uses."""
+    """Minimal Converse call"""
     import httpx
 
     url = f"{_bedrock_runtime_url(region)}/model/{model_id}/converse"
@@ -683,7 +683,7 @@ async def proxy_bedrock_request(
 
     Auth modes:
     - iam: access_key + secret_key (+ optional session_token)
-    - api_key: Bedrock API key in access_key + region (AnythingLLM-style)
+    - api_key: Bedrock API key in access_key + region
     """
     if endpoint not in ("/v1/chat/completions", "/cursor/chat/completions"):
         raise HTTPException(

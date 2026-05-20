@@ -59,7 +59,7 @@ export function BedrockAuthFields({ form, setForm, authMode, onAuthModeChange }:
                     </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground mt-1">
-                    Bedrock API keys work like AnythingLLM: only the API key and region are required.
+                    Bedrock API keys : only the API key and region are required.
                 </p>
             </div>
             {authMode === 'iam' ? (
