@@ -4,8 +4,12 @@ Claude Desktop (Cowork 3P) opaque model ids.
 Desktop rejects model ids containing third-party substrings (kimi, qwen, gemma, …)
 even when prefixed with ``claude-``. We expose stable opaque ids:
 
-  id: ``claude-maestro-{sha256(routing_name)[:12]}``
+  id: ``claude-route-{sha256(routing_name)[:12]}`` (legacy: ``claude-maestro-…``)
   display_name: Desktop-safe label (sanitized; routing still uses real name)
+
+Desktop fallback when ``display_name`` is rejected: parses ``claude-maestro-{hash}`` as
+``Maestro`` + leading digits from the hash (e.g. ``27561387dfe8`` → ``Maestro 27561387``).
+Avoid ``maestro`` in the id prefix; use ``claude-route-`` instead.
 
 Routing names are registered in memory (same request) and Redis (cross-request).
 """
@@ -20,7 +24,9 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Public id prefix — must include ``claude`` for Desktop gateway validation.
-MAESTRO_ROUTE_PREFIX = "claude-maestro-"
+# Do NOT use ``claude-maestro-``: Desktop formats rejected labels as "Maestro {hash digits}".
+MAESTRO_ROUTE_PREFIX = "claude-route-"
+_LEGACY_MAESTRO_ROUTE_PREFIX = "claude-maestro-"
 
 # Legacy obfuscation / gw ids (resolve only, no longer emitted).
 _LEGACY_GW_PREFIX = "claude-gw-"
@@ -97,8 +103,18 @@ def route_hash(routing_name: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
+def opaque_route_hash_suffix(model_id: str) -> Optional[str]:
+    """12-char hex suffix from ``claude-route-…`` or legacy ``claude-maestro-…``."""
+    raw = model_id or ""
+    for prefix in (MAESTRO_ROUTE_PREFIX, _LEGACY_MAESTRO_ROUTE_PREFIX):
+        if raw.startswith(prefix):
+            return raw[len(prefix) :]
+    return None
+
+
 def is_maestro_desktop_route_id(model_id: str) -> bool:
-    return (model_id or "").startswith(MAESTRO_ROUTE_PREFIX)
+    suffix = opaque_route_hash_suffix(model_id)
+    return bool(suffix and re.fullmatch(r"[a-f0-9]{12}", suffix))
 
 
 def _remember_route(routing_name: str) -> str:
@@ -118,8 +134,8 @@ def peek_routing_name_from_public_id(public_id: str) -> Optional[str]:
     raw = (public_id or "").strip()
     if not is_maestro_desktop_route_id(raw):
         return None
-    digest = raw[len(MAESTRO_ROUTE_PREFIX) :]
-    return _memory_routes.get(digest)
+    digest = opaque_route_hash_suffix(raw)
+    return _memory_routes.get(digest) if digest else None
 
 
 def _display_contains_blocked_substring(label: str) -> bool:
@@ -131,9 +147,10 @@ def to_desktop_display_name(routing_name: str) -> str:
     """
     Picker label safe for Claude Desktop.
 
-    Desktop hides ``display_name`` when it contains gateway-competitor /
-    Anthropic-brand tokens (e.g. gemini, claude, opus) and shows
-    ``Maestro`` + leading digits from ``claude-maestro-{hash}`` instead.
+    Desktop may hide ``display_name`` when it contains tokens like ``gemini`` /
+    ``claude`` / ``gpt``. It then derives a label from the id; legacy ids
+    ``claude-maestro-{hash}`` become ``Maestro {leading digits}`` (e.g.
+    ``27561387dfe8`` → ``Maestro 27561387``).
     """
     name = (routing_name or "").strip()
     if not name:
@@ -157,8 +174,7 @@ def desktop_name_passes_client_validation(model_id: str) -> bool:
     if not model_id:
         return False
     if is_maestro_desktop_route_id(model_id):
-        suffix = model_id[len(MAESTRO_ROUTE_PREFIX) :]
-        return bool(re.fullmatch(r"[a-f0-9]{12}", suffix))
+        return True
     lower = model_id.lower()
     if any(block in lower for block in DESKTOP_BLOCKED_SUBSTRINGS):
         return False
@@ -190,7 +206,7 @@ async def resolve_desktop_public_id(public_id: str) -> str:
         return raw
 
     if is_maestro_desktop_route_id(raw):
-        digest = raw[len(MAESTRO_ROUTE_PREFIX) :]
+        digest = opaque_route_hash_suffix(raw) or ""
         if digest in _memory_routes:
             return _memory_routes[digest]
         try:

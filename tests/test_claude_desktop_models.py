@@ -30,7 +30,7 @@ def clear_memory_routes() -> None:
 def test_opaque_id_avoids_blocked_substrings() -> None:
     internal = "google/codegemma-7b"
     public = to_desktop_public_id(internal)
-    assert public.startswith("claude-maestro-")
+    assert public.startswith("claude-route-")
     assert "gemma" not in public
     assert "google" not in public
     assert desktop_name_passes_client_validation(public)
@@ -73,6 +73,14 @@ def test_desktop_display_name_normalizes_slashes() -> None:
 def test_desktop_display_name_leaves_unblocked_names() -> None:
     assert to_desktop_display_name("kimi-k2.6:latest") == "kimi-k2.6:latest"
     assert to_desktop_display_name("qwen3.5:latest") == "qwen3.5:latest"
+
+
+def test_legacy_maestro_prefix_still_resolves() -> None:
+    internal = "gemini-3.5-flash-low"
+    public = to_desktop_public_id(internal)
+    legacy = public.replace("claude-route-", "claude-maestro-", 1)
+    resolved = asyncio.run(resolve_desktop_public_id(legacy))
+    assert resolved == normalize_routing_name(internal)
 
 
 def test_opaque_id_resolves_with_desktop_header() -> None:
