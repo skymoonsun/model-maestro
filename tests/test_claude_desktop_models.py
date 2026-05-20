@@ -7,13 +7,11 @@ from fastapi import HTTPException
 
 from app.claude import _resolve_claude_request_model
 from app.claude_desktop_models import (
-    _alias_to_routing,
     _memory_routes,
     desktop_name_passes_client_validation,
     is_maestro_desktop_route_id,
     normalize_routing_name,
     peek_routing_name_from_public_id,
-    register_desktop_route_alias,
     resolve_desktop_public_id,
     route_hash,
     to_desktop_public_id,
@@ -23,10 +21,8 @@ from app.claude_desktop_models import (
 @pytest.fixture(autouse=True)
 def clear_memory_routes() -> None:
     _memory_routes.clear()
-    _alias_to_routing.clear()
     yield
     _memory_routes.clear()
-    _alias_to_routing.clear()
 
 
 def test_opaque_id_avoids_blocked_substrings() -> None:
@@ -64,26 +60,6 @@ def test_opaque_id_not_found_without_desktop_header() -> None:
 def test_opaque_id_resolves_with_desktop_header() -> None:
     internal = "google/codegemma-7b"
     public = to_desktop_public_id(internal)
-    resolved, pids = asyncio.run(_resolve_claude_request_model(public, desktop=True))
+    resolved = asyncio.run(_resolve_claude_request_model(public, desktop=True))
     assert resolved == normalize_routing_name(internal)
     assert not is_maestro_desktop_route_id(resolved)
-    assert pids is None
-
-
-def test_display_alias_resolves_to_canonical_routing_name() -> None:
-    canonical = "google/codegemma-7b"
-    alias = "google/code"
-    register_desktop_route_alias(alias, canonical)
-    public = to_desktop_public_id(canonical)
-    assert peek_routing_name_from_public_id(public) == canonical
-
-    resolved_opaque, _ = asyncio.run(_resolve_claude_request_model(public, desktop=True))
-    assert resolved_opaque == canonical
-
-    resolved_alias, _ = asyncio.run(_resolve_claude_request_model(alias, desktop=True))
-    assert resolved_alias == canonical
-
-    resolved_legacy, _ = asyncio.run(
-        _resolve_claude_request_model(f"claude-{alias}", desktop=True)
-    )
-    assert resolved_legacy == canonical

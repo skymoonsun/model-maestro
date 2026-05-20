@@ -23,7 +23,6 @@ from app.proxy import ollama_proxy
 from app.config import (
     get_settings,
     model_mapper,
-    model_group_manager,
     get_context_length_for_model,
     filter_tools_for_model,
 )
@@ -33,7 +32,6 @@ from app.claude_desktop_models import (
     is_maestro_desktop_route_id,
     peek_routing_name_from_public_id,
     persist_desktop_routes_to_redis,
-    register_desktop_route_alias,
     resolve_desktop_public_id,
     to_desktop_public_id,
 )
@@ -143,63 +141,26 @@ def _model_list_capabilities(model_id: str, *, desktop: bool) -> Dict[str, Any]:
     }
 
 
-async def _resolve_claude_request_model(
-    raw_model: str,
-    *,
-    desktop: bool,
-    request_data: Optional[Dict[str, Any]] = None,
-) -> tuple[str, Optional[List[int]]]:
+async def _resolve_claude_request_model(raw_model: str, *, desktop: bool) -> str:
     """
     Normalize model id from Claude clients to Maestro internal routing name.
 
     Opaque ``claude-maestro-{hash}`` ids are resolved only with the Desktop header;
     without it the model is treated as not found (no hash lookup).
-
-    Returns:
-        (routing_model_name, preferred_node_ids from model groups)
     """
-    raw = (raw_model or "").strip()
-    preferred_node_ids: Optional[List[int]] = None
-
-    if is_maestro_desktop_route_id(raw):
+    model_name = (raw_model or "").strip()
+    if is_maestro_desktop_route_id(model_name):
         if not desktop:
             raise HTTPException(
                 status_code=404,
-                detail=f"Model '{raw}' not found",
+                detail=f"Model '{model_name}' not found",
             )
-        model_name = await resolve_desktop_public_id(raw)
-    elif desktop:
-        model_name = await resolve_desktop_public_id(raw)
-    elif raw.startswith("claude-"):
-        model_name = raw[7:]
-    else:
-        model_name = raw
-
-    await model_mapper.ensure_loaded()
-    mapped = model_mapper.get_real_model_name(model_name)
-    if mapped != model_name:
-        logger.info(f"[Claude] Model mapping: '{model_name}' -> '{mapped}'")
-        model_name = mapped
-
-    await model_group_manager.ensure_loaded()
-    group_resolved, pids = await model_group_manager.resolve_model_with_metadata(
-        model_name, request_data
-    )
-    if group_resolved != model_name:
-        logger.info(
-            f"[Claude] Model group: '{model_name}' -> '{group_resolved}' "
-            f"(preferred_node_ids={pids})"
-        )
-        model_name = group_resolved
-        preferred_node_ids = pids
-
-    if raw != model_name:
-        logger.info(
-            f"[Claude] Resolved client model '{raw}' -> routing '{model_name}' "
-            f"(desktop={desktop}, preferred_node_ids={preferred_node_ids})"
-        )
-
-    return model_name, preferred_node_ids
+        return await resolve_desktop_public_id(model_name)
+    if desktop:
+        return await resolve_desktop_public_id(model_name)
+    if model_name.startswith("claude-"):
+        return model_name[7:]
+    return model_name
 
 
 def _desktop_listing_entry(
@@ -207,12 +168,11 @@ def _desktop_listing_entry(
     *,
     desktop: bool,
     ctx_len: int,
-    display_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build one Anthropic ModelInfo object for GET /v1/models."""
     if desktop:
         public_id = to_desktop_public_id(internal_name)
-        display = display_name if display_name is not None else internal_name
+        display = internal_name
     else:
         public_id = (
             internal_name
@@ -330,11 +290,6 @@ async def claude_list_models(
 
     await model_mapper.ensure_loaded()
 
-    if desktop:
-        for display, real in model_mapper.get_all_mappings().items():
-            if display != real:
-                register_desktop_route_alias(display, real)
-
     if isinstance(all_models_response, dict) and "models" in all_models_response:
         for model in all_models_response["models"]:
             model_id = model.get("name") or model.get("model")
@@ -343,14 +298,7 @@ async def claude_list_models(
                 ids_to_add = display_names if display_names else [model_id]
                 for name in ids_to_add:
                     ctx_len = get_context_length_for_model(name) or 131072
-                    entry = _desktop_listing_entry(
-                        model_id,
-                        desktop=desktop,
-                        ctx_len=ctx_len,
-                        display_name=name if name != model_id else None,
-                    )
-                    if desktop and name != model_id:
-                        register_desktop_route_alias(name, model_id)
+                    entry = _desktop_listing_entry(name, desktop=desktop, ctx_len=ctx_len)
                     if desktop and not desktop_name_passes_client_validation(entry["id"]):
                         logger.warning(
                             f"[Claude][Desktop] Skipping model '{name}' — public id failed validation: "
@@ -420,11 +368,7 @@ async def claude_messages(
     """
     body = await request.json()
     desktop = _is_claude_desktop_client(request)
-    model_name, preferred_node_ids = await _resolve_claude_request_model(
-        body.get("model", ""),
-        desktop=desktop,
-        request_data=body,
-    )
+    model_name = await _resolve_claude_request_model(body.get("model", ""), desktop=desktop)
     stream = body.get("stream", False)
     messages = body.get("messages", [])
     system = body.get("system")
@@ -461,17 +405,18 @@ async def claude_messages(
     if not within_limits:
         raise HTTPException(status_code=429, detail="Daily request limit exceeded")
 
-    # Build Ollama request body (model_name is already mapped / group-resolved)
+    # Map display model name -> real Ollama model name
+    real_model_name = model_mapper.get_real_model_name(model_name)
+
+    # Build Ollama request body
     ollama_body: Dict[str, Any] = {
-        "model": model_name,
+        "model": real_model_name,
         "stream": stream,
         "options": {
             "num_ctx": get_context_length_for_model(model_name),
         },
         "keep_alive": -1,
     }
-    if preferred_node_ids:
-        ollama_body["_preferred_node_ids"] = preferred_node_ids
 
     # Normalize Anthropic messages -> OpenAI/Ollama format
     normalized_messages = _normalize_anthropic_messages(messages)
@@ -743,13 +688,11 @@ async def claude_count_tokens(
     """
     body = await request.json()
     desktop = _is_claude_desktop_client(request)
-    model_name, preferred_node_ids = await _resolve_claude_request_model(
-        body.get("model", ""),
-        desktop=desktop,
-        request_data=body,
-    )
-    if preferred_node_ids:
-        body = {**body, "_preferred_node_ids": preferred_node_ids}
+    model_name = await _resolve_claude_request_model(body.get("model", ""), desktop=desktop)
+    if not desktop and model_name.startswith("claude-"):
+        stripped = model_name[7:]
+        if model_mapper._mapping_lookup_key(stripped) is not None:
+            model_name = stripped
     messages = body.get("messages", [])
     system = body.get("system")
     tools = body.get("tools", [])
