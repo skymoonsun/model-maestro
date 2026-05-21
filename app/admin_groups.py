@@ -179,6 +179,7 @@ async def update_model_group(
 
     Request body (partial update):
     {
+        "name": "new-group-name",
         "description": "Updated description",
         "strategy": "priority",
         "is_active": false
@@ -187,7 +188,27 @@ async def update_model_group(
     async with async_session_maker() as session:
         repo = ModelGroupRepository(session)
 
-        # Build update dict from request
+        # Validate target group exists
+        current_group = await repo.get_group_by_name(name)
+        if not current_group:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model group '{name}' not found"
+            )
+
+        # Handle name change
+        if request.name is not None and request.name != name:
+            # Check uniqueness for new name
+            existing = await repo.get_group_by_name(request.name)
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"A model group with the name '{request.name}' already exists"
+                )
+            # Update the name field directly on the entity
+            current_group.name = request.name
+
+        # Build update dict for other fields
         update_data = {}
         if request.description is not None:
             update_data["description"] = request.description
@@ -198,29 +219,19 @@ async def update_model_group(
         if request.list_in_catalog is not None:
             update_data["list_in_catalog"] = request.list_in_catalog
 
-        if not update_data:
-            # No fields to update, return current state
-            result = await repo.get_group_with_members(name)
-            if not result:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Model group '{name}' not found"
-                )
-            group, members = result
-            return await _build_group_detail_response(session, group, members)
+        # Apply any remaining updates
+        if update_data:
+            for key, value in update_data.items():
+                if hasattr(current_group, key):
+                    setattr(current_group, key, value)
+            await session.flush()
 
-        group = await repo.update_group(name, **update_data)
+        # Determine which name to use for member lookup (may have changed)
+        effective_name = request.name if request.name is not None else name
+        members = await repo.get_members_by_group_name(effective_name)
+        await session.refresh(current_group)
 
-        if not group:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Model group '{name}' not found"
-            )
-
-        members = await repo.get_members_by_group_name(name)
-        await session.refresh(group)
-
-        response = await _build_group_detail_response(session, group, members)
+        response = await _build_group_detail_response(session, current_group, members)
         await session.commit()
 
         await model_group_manager.reload()

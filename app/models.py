@@ -879,6 +879,7 @@ class ModelGroupCreateRequest(BaseModel):
 
 class ModelGroupUpdateRequest(BaseModel):
     """Update model group request"""
+    name: Optional[str] = None
     description: Optional[str] = None
     strategy: Optional[str] = None
     is_active: Optional[bool] = None
