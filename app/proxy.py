@@ -1026,7 +1026,7 @@ class OllamaProxy:
     # (model might be available on a different node)
     NODE_RETRYABLE_STATUS_CODES = {400, 404, 408, 423, 429, 500, 502, 503, 504}
     # Upstream errors that trigger the next member in a model group (after node retry)
-    MODEL_GROUP_FAILOVER_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+    MODEL_GROUP_FAILOVER_STATUS_CODES = frozenset({404, 408, 429, 500, 502, 503, 504})
 
     _CHAT_COMPLETION_ENDPOINTS = (
         "/v1/chat/completions",
@@ -1092,13 +1092,17 @@ class OllamaProxy:
         routing_catalog_names: Optional[List[str]],
         status_code: int,
         attempt: int,
-    ) -> Optional[Tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str]]:
+    ) -> Optional[Tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str, Optional[List[int]]]]:
         """Try the next model group member. Returns updated routing state or None."""
         if not self._should_model_group_failover(status_code, original_group, attempt):
             return None
 
         fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
         if not fallback_model or fallback_model in tried_models:
+            logger.warning(
+                f"[FAILOVER] No remaining members in group '{original_group}' "
+                f"(failed={failed_for_group}, tried={sorted(tried_models)})"
+            )
             return None
 
         logger.warning(
@@ -1106,7 +1110,7 @@ class OllamaProxy:
         )
         tried_models.add(fallback_model)
 
-        current_data = original_data.copy() if original_data else {}
+        current_data = current_data.copy()
         current_data["model"] = fallback_model
         current_data = await self._resolve_model_groups(current_data)
         rsnap.clear()
@@ -1122,6 +1126,7 @@ class OllamaProxy:
             exclude_scoped=exclude_scoped,
             allowed_node_ids=fb_allowed,
             routing_catalog_names=routing_catalog_names,
+            strict_allowed_nodes=bool(fb_allowed),
         )
         if (
             not bypass_node_access
@@ -1136,6 +1141,9 @@ class OllamaProxy:
             return None
 
         if not new_base_url:
+            logger.warning(
+                f"[FAILOVER] No healthy node hosts fallback model '{fb_display or fallback_model}'"
+            )
             return None
 
         tried_nodes.clear()
@@ -1145,7 +1153,7 @@ class OllamaProxy:
         logger.info(
             f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})"
         )
-        return current_data, current_url, new_api_key, new_headers, new_node_type
+        return current_data, current_url, new_api_key, new_headers, new_node_type, fb_allowed
 
     @staticmethod
     def _short_upstream_error(
@@ -2493,6 +2501,9 @@ class OllamaProxy:
             routing_catalog_names = rc if rc else None
 
         routing_allowed_node_ids = self._prepare_routing_allowed(data, model_name)
+        group_strict_nodes = is_node_scoped or (
+            is_group_request and bool(routing_allowed_node_ids)
+        )
 
         base_url = None
         api_key = None
@@ -2663,7 +2674,7 @@ class OllamaProxy:
                     bypass_node_access=is_group_request,
                     client_headers=client_headers,
                     allowed_node_ids=routing_allowed_node_ids,
-                    strict_allowed_nodes=is_node_scoped,
+                    strict_allowed_nodes=group_strict_nodes,
                     routing_snapshot=routing_snapshot,
                     routing_catalog_names=routing_catalog_names,
                     source=source,
@@ -2691,7 +2702,7 @@ class OllamaProxy:
                 bypass_node_access=is_group_request,
                 client_headers=client_headers,
                 allowed_node_ids=routing_allowed_node_ids,
-                strict_allowed_nodes=is_node_scoped,
+                strict_allowed_nodes=group_strict_nodes,
                 routing_snapshot=routing_snapshot,
                 routing_catalog_names=routing_catalog_names,
                 source=source,
@@ -2770,7 +2781,7 @@ class OllamaProxy:
 
         async def stream_generator_with_failover():
             """Generator that handles failover for streaming requests"""
-            nonlocal tried_models, tried_nodes
+            nonlocal tried_models, tried_nodes, allowed_node_ids
 
             # Store error info for potential failover
             last_error = None
@@ -2812,8 +2823,7 @@ class OllamaProxy:
                         provider_label = current_node_type.capitalize()
                         error_msg = f"Upstream error {upstream_error}"
                         will_node_retry = (
-                            not strict_allowed_nodes
-                            and upstream_error in self.NODE_RETRYABLE_STATUS_CODES
+                            upstream_error in self.NODE_RETRYABLE_STATUS_CODES
                             and attempt < MAX_FAILOVER_RETRIES
                         )
                         self._short_upstream_error(
@@ -2824,6 +2834,7 @@ class OllamaProxy:
                             error_msg,
                             will_retry=will_node_retry,
                         )
+
                         if will_node_retry:
                             tried_nodes.add(current_base_url)
                             new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
@@ -2883,6 +2894,7 @@ class OllamaProxy:
                                 current_api_key,
                                 current_headers,
                                 current_node_type,
+                                allowed_node_ids,
                             ) = fallback_state
                             continue
 
@@ -2972,8 +2984,7 @@ class OllamaProxy:
                                 pass
 
                             will_node_retry = (
-                                not strict_allowed_nodes
-                                and resp.status_code in self.NODE_RETRYABLE_STATUS_CODES
+                                resp.status_code in self.NODE_RETRYABLE_STATUS_CODES
                                 and attempt < MAX_FAILOVER_RETRIES
                             )
                             self._short_upstream_error(
@@ -2985,7 +2996,7 @@ class OllamaProxy:
                                 will_retry=will_node_retry,
                             )
 
-                            # === NODE-LEVEL RETRY ===
+                            # === NODE-LEVEL RETRY (preferred pool first) ===
                             if will_node_retry:
                                 tried_nodes.add(current_base_url)
 
@@ -3017,7 +3028,6 @@ class OllamaProxy:
                                     continue
                                 logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
-                            # === MODEL-LEVEL FALLBACK ===
                             failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
                             fallback_state = await self._apply_model_group_fallback(
                                 original_group=original_group,
@@ -3042,6 +3052,7 @@ class OllamaProxy:
                                     current_api_key,
                                     current_headers,
                                     current_node_type,
+                                    allowed_node_ids,
                                 ) = fallback_state
                                 continue
 
@@ -3626,7 +3637,7 @@ class OllamaProxy:
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first
-                    if not strict_allowed_nodes and attempt < MAX_FAILOVER_RETRIES:
+                    if attempt < MAX_FAILOVER_RETRIES:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                         tried_nodes.add(current_base_url)
 
@@ -3692,6 +3703,7 @@ class OllamaProxy:
                             if new_base_url:
                                 tried_nodes.add(new_base_url)
                                 current_api_key = new_api_key
+                                allowed_node_ids = fb_allowed
                                 current_data = await self._rebind_body_to_node(
                                     current_data, rsnap, new_base_url
                                 )
@@ -3827,8 +3839,7 @@ class OllamaProxy:
                 response_status = exc.status_code
                 provider_label = current_node_type.capitalize()
                 will_node_retry = (
-                    not strict_allowed_nodes
-                    and response_status in self.NODE_RETRYABLE_STATUS_CODES
+                    response_status in self.NODE_RETRYABLE_STATUS_CODES
                     and attempt < MAX_FAILOVER_RETRIES
                 )
                 self._short_upstream_error(
@@ -3839,6 +3850,7 @@ class OllamaProxy:
                     error_text,
                     will_retry=will_node_retry,
                 )
+
                 if will_node_retry:
                     tried_nodes.add(current_base_url)
                     new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
@@ -3899,9 +3911,11 @@ class OllamaProxy:
                         current_api_key,
                         current_headers,
                         current_node_type,
+                        allowed_node_ids,
                     ) = fallback_state
                     last_error = exc
                     continue
+
                 raise
 
             try:
@@ -3972,8 +3986,7 @@ class OllamaProxy:
                         pass
 
                     will_node_retry = (
-                        not strict_allowed_nodes
-                        and response.status_code in self.NODE_RETRYABLE_STATUS_CODES
+                        response.status_code in self.NODE_RETRYABLE_STATUS_CODES
                         and attempt < MAX_FAILOVER_RETRIES
                     )
                     self._short_upstream_error(
@@ -3985,7 +3998,7 @@ class OllamaProxy:
                         will_retry=will_node_retry,
                     )
 
-                    # === NODE-LEVEL RETRY ===
+                    # === NODE-LEVEL RETRY (preferred pool first) ===
                     if will_node_retry:
                         tried_nodes.add(current_base_url)
 
@@ -4021,7 +4034,6 @@ class OllamaProxy:
                             continue
                         logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
-                    # === MODEL-LEVEL FALLBACK ===
                     failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
                     fallback_state = await self._apply_model_group_fallback(
                         original_group=original_group,
@@ -4046,6 +4058,7 @@ class OllamaProxy:
                             current_api_key,
                             current_headers,
                             current_node_type,
+                            allowed_node_ids,
                         ) = fallback_state
                         last_error = HTTPException(
                             status_code=response.status_code,
@@ -4130,7 +4143,7 @@ class OllamaProxy:
                 )
 
                 # === NODE-LEVEL RETRY ===
-                if not strict_allowed_nodes and attempt < MAX_FAILOVER_RETRIES:
+                if attempt < MAX_FAILOVER_RETRIES:
                     tried_nodes.add(current_base_url)
 
                     new_base_url, new_api_key, new_node_type, _, _ = await self._select_node_url(
@@ -4198,6 +4211,7 @@ class OllamaProxy:
                         if new_base_url:
                             tried_nodes.add(new_base_url)
                             current_api_key = new_api_key
+                            allowed_node_ids = fb_allowed
                             current_data = await self._rebind_body_to_node(
                                 current_data, rsnap, new_base_url
                             )
