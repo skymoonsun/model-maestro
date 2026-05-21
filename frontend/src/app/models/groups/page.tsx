@@ -181,6 +181,7 @@ function GroupDetail({
 
     const [editing, setEditing] = useState(false);
     const [editForm, setEditForm] = useState({
+        name: group.name,
         description: group.description || '',
         strategy: group.strategy,
         is_active: group.is_active,
@@ -239,8 +240,15 @@ function GroupDetail({
 
     const updateMut = useMutation({
         mutationFn: (data: Partial<ModelGroupCreate>) => modelGroupsApi.update(group.name, data),
-        onSuccess: () => {
+        onSuccess: (_data, variables) => {
             qc.invalidateQueries({ queryKey: ['model-groups'] });
+            if (variables.name && variables.name !== group.name) {
+                // Group name changed; return to list so the detail query refetches
+                // with the new name key.
+                toast.success('Group updated — returning to list');
+                onBack();
+                return;
+            }
             toast.success('Group updated');
             setEditing(false);
         },
@@ -313,6 +321,13 @@ function GroupDetail({
                 <DialogContent>
                     <DialogHeader><DialogTitle>Edit Group</DialogTitle></DialogHeader>
                     <div className="space-y-4 py-4">
+                        <div>
+                            <Label>Name</Label>
+                            <Input
+                                value={editForm.name}
+                                onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                            />
+                        </div>
                         <div>
                             <Label>Description</Label>
                             <Input
