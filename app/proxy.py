@@ -1025,6 +1025,8 @@ class OllamaProxy:
     # HTTP status codes that should trigger a retry on another node
     # (model might be available on a different node)
     NODE_RETRYABLE_STATUS_CODES = {400, 404, 408, 423, 429, 500, 502, 503, 504}
+    # Upstream errors that trigger the next member in a model group (after node retry)
+    MODEL_GROUP_FAILOVER_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
     _CHAT_COMPLETION_ENDPOINTS = (
         "/v1/chat/completions",
@@ -1037,6 +1039,113 @@ class OllamaProxy:
         if endpoint and endpoint in request_url:
             return request_url.rsplit(endpoint, 1)[0]
         return fallback
+
+    @staticmethod
+    def _sse_error_code_from_chunk(chunk: bytes) -> Optional[int]:
+        """Extract OpenAI-style ``error.code`` from an SSE chunk, if present."""
+        try:
+            text = chunk.decode("utf-8", errors="replace")
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                payload = _json_loads(line[6:])
+                if not isinstance(payload, dict):
+                    continue
+                err = payload.get("error")
+                if isinstance(err, dict):
+                    code = err.get("code")
+                    if isinstance(code, int):
+                        return code
+                    if isinstance(code, str) and code.isdigit():
+                        return int(code)
+        except (_json_decode_error, TypeError, ValueError):
+            pass
+        return None
+
+    def _should_model_group_failover(
+        self,
+        status_code: int,
+        original_group: Optional[str],
+        attempt: int,
+    ) -> bool:
+        return (
+            bool(original_group)
+            and attempt < MAX_FAILOVER_RETRIES
+            and status_code in self.MODEL_GROUP_FAILOVER_STATUS_CODES
+        )
+
+    async def _apply_model_group_fallback(
+        self,
+        *,
+        original_group: Optional[str],
+        failed_for_group: str,
+        tried_models: set,
+        original_data: Optional[Dict[str, Any]],
+        current_data: Dict[str, Any],
+        rsnap: Dict[str, str],
+        endpoint: str,
+        exclude_scoped: bool,
+        bypass_node_access: bool,
+        username: Optional[str],
+        tried_nodes: set,
+        routing_catalog_names: Optional[List[str]],
+        status_code: int,
+        attempt: int,
+    ) -> Optional[Tuple[Dict[str, Any], str, Optional[str], Optional[Dict[str, Any]], str]]:
+        """Try the next model group member. Returns updated routing state or None."""
+        if not self._should_model_group_failover(status_code, original_group, attempt):
+            return None
+
+        fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
+        if not fallback_model or fallback_model in tried_models:
+            return None
+
+        logger.warning(
+            f"[FAILOVER] Error {status_code}, trying fallback model: {fallback_model}"
+        )
+        tried_models.add(fallback_model)
+
+        current_data = original_data.copy() if original_data else {}
+        current_data["model"] = fallback_model
+        current_data = await self._resolve_model_groups(current_data)
+        rsnap.clear()
+        for snap_key in ("model", "name", "source", "destination"):
+            v = current_data.get(snap_key)
+            if isinstance(v, str):
+                rsnap[snap_key] = v
+
+        fb_display = current_data.get("model") or current_data.get("name")
+        fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
+        new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
+            fb_display or fallback_model,
+            exclude_scoped=exclude_scoped,
+            allowed_node_ids=fb_allowed,
+            routing_catalog_names=routing_catalog_names,
+        )
+        if (
+            not bypass_node_access
+            and new_base_url
+            and username
+            and not await self._check_user_node_access(username, new_base_url)
+        ):
+            logger.warning(
+                f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping"
+            )
+            tried_nodes.add(new_base_url)
+            return None
+
+        if not new_base_url:
+            return None
+
+        tried_nodes.clear()
+        tried_nodes.add(new_base_url)
+        current_url = f"{new_base_url}{endpoint}"
+        current_data = await self._rebind_body_to_node(current_data, rsnap, new_base_url)
+        logger.info(
+            f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})"
+        )
+        return current_data, current_url, new_api_key, new_headers, new_node_type
 
     @staticmethod
     def _short_upstream_error(
@@ -2281,7 +2390,7 @@ class OllamaProxy:
         1. Node retry: On retryable errors (404, 423, 429, 5xx, connection errors),
            try the same model on a different node.
         2. Model fallback: If all nodes are exhausted and the model belongs to a group,
-           try the next fallback model in the group (only for 5xx and connection errors).
+           try the next member (429 quota/rate-limit and 5xx).
 
         Args:
             method: HTTP method (GET, POST, DELETE)
@@ -2465,100 +2574,7 @@ class OllamaProxy:
                 logger.warning(f"[Access] User '{username}' denied access to model '{mapped_model_name}' on node {selected_node_id}")
                 raise HTTPException(status_code=403, detail="Access denied to this model on this node")
 
-        # ============================================================
-        # ANTIGRAVITY (Google v1internal) ROUTING
-        # ============================================================
-        if node_type == 'antigravity' and isinstance(data, dict):
-            # Antigravity only supports OpenAI-compatible chat completions
-            if endpoint in ('/v1/chat/completions', '/cursor/chat/completions', '/v1/completions'):
-                logger.info(f"[Antigravity] Routing request to Google v1internal for model={model_name}")
-                # Retrieve node info including oauth_tokens and project_id
-                node_info = None
-                try:
-                    from app.database import async_session_maker
-                    from app.repositories.node_repository import NodeRepository
-                    async with async_session_maker() as session:
-                        node_repo = NodeRepository(session)
-                        # Find the node by base_url
-                        nodes = await node_repo.list_active()
-                        for n in nodes:
-                            if n.base_url == base_url and n.node_type == 'antigravity':
-                                node_info = n
-                                break
-                except Exception as e:
-                    logger.warning(f"[Antigravity] Failed to look up node info: {e}")
-
-                if not node_info or not node_info.oauth_tokens:
-                    raise HTTPException(status_code=500, detail="Antigravity node missing OAuth tokens")
-
-                return await proxy_antigravity_request(
-                    data=data,
-                    stream=stream,
-                    endpoint=endpoint,
-                    base_url=base_url,
-                    oauth_tokens=node_info.oauth_tokens,
-                    project_id=node_info.project_id,
-                    node_headers=node_headers,
-                    model_name=model_name or data.get('model', 'unknown'),
-                    username=username,
-                    node_id=node_info.id,
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Antigravity nodes do not support endpoint: {endpoint}"
-                )
-
-        # ============================================================
-        # BEDROCK ROUTING
-        # ============================================================
-        if node_type == 'bedrock' and isinstance(data, dict):
-            if endpoint in ('/v1/chat/completions', '/cursor/chat/completions'):
-                logger.info(f"[Bedrock] Routing request to AWS Bedrock for model={model_name}")
-                # Retrieve node info including AWS credentials
-                node_info = None
-                try:
-                    from app.database import async_session_maker
-                    from app.repositories.node_repository import NodeRepository
-                    async with async_session_maker() as session:
-                        node_repo = NodeRepository(session)
-                        nodes = await node_repo.list_active()
-                        for n in nodes:
-                            if n.base_url == base_url and n.node_type == 'bedrock':
-                                node_info = n
-                                break
-                except Exception as e:
-                    logger.warning(f"[Bedrock] Failed to look up node info: {e}")
-
-                from app.bedrock_proxy import bedrock_credentials_configured, proxy_bedrock_request
-
-                if not node_info or not bedrock_credentials_configured(
-                    api_key=node_info.api_key,
-                    secret_key=node_info.aws_secret_key,
-                    region=node_info.aws_region,
-                    bedrock_auth_mode=getattr(node_info, "bedrock_auth_mode", None),
-                ):
-                    raise HTTPException(status_code=500, detail="Bedrock node missing AWS credentials or region")
-
-                return await proxy_bedrock_request(
-                    data=data,
-                    stream=stream,
-                    endpoint=endpoint,
-                    base_url=base_url,
-                    access_key=node_info.api_key,
-                    secret_key=node_info.aws_secret_key,
-                    region=node_info.aws_region,
-                    session_token=node_info.aws_session_token,
-                    model_name=mapped_model_name or data.get('model', 'unknown'),
-                    username=username,
-                    node_headers=node_headers,
-                    bedrock_auth_mode=getattr(node_info, "bedrock_auth_mode", None),
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Bedrock nodes only support chat completions endpoint, got: {endpoint}"
-                )
+        # Antigravity / Bedrock routing runs inside failover wrappers via _try_specialized_node_proxy.
 
         # vLLM nodes don't support Ollama-specific parameters
         if node_type == 'vllm' and isinstance(data, dict):
@@ -2783,8 +2799,102 @@ class OllamaProxy:
                 )
                 if specialized is not None:
                     if isinstance(specialized, StreamingResponse):
+                        upstream_error: Optional[int] = None
                         async for chunk in specialized.body_iterator:
+                            err_code = self._sse_error_code_from_chunk(chunk)
+                            if err_code is not None:
+                                upstream_error = err_code
+                                break
                             yield chunk
+                        if upstream_error is None:
+                            return
+
+                        provider_label = current_node_type.capitalize()
+                        error_msg = f"Upstream error {upstream_error}"
+                        will_node_retry = (
+                            not strict_allowed_nodes
+                            and upstream_error in self.NODE_RETRYABLE_STATUS_CODES
+                            and attempt < MAX_FAILOVER_RETRIES
+                        )
+                        self._short_upstream_error(
+                            provider_label,
+                            upstream_error,
+                            current_base_url,
+                            current_model,
+                            error_msg,
+                            will_retry=will_node_retry,
+                        )
+                        if will_node_retry:
+                            tried_nodes.add(current_base_url)
+                            new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
+                                current_model,
+                                exclude_nodes=list(tried_nodes),
+                                exclude_scoped=exclude_scoped,
+                                allowed_node_ids=allowed_node_ids,
+                                routing_catalog_names=routing_catalog_names,
+                                strict_allowed_nodes=strict_allowed_nodes,
+                            )
+                            if new_base_url:
+                                if (
+                                    not bypass_node_access
+                                    and username
+                                    and not await self._check_user_node_access(username, new_base_url)
+                                ):
+                                    logger.warning(
+                                        f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                                    )
+                                    tried_nodes.add(new_base_url)
+                                    continue
+                                logger.info(
+                                    f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                                    f"({new_node_type}) model={current_model}"
+                                )
+                                current_url = f"{new_base_url}{endpoint}"
+                                current_api_key = new_api_key
+                                current_headers = new_headers
+                                current_node_type = new_node_type
+                                current_data = await self._rebind_body_to_node(
+                                    current_data, rsnap, new_base_url
+                                )
+                                continue
+                            logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
+
+                        failed_for_group = rsnap.get("model") or rsnap.get("name") or current_model
+                        fallback_state = await self._apply_model_group_fallback(
+                            original_group=original_group,
+                            failed_for_group=failed_for_group,
+                            tried_models=tried_models,
+                            original_data=original_data,
+                            current_data=current_data,
+                            rsnap=rsnap,
+                            endpoint=endpoint,
+                            exclude_scoped=exclude_scoped,
+                            bypass_node_access=bypass_node_access,
+                            username=username,
+                            tried_nodes=tried_nodes,
+                            routing_catalog_names=routing_catalog_names,
+                            status_code=upstream_error,
+                            attempt=attempt,
+                        )
+                        if fallback_state:
+                            (
+                                current_data,
+                                current_url,
+                                current_api_key,
+                                current_headers,
+                                current_node_type,
+                            ) = fallback_state
+                            continue
+
+                        error_response = {
+                            "error": {
+                                "message": error_msg,
+                                "type": "api_error",
+                                "code": upstream_error,
+                            }
+                        }
+                        yield b"data: " + _json_dumps(error_response) + b"\n\n"
+                        yield b"data: [DONE]\n\n"
                         return
                     logger.error(
                         f"[STREAM] Unexpected non-stream response from {current_node_type} node"
@@ -2908,57 +3018,32 @@ class OllamaProxy:
                                 logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
                             # === MODEL-LEVEL FALLBACK ===
-                            # Only for 5xx errors and connection errors, try a different model from the group
-                            should_model_failover = (
-                                resp.status_code >= 500 and
-                                original_group and
-                                attempt < MAX_FAILOVER_RETRIES
+                            failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
+                            fallback_state = await self._apply_model_group_fallback(
+                                original_group=original_group,
+                                failed_for_group=failed_for_group,
+                                tried_models=tried_models,
+                                original_data=original_data,
+                                current_data=current_data,
+                                rsnap=rsnap,
+                                endpoint=endpoint,
+                                exclude_scoped=exclude_scoped,
+                                bypass_node_access=bypass_node_access,
+                                username=username,
+                                tried_nodes=tried_nodes,
+                                routing_catalog_names=routing_catalog_names,
+                                status_code=resp.status_code,
+                                attempt=attempt,
                             )
-
-                            if should_model_failover:
-                                # Try to get fallback model
-                                failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
-                                fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
-
-                                if fallback_model and fallback_model not in tried_models:
-                                    logger.warning(f"[FAILOVER] Stream error {resp.status_code}, trying fallback model: {fallback_model}")
-                                    tried_models.add(fallback_model)
-
-                                    # Update data with fallback model
-                                    current_data = original_data.copy() if original_data else {}
-                                    current_data['model'] = fallback_model
-                                    current_data = await self._resolve_model_groups(current_data)
-                                    rsnap.clear()
-                                    for snap_key in ('model', 'name', 'source', 'destination'):
-                                        v = current_data.get(snap_key)
-                                        if isinstance(v, str):
-                                            rsnap[snap_key] = v
-
-                                    fb_display = current_data.get('model') or current_data.get('name')
-                                    fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
-                                    # Select new node URL for fallback (reset tried_nodes for new model)
-                                    new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
-                                        fb_display or fallback_model,
-                                        exclude_scoped=exclude_scoped,
-                                        allowed_node_ids=fb_allowed,
-                                        routing_catalog_names=routing_catalog_names,
-                                    )
-                                    if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
-                                        logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
-                                        tried_nodes.add(new_base_url)
-                                        new_base_url = None
-                                    current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
-                                    if new_base_url:
-                                        tried_nodes.add(new_base_url)
-                                        current_api_key = new_api_key
-                                        current_headers = new_headers
-                                        current_data = await self._rebind_body_to_node(
-                                            current_data, rsnap, new_base_url
-                                        )
-
-                                    # Log failover attempt
-                                    logger.info(f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})")
-                                    continue
+                            if fallback_state:
+                                (
+                                    current_data,
+                                    current_url,
+                                    current_api_key,
+                                    current_headers,
+                                    current_node_type,
+                                ) = fallback_state
+                                continue
 
                             # No failover available or max retries reached - yield error
                             error_type = "api_error"
@@ -3722,18 +3807,102 @@ class OllamaProxy:
                 current_url, endpoint, url.rsplit(endpoint, 1)[0] if endpoint in url else ""
             )
 
-            specialized = await self._try_specialized_node_proxy(
-                node_type=current_node_type,
-                base_url=current_base_url,
-                data=current_data,
-                stream=False,
-                endpoint=endpoint,
-                model_name=current_model,
-                username=username,
-                node_headers=current_headers,
-            )
-            if specialized is not None:
-                return specialized
+            try:
+                specialized = await self._try_specialized_node_proxy(
+                    node_type=current_node_type,
+                    base_url=current_base_url,
+                    data=current_data,
+                    stream=False,
+                    endpoint=endpoint,
+                    model_name=current_model,
+                    username=username,
+                    node_headers=current_headers,
+                )
+                if specialized is not None:
+                    return specialized
+            except HTTPException as exc:
+                if exc.status_code < 400:
+                    raise
+                error_text = str(exc.detail)
+                response_status = exc.status_code
+                provider_label = current_node_type.capitalize()
+                will_node_retry = (
+                    not strict_allowed_nodes
+                    and response_status in self.NODE_RETRYABLE_STATUS_CODES
+                    and attempt < MAX_FAILOVER_RETRIES
+                )
+                self._short_upstream_error(
+                    provider_label,
+                    response_status,
+                    current_base_url,
+                    current_model,
+                    error_text,
+                    will_retry=will_node_retry,
+                )
+                if will_node_retry:
+                    tried_nodes.add(current_base_url)
+                    new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
+                        current_model,
+                        exclude_nodes=list(tried_nodes),
+                        exclude_scoped=exclude_scoped,
+                        allowed_node_ids=allowed_node_ids,
+                        routing_catalog_names=routing_catalog_names,
+                        strict_allowed_nodes=strict_allowed_nodes,
+                    )
+                    if new_base_url:
+                        if (
+                            not bypass_node_access
+                            and username
+                            and not await self._check_user_node_access(username, new_base_url)
+                        ):
+                            logger.warning(
+                                f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                            )
+                            tried_nodes.add(new_base_url)
+                            continue
+                        logger.info(
+                            f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                            f"({new_node_type}) model={current_model}"
+                        )
+                        current_url = f"{new_base_url}{endpoint}"
+                        current_api_key = new_api_key
+                        current_headers = new_headers
+                        current_node_type = new_node_type
+                        current_data = await self._rebind_body_to_node(
+                            current_data, rsnap, new_base_url
+                        )
+                        last_error = exc
+                        continue
+                    logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
+
+                failed_for_group = rsnap.get("model") or rsnap.get("name") or current_model
+                fallback_state = await self._apply_model_group_fallback(
+                    original_group=original_group,
+                    failed_for_group=failed_for_group,
+                    tried_models=tried_models,
+                    original_data=data,
+                    current_data=current_data,
+                    rsnap=rsnap,
+                    endpoint=endpoint,
+                    exclude_scoped=exclude_scoped,
+                    bypass_node_access=bypass_node_access,
+                    username=username,
+                    tried_nodes=tried_nodes,
+                    routing_catalog_names=routing_catalog_names,
+                    status_code=response_status,
+                    attempt=attempt,
+                )
+                if fallback_state:
+                    (
+                        current_data,
+                        current_url,
+                        current_api_key,
+                        current_headers,
+                        current_node_type,
+                    ) = fallback_state
+                    last_error = exc
+                    continue
+                raise
 
             try:
                 provider_label = 'vLLM' if current_node_type == 'vllm' else 'Ollama'
@@ -3853,58 +4022,36 @@ class OllamaProxy:
                         logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
                     # === MODEL-LEVEL FALLBACK ===
-                    # Only for 5xx errors, try a different model from the group
-                    should_model_failover = (
-                        response.status_code >= 500 and
-                        original_group and
-                        attempt < MAX_FAILOVER_RETRIES
+                    failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
+                    fallback_state = await self._apply_model_group_fallback(
+                        original_group=original_group,
+                        failed_for_group=failed_for_group,
+                        tried_models=tried_models,
+                        original_data=data,
+                        current_data=current_data,
+                        rsnap=rsnap,
+                        endpoint=endpoint,
+                        exclude_scoped=exclude_scoped,
+                        bypass_node_access=bypass_node_access,
+                        username=username,
+                        tried_nodes=tried_nodes,
+                        routing_catalog_names=routing_catalog_names,
+                        status_code=response.status_code,
+                        attempt=attempt,
                     )
-
-                    if should_model_failover:
-                        failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
-                        fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
-
-                        if fallback_model and fallback_model not in tried_models:
-                            logger.warning(f"[FAILOVER] Error {response.status_code}, trying fallback model: {fallback_model}")
-                            tried_models.add(fallback_model)
-
-                            # Update data with fallback model
-                            current_data = data.copy() if data else {}
-                            current_data['model'] = fallback_model
-                            current_data = await self._resolve_model_groups(current_data)
-                            rsnap.clear()
-                            for snap_key in ('model', 'name', 'source', 'destination'):
-                                v = current_data.get(snap_key)
-                                if isinstance(v, str):
-                                    rsnap[snap_key] = v
-
-                            fb_display = current_data.get('model') or current_data.get('name')
-                            fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
-                            # Select new node URL for fallback
-                            new_base_url, new_api_key, _, new_headers, _ = await self._select_node_url(
-                                fb_display or fallback_model,
-                                exclude_scoped=exclude_scoped,
-                                allowed_node_ids=fb_allowed,
-                                routing_catalog_names=routing_catalog_names,
-                            )
-                            if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
-                                logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
-                                tried_nodes.add(new_base_url)
-                                new_base_url = None
-                            current_url = f"{new_base_url}{endpoint}" if new_base_url else ""
-                            if new_base_url:
-                                tried_nodes.add(new_base_url)
-                                current_api_key = new_api_key
-                                current_headers = new_headers
-                                current_data = await self._rebind_body_to_node(
-                                    current_data, rsnap, new_base_url
-                                )
-
-                            last_error = HTTPException(
-                                status_code=response.status_code,
-                                detail=f"Ollama error: {error_text}"
-                            )
-                            continue
+                    if fallback_state:
+                        (
+                            current_data,
+                            current_url,
+                            current_api_key,
+                            current_headers,
+                            current_node_type,
+                        ) = fallback_state
+                        last_error = HTTPException(
+                            status_code=response.status_code,
+                            detail=f"Upstream error: {error_text}",
+                        )
+                        continue
 
                     # No failover - raise error
                     raise HTTPException(
