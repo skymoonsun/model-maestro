@@ -57,8 +57,15 @@ function formatResetTime(resetTime: string): string {
     return target.toLocaleString();
 }
 
+function quotaModelLabel(model: AntigravityModelQuota): string {
+    if (model.display_name && model.display_name !== model.name) {
+        return `${model.display_name} (${model.name})`;
+    }
+    return model.display_name || model.name;
+}
+
 function QuotaRow({ model }: { model: AntigravityModelQuota }) {
-    const label = model.display_name || model.name;
+    const label = quotaModelLabel(model);
     return (
         <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2 text-sm">

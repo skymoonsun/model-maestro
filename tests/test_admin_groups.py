@@ -340,14 +340,13 @@ class TestDeleteModelGroup:
 
         mock_repo = MagicMock()
         mock_repo.get_group_by_name = AsyncMock(return_value=sample_model_group)
-        mock_repo.update_group = AsyncMock(return_value=sample_model_group)
+        mock_repo.delete_group = AsyncMock(return_value=True)
 
         with patch('app.admin_groups.ModelGroupRepository', return_value=mock_repo):
             with patch('app.admin_groups.async_session_maker', mock_async_session_maker):
                 result = await delete_model_group("smart-models", admin="admin")
 
-                # Soft delete should set is_active=False
-                mock_repo.update_group.assert_called_once_with("smart-models", is_active=False)
+                mock_repo.delete_group.assert_called_once_with("smart-models")
                 assert result is None  # 204 response
 
     @pytest.mark.asyncio
@@ -524,3 +523,37 @@ class TestRemoveGroupMember:
 
                 assert exc_info.value.status_code == 404
                 assert "not found" in str(exc_info.value.detail)
+
+class TestReorderModelGroups:
+    """Tests for reorder_model_groups endpoint"""
+
+    @pytest.mark.asyncio
+    async def test_reorder_groups(self, mock_async_session_maker, sample_model_group, monkeypatch):
+        """Test reordering model groups"""
+        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
+        monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
+        
+        from app.admin_groups import reorder_model_groups
+        from app.models import GroupReorderRequest
+
+        group2 = MockModelGroup(id=2, name="another-group", strategy="priority")
+
+        mock_repo = MagicMock()
+        mock_repo.reorder_groups = AsyncMock(return_value=[group2, sample_model_group])
+
+        with patch('app.admin_groups.ModelGroupRepository', return_value=mock_repo):
+            with patch('app.admin_groups.async_session_maker', mock_async_session_maker):
+                request = GroupReorderRequest(
+                    groups=[
+                        {"name": "another-group", "priority": 0},
+                        {"name": "smart-models", "priority": 1}
+                    ]
+                )
+
+                result = await reorder_model_groups(request, admin="admin")
+
+                assert result.total == 2
+                assert result.groups[0].name == "another-group"
+                assert result.groups[1].name == "smart-models"
+                mock_repo.reorder_groups.assert_called_once()

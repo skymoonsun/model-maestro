@@ -874,6 +874,7 @@ class ModelGroupCreateRequest(BaseModel):
     strategy: str = "round_robin"  # round_robin, weighted, priority
     is_active: bool = True
     list_in_catalog: bool = False
+    priority: int = 0
     members: Optional[List[ModelGroupMemberRequest]] = None
 
 
@@ -884,6 +885,7 @@ class ModelGroupUpdateRequest(BaseModel):
     strategy: Optional[str] = None
     is_active: Optional[bool] = None
     list_in_catalog: Optional[bool] = None
+    priority: Optional[int] = None
 
 
 class ModelGroupMemberResponse(BaseModel):
@@ -906,6 +908,7 @@ class ModelGroupResponse(BaseModel):
     strategy: str = "round_robin"
     is_active: bool = True
     list_in_catalog: bool = False
+    priority: int = 0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -918,6 +921,7 @@ class ModelGroupDetailResponse(BaseModel):
     strategy: str = "round_robin"
     is_active: bool = True
     list_in_catalog: bool = False
+    priority: int = 0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     members: List[ModelGroupMemberResponse] = []
@@ -939,3 +943,13 @@ class MemberReorderRequest(BaseModel):
     """Reorder members by updating their priorities"""
     members: List[MemberReorderItem]
 
+
+class GroupReorderItem(BaseModel):
+    """Single item for group reorder request"""
+    name: str
+    priority: int
+
+
+class GroupReorderRequest(BaseModel):
+    """Reorder groups by updating their priorities"""
+    groups: List[GroupReorderItem]
