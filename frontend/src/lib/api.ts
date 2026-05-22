@@ -463,6 +463,11 @@ export const modelGroupsApi = {
       method: 'PUT',
       body: JSON.stringify({ members }),
     }),
+  reorderGroups: (groups: { name: string; priority: number }[]) =>
+    adminFetch<ModelGroupListResponse>('/admin/model-groups/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ groups }),
+    }),
 };
 
 // ==================== Audit Logs ====================
@@ -963,6 +968,7 @@ export interface ModelGroupSummary {
   strategy: string;
   is_active: boolean;
   list_in_catalog: boolean;
+  priority: number;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -982,6 +988,7 @@ export type ModelGroupCreate = {
   strategy?: string;
   is_active?: boolean;
   list_in_catalog?: boolean;
+  priority?: number;
   members?: ModelGroupMemberCreate[];
 };
 

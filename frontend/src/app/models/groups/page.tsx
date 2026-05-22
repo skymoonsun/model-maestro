@@ -504,6 +504,77 @@ function GroupDetail({
 }
 
 // ==================== Groups Page ====================
+
+// ==================== Sortable Group Card ====================
+function SortableGroupCard({
+    group,
+    onSelect,
+    onDeleteClick,
+    listCatalogMut,
+}: {
+    group: ModelGroupSummary;
+    onSelect: () => void;
+    onDeleteClick: (name: string) => void;
+    listCatalogMut: any;
+}) {
+    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({
+        id: group.name,
+    });
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+    };
+
+    return (
+        <div ref={setNodeRef} style={style} className="flex items-center gap-3 rounded-lg border bg-card p-4 hover:border-primary/50 transition-colors cursor-pointer" onClick={onSelect}>
+            <button {...attributes} {...listeners} className="cursor-grab touch-none text-muted-foreground hover:text-foreground shrink-0" onClick={(e) => e.stopPropagation()}>
+                <GripVertical className="h-4 w-4" />
+            </button>
+            <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                    <span className="font-mono text-base font-medium truncate">{group.name}</span>
+                    <Badge variant={group.is_active ? 'default' : 'outline'}>
+                        {group.is_active ? 'Active' : 'Inactive'}
+                    </Badge>
+                    <Badge variant="secondary">{group.strategy}</Badge>
+                    {group.list_in_catalog && (
+                        <Badge variant="outline" className="text-emerald-600 border-emerald-600/40">
+                            In catalog
+                        </Badge>
+                    )}
+                </div>
+                {group.description && (
+                    <p className="text-sm text-muted-foreground mt-1">{group.description}</p>
+                )}
+                <div className="mt-1 text-xs text-muted-foreground">
+                    Priority: {group.priority}
+                </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0" onClick={(e) => e.stopPropagation()}>
+                <Label htmlFor={`list-${group.id}`} className="text-xs text-muted-foreground whitespace-nowrap">
+                    Show in catalog
+                </Label>
+                <Switch
+                    id={`list-${group.id}`}
+                    checked={group.list_in_catalog ?? false}
+                    disabled={listCatalogMut.isPending}
+                    onCheckedChange={(v) =>
+                        listCatalogMut.mutate({ name: group.name, list_in_catalog: v })
+                    }
+                />
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    onClick={() => onDeleteClick(group.name)}
+                >
+                    <Trash2 className="h-4 w-4" />
+                </Button>
+            </div>
+        </div>
+    );
+}
+
 export default function ModelGroupsPage() {
     const qc = useQueryClient();
     const [selectedGroup, setSelectedGroup] = useState<ModelGroupSummary | null>(null);
@@ -521,6 +592,48 @@ export default function ModelGroupsPage() {
         queryKey: ['model-groups'],
         queryFn: () => modelGroupsApi.list(),
     });
+
+    const [orderedGroups, setOrderedGroups] = useState<ModelGroupSummary[]>([]);
+    useEffect(() => {
+        if (groupsData?.groups) {
+            setOrderedGroups([...groupsData.groups].sort((a, b) => a.priority - b.priority));
+        }
+    }, [groupsData]);
+
+    const groupSensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    );
+
+    const reorderGroupsMut = useMutation({
+        mutationFn: (items: { name: string; priority: number }[]) =>
+            modelGroupsApi.reorderGroups(items),
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['model-groups'] });
+            toast.success('Groups reordered');
+        },
+        onError: (e) => toast.error(e.message),
+    });
+
+    const handleGroupDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event;
+        if (!over || active.id === over.id) return;
+
+        setOrderedGroups((items) => {
+            const oldIndex = items.findIndex((g) => g.name === active.id);
+            const newIndex = items.findIndex((g) => g.name === over.id);
+            const reordered = arrayMove(items, oldIndex, newIndex);
+            
+            // Assign priorities based on new order (lowest priority number = highest)
+            const priorities = reordered.map((g, idx) => ({
+                name: g.name,
+                priority: idx,
+            }));
+            
+            reorderGroupsMut.mutate(priorities);
+            return reordered;
+        });
+    };
 
     const { data: groupDetail } = useQuery({
         queryKey: ['model-groups', selectedGroup?.name],
@@ -645,82 +758,68 @@ export default function ModelGroupsPage() {
                         <Skeleton key={i} className="h-24 w-full" />
                     ))}
                 </div>
-            ) : groups.length === 0 ? (
+            ) : orderedGroups.length === 0 ? (
                 <Card>
                     <CardContent className="py-12 text-center text-muted-foreground">
                         No model groups yet. Create one to get started.
                     </CardContent>
                 </Card>
             ) : (
-                <div className="space-y-4">
-                    {groups.map((group) => (
-                        <Card
-                            key={group.id}
-                            className="cursor-pointer hover:border-primary/50 transition-colors"
-                            onClick={() => setSelectedGroup(group)}
-                        >
-                            <CardHeader className="pb-2">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-2">
-                                        <CardTitle className="text-base font-mono">{group.name}</CardTitle>
-                                        <Badge variant={group.is_active ? 'default' : 'outline'}>
-                                            {group.is_active ? 'Active' : 'Inactive'}
-                                        </Badge>
-                                        <Badge variant="secondary">{group.strategy}</Badge>
-                                        {group.list_in_catalog && (
-                                            <Badge variant="outline" className="text-emerald-600 border-emerald-600/40">
-                                                In catalog
-                                            </Badge>
-                                        )}
-                                    </div>
-                                    <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
-                                        <Label htmlFor={`list-${group.id}`} className="text-xs text-muted-foreground whitespace-nowrap">
-                                            Show in catalog
-                                        </Label>
-                                        <Switch
-                                            id={`list-${group.id}`}
-                                            checked={group.list_in_catalog ?? false}
-                                            disabled={listCatalogMut.isPending}
-                                            onCheckedChange={(v) =>
-                                                listCatalogMut.mutate({ name: group.name, list_in_catalog: v })
-                                            }
-                                        />
-                                    <Dialog>
-                                        <DialogTrigger asChild>
-                                            <Button
-                                                variant="ghost"
-                                                size="icon"
-                                                className="h-8 w-8 text-destructive hover:text-destructive"
-                                                onClick={(e) => { e.stopPropagation(); setDeleteGroup(group.name); }}
-                                            >
-                                                <Trash2 className="h-4 w-4" />
-                                            </Button>
-                                        </DialogTrigger>
-                                        <DialogContent onClick={(e) => e.stopPropagation()}>
-                                            <DialogHeader><DialogTitle>Delete Group</DialogTitle></DialogHeader>
-                                            <p className="text-sm text-muted-foreground py-4">
-                                                Are you sure you want to delete group <strong>{group.name}</strong>?
-                                            </p>
-                                            <DialogFooter>
-                                                <DialogClose asChild><Button variant="ghost">Cancel</Button></DialogClose>
-                                                <DialogClose asChild>
-                                                    <Button variant="destructive" onClick={() => deleteMut.mutate(group.name)}>Delete</Button>
-                                                </DialogClose>
-                                            </DialogFooter>
-                                        </DialogContent>
-                                    </Dialog>
-                                    </div>
-                                </div>
-                            </CardHeader>
-                            {group.description && (
-                                <CardContent className="pt-0 pb-3">
-                                    <p className="text-sm text-muted-foreground">{group.description}</p>
-                                </CardContent>
-                            )}
-                        </Card>
-                    ))}
-                </div>
+                <DndContext
+                    sensors={groupSensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleGroupDragEnd}
+                >
+                    <SortableContext
+                        items={orderedGroups.map((g) => g.name)}
+                        strategy={verticalListSortingStrategy}
+                    >
+                        <div className="space-y-2">
+                            {orderedGroups.map((group) => (
+                                <SortableGroupCard
+                                    key={group.id}
+                                    group={group}
+                                    onSelect={() => setSelectedGroup(group)}
+                                    onDeleteClick={(name) => setDeleteGroup(name)}
+                                    listCatalogMut={listCatalogMut}
+                                />
+                            ))}
+                        </div>
+                    </SortableContext>
+                </DndContext>
             )}
+
+            <Dialog
+                open={!!deleteGroup}
+                onOpenChange={(open) => {
+                    if (!open) setDeleteGroup(null);
+                }}
+            >
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Delete Group</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-sm text-muted-foreground py-4">
+                        Are you sure you want to delete group <strong>{deleteGroup}</strong>?
+                    </p>
+                    <DialogFooter>
+                        <Button variant="ghost" onClick={() => setDeleteGroup(null)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            onClick={() => {
+                                if (deleteGroup) {
+                                    deleteMut.mutate(deleteGroup);
+                                }
+                            }}
+                            disabled={deleteMut.isPending}
+                        >
+                            Delete
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

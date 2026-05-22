@@ -26,6 +26,7 @@ class ModelGroupRepository:
         strategy: str = "round_robin",
         is_active: bool = True,
         list_in_catalog: bool = False,
+        priority: int = 0,
     ) -> ModelGroup:
         """Create a new model group"""
         group = ModelGroup(
@@ -34,6 +35,7 @@ class ModelGroupRepository:
             strategy=strategy,
             is_active=is_active,
             list_in_catalog=list_in_catalog,
+            priority=priority,
         )
         self.session.add(group)
         await self.session.flush()
@@ -50,7 +52,7 @@ class ModelGroupRepository:
         stmt = select(ModelGroup)
         if active_only:
             stmt = stmt.where(ModelGroup.is_active == True)
-        stmt = stmt.order_by(ModelGroup.name)
+        stmt = stmt.order_by(ModelGroup.priority, ModelGroup.name)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -233,3 +235,27 @@ class ModelGroupRepository:
         await self.session.flush()
 
         return await self.get_members_by_group_name(group_name)
+
+    async def reorder_groups(self, group_priorities: list) -> List[ModelGroup]:
+        """
+        Update priority of multiple model groups at once.
+
+        Args:
+            group_priorities: List of dicts with 'name' and 'priority' keys
+
+        Returns:
+            Updated list of groups ordered by priority
+        """
+        stmt = select(ModelGroup)
+        result = await self.session.execute(stmt)
+        groups = list(result.scalars().all())
+        group_map = {g.name: g for g in groups}
+
+        for item in group_priorities:
+            name = item.get("name")
+            priority = item.get("priority")
+            if name in group_map:
+                group_map[name].priority = priority
+
+        await self.session.flush()
+        return await self.get_all_groups(active_only=False)

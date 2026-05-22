@@ -19,6 +19,7 @@ from app.models import (
     ModelGroupMemberResponse,
     ModelGroupListResponse,
     MemberReorderRequest,
+    GroupReorderRequest,
 )
 from app.auth import verify_admin
 from app.config import model_group_manager
@@ -38,6 +39,56 @@ def _invalidate_public_models_cache() -> None:
     except Exception:
         pass
 
+
+
+# ============================================================================
+# Group Reorder
+# ============================================================================
+
+@router.put("/reorder", response_model=ModelGroupListResponse)
+async def reorder_model_groups(
+    request: GroupReorderRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Reorder model groups by updating their priorities.
+
+    Request body:
+    {
+        "groups": [
+            {"name": "group-a", "priority": 0},
+            {"name": "group-b", "priority": 1}
+        ]
+    }
+    """
+    async with async_session_maker() as session:
+        repo = ModelGroupRepository(session)
+        group_priorities = [
+            {"name": g.name, "priority": g.priority}
+            for g in request.groups
+        ]
+        groups = await repo.reorder_groups(group_priorities)
+        await session.commit()
+
+        await model_group_manager.reload()
+
+        return ModelGroupListResponse(
+            groups=[
+                ModelGroupResponse(
+                    id=group.id,
+                    name=group.name,
+                    description=group.description,
+                    strategy=group.strategy,
+                    is_active=group.is_active,
+                    list_in_catalog=group.list_in_catalog,
+                    priority=group.priority,
+                    created_at=group.created_at.isoformat() if group.created_at else None,
+                    updated_at=group.updated_at.isoformat() if group.updated_at else None,
+                )
+                for group in groups
+            ],
+            total=len(groups),
+        )
 
 # ============================================================================
 # Model Group CRUD Endpoints
@@ -86,6 +137,7 @@ async def create_model_group(
             strategy=request.strategy,
             is_active=request.is_active,
             list_in_catalog=request.list_in_catalog,
+            priority=request.priority,
         )
 
         # Add members if provided
@@ -134,6 +186,7 @@ async def list_model_groups(admin: str = Depends(verify_admin)):
                     strategy=group.strategy,
                     is_active=group.is_active,
                     list_in_catalog=group.list_in_catalog,
+                    priority=group.priority,
                     created_at=group.created_at.isoformat() if group.created_at else None,
                     updated_at=group.updated_at.isoformat() if group.updated_at else None,
                 )
@@ -218,6 +271,8 @@ async def update_model_group(
             update_data["is_active"] = request.is_active
         if request.list_in_catalog is not None:
             update_data["list_in_catalog"] = request.list_in_catalog
+        if request.priority is not None:
+            update_data["priority"] = request.priority
 
         # Apply any remaining updates
         if update_data:
@@ -443,6 +498,7 @@ async def _build_group_detail_response(
         strategy=group.strategy,
         is_active=group.is_active,
         list_in_catalog=group.list_in_catalog,
+        priority=group.priority,
         created_at=created_at.isoformat() if created_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
         members=await _members_to_response(session, members),
