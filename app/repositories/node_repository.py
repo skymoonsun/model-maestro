@@ -420,12 +420,29 @@ class NodeModelRepository:
             select(NodeModel).where(NodeModel.node_id == node_id)
         )
         models = result.scalars().all()
-        
+
         for model in models:
             model.is_available = False
-        
+
         await self.session.commit()
-    
+
+    async def delete_stale_models(self, node_id: int, active_model_names: List[str]) -> int:
+        """Delete models for a node that are not present in active_model_names."""
+        from sqlalchemy import not_, delete
+        if active_model_names:
+            stmt = delete(NodeModel).where(
+                and_(
+                    NodeModel.node_id == node_id,
+                    not_(NodeModel.model_name.in_(active_model_names))
+                )
+            )
+        else:
+            stmt = delete(NodeModel).where(NodeModel.node_id == node_id)
+
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+        return result.rowcount
+
     async def delete_not_seen_since(self, node_id: int, hours: int = 24):
         """Delete models not seen in X hours"""
         from datetime import datetime, timedelta
