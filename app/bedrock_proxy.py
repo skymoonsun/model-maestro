@@ -391,10 +391,37 @@ async def _get_bedrock_clients(
     if mode == "api_key":
 
         def _make(region_name: str):
+            import os
             import boto3
+            from botocore.tokens import FrozenAuthToken
+            from botocore.config import Config
 
-            runtime = boto3.client("bedrock-runtime", region_name=region_name)
-            control = boto3.client("bedrock", region_name=region_name)
+            session = boto3.Session()
+
+            class StaticTokenProvider:
+                def __init__(self, token):
+                    self.token = token
+                def load_token(self):
+                    from datetime import datetime, timezone, timedelta
+                    from botocore.tokens import DeferredRefreshableToken
+                    expiration = datetime.now(timezone.utc) + timedelta(days=365)
+                    return DeferredRefreshableToken(
+                        method="static",
+                        refresh_using=lambda: FrozenAuthToken(
+                            token=self.token,
+                            expiration=expiration,
+                        ),
+                    )
+
+            token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or access_key
+            session._session.register_component(
+                "token_provider",
+                StaticTokenProvider(token)
+            )
+
+            config = Config(signature_version="bearer")
+            runtime = session.client("bedrock-runtime", region_name=region_name, config=config)
+            control = session.client("bedrock", region_name=region_name, config=config)
             return runtime, control
 
         return await _run_boto3_with_bedrock_api_key(access_key, region, _make)
@@ -744,9 +771,36 @@ async def proxy_bedrock_request(
         if auth_mode == "api_key":
 
             def _sync_converse(region_name: str) -> Any:
+                import os
                 import boto3
+                from botocore.tokens import FrozenAuthToken
+                from botocore.config import Config
 
-                runtime = boto3.client("bedrock-runtime", region_name=region_name)
+                session = boto3.Session()
+
+                class StaticTokenProvider:
+                    def __init__(self, token):
+                        self.token = token
+                    def load_token(self):
+                        from datetime import datetime, timezone, timedelta
+                        from botocore.tokens import DeferredRefreshableToken
+                        expiration = datetime.now(timezone.utc) + timedelta(days=365)
+                        return DeferredRefreshableToken(
+                            method="static",
+                            refresh_using=lambda: FrozenAuthToken(
+                                token=self.token,
+                                expiration=expiration,
+                            ),
+                        )
+
+                token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or access_key
+                session._session.register_component(
+                    "token_provider",
+                    StaticTokenProvider(token)
+                )
+
+                config = Config(signature_version="bearer")
+                runtime = session.client("bedrock-runtime", region_name=region_name, config=config)
                 if streaming:
                     return runtime.converse_stream(**kwargs)
                 return runtime.converse(**kwargs)
