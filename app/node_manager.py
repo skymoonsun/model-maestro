@@ -416,6 +416,9 @@ class NodeManager:
             )
             synced_models.append(model_data["name"])
 
+        # Delete models that are no longer hosted on the node
+        await model_repo.delete_stale_models(node_id, synced_models)
+
         # Invalidate cache (Redis + memory)
         await self.invalidate_cache()
 
