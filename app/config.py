@@ -1077,6 +1077,17 @@ class ModelGroupManager:
 
         return None
 
+    def get_fallback_413(self, group_name: str, failed_model: str) -> Optional[str]:
+        """Return the 413 fallback model for a group (any member flagged is_fallback_413)."""
+        if group_name not in self._groups:
+            return None
+        skip = {failed_model}
+        sorted_members = sorted(self._groups[group_name]["members"], key=lambda m: m.priority)
+        for member in sorted_members:
+            if member.model_display_name not in skip and getattr(member, "is_fallback_413", False):
+                return member.model_display_name
+        return None
+
     @staticmethod
     def preferred_node_ids_for_member(member: Any) -> Optional[List[int]]:
         """Preferred node ids for one group member (LB runs only within this pool)."""

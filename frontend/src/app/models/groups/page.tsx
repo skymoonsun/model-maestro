@@ -38,11 +38,13 @@ import { Plus, Trash2, GripVertical, RefreshCw, Pencil, Check } from 'lucide-rea
 function SortableMemberCard({
     member,
     onRemove,
+    onEdit,
     onToggleActive,
     nodes,
 }: {
     member: ModelGroupMember;
     onRemove: (id: number) => void;
+    onEdit: (member: ModelGroupMember) => void;
     onToggleActive: (id: number, is_active: boolean) => void;
     nodes?: Node[];
 }) {
@@ -62,6 +64,9 @@ function SortableMemberCard({
             <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                     <span className="font-mono text-sm font-medium truncate">{member.model_display_name}</span>
+                    {member.is_fallback && (
+                        <Badge variant="secondary" className="text-xs px-1.5 py-0">FB</Badge>
+                    )}
                     {!member.is_active && (
                         <Badge variant="outline" className="text-muted-foreground text-xs">Inactive</Badge>
                     )}
@@ -74,6 +79,12 @@ function SortableMemberCard({
                             Nodes:{' '}
                             {member.preferred_node_ids!.map((id) => nodes.find((n) => n.id === id)?.name ?? `#${id}`).join(', ')}
                         </span>
+                    )}
+                    {member.is_fallback_413 && (
+                        <Badge className="bg-amber-100 text-amber-700 border-amber-300 text-xs">413</Badge>
+                    )}
+                    {member.is_fallback_413 && (
+                        <Badge variant="outline" className="text-amber-600 border-amber-500/40 text-xs">413 FB</Badge>
                     )}
                     {member.capability_tags && member.capability_tags.length > 0 && (
                         <div className="flex gap-1">
@@ -88,6 +99,9 @@ function SortableMemberCard({
                 checked={member.is_active}
                 onCheckedChange={(v) => onToggleActive(member.id, v)}
             />
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEdit(member)}>
+                <Pencil className="h-3.5 w-3.5" />
+            </Button>
             <Dialog>
                 <DialogTrigger asChild>
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive">
@@ -223,6 +237,23 @@ function GroupDetail({
             setNewMemberName('');
             setNewMemberNodeIds([]);
             setAddOpen(false);
+        },
+        onError: (e) => toast.error(e.message),
+    });
+
+    const [editMemberOpen, setEditMemberOpen] = useState(false);
+    const [editMemberForm, setEditMemberForm] = useState<ModelGroupMemberCreate | null>(null);
+    const [editMemberId, setEditMemberId] = useState<number | null>(null);
+
+    const updateMemberMut = useMutation({
+        mutationFn: ({ id, data }: { id: number; data: ModelGroupMemberCreate }) => modelGroupsApi.updateMember(group.name, id, data),
+        onSuccess: (updated) => {
+            qc.invalidateQueries({ queryKey: ['model-groups'] });
+            toast.success('Member updated');
+            setMembers((m) => m.map((x) => (x.id === updated.id ? updated : x)));
+            setEditMemberOpen(false);
+            setEditMemberForm(null);
+            setEditMemberId(null);
         },
         onError: (e) => toast.error(e.message),
     });
@@ -489,6 +520,20 @@ function GroupDetail({
                                             key={member.id}
                                             member={member}
                                             onRemove={(id) => removeMutRef.mutate(id)}
+                                            onEdit={(m) => {
+                                                setEditMemberId(m.id);
+                                                setEditMemberForm({
+                                                    model_display_name: m.model_display_name,
+                                                    weight: m.weight,
+                                                    priority: m.priority,
+                                                    is_fallback: m.is_fallback,
+                                                    is_fallback_413: m.is_fallback_413,
+                                                    is_active: m.is_active,
+                                                    capability_tags: m.capability_tags ?? [],
+                                                    preferred_node_ids: m.preferred_node_ids,
+                                                });
+                                                setEditMemberOpen(true);
+                                            }}
                                             onToggleActive={(id, is_active) => toggleActiveMut.mutate({ id, is_active })}
                                             nodes={nodesData}
                                         />
@@ -499,6 +544,76 @@ function GroupDetail({
                     )}
                 </CardContent>
             </Card>
+
+            {/* Edit Member Dialog */}
+            <Dialog open={editMemberOpen} onOpenChange={setEditMemberOpen}>
+                <DialogContent>
+                    <DialogHeader><DialogTitle>Edit Member</DialogTitle></DialogHeader>
+                    {editMemberForm ? (
+                        <div className="space-y-4 py-4">
+                            <div>
+                                <Label>Model</Label>
+                                <Input value={editMemberForm.model_display_name} disabled className="bg-muted" />
+                            </div>
+                            <div>
+                                <Label>Priority</Label>
+                                <Input
+                                    type="number"
+                                    value={editMemberForm.priority}
+                                    onChange={(e) => setEditMemberForm((f) => f ? { ...f, priority: parseInt(e.target.value) || 0 } : null)}
+                                />
+                            </div>
+                            <div>
+                                <Label>Weight</Label>
+                                <Input
+                                    type="number"
+                                    value={editMemberForm.weight}
+                                    onChange={(e) => setEditMemberForm((f) => f ? { ...f, weight: parseInt(e.target.value) || 0 } : null)}
+                                />
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Switch
+                                    checked={editMemberForm.is_fallback_413}
+                                    onCheckedChange={(v) => setEditMemberForm((f) => f ? { ...f, is_fallback_413: v } : null)}
+                                />
+                                <div>
+                                    <Label>413 Fallback</Label>
+                                    <p className="text-xs text-muted-foreground">Use this model when upstream returns 413 (Request Entity Too Large).</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Switch
+                                    checked={editMemberForm.is_fallback}
+                                    onCheckedChange={(v) => setEditMemberForm((f) => f ? { ...f, is_fallback: v } : null)}
+                                />
+                                <Label>Fallback Member</Label>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Switch
+                                    checked={editMemberForm.is_active}
+                                    onCheckedChange={(v) => setEditMemberForm((f) => f ? { ...f, is_active: v } : null)}
+                                />
+                                <Label>Active</Label>
+                            </div>
+                        </div>
+                    ) : (
+                        <p className="text-sm text-muted-foreground py-4">Loading...</p>
+                    )}
+                    <DialogFooter>
+                        <Button variant="ghost" onClick={() => { setEditMemberOpen(false); setEditMemberForm(null); setEditMemberId(null); }}>Cancel</Button>
+                        <Button
+                            onClick={() => {
+                                if (editMemberId && editMemberForm) {
+                                    updateMemberMut.mutate({ id: editMemberId, data: editMemberForm });
+                                }
+                            }}
+                            disabled={updateMemberMut.isPending}
+                        >
+                            Save
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
@@ -820,6 +935,7 @@ export default function ModelGroupsPage() {
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
+
         </div>
     );
 }

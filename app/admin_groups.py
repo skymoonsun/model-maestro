@@ -151,6 +151,7 @@ async def create_model_group(
                     weight=member_req.weight,
                     priority=member_req.priority,
                     is_fallback=member_req.is_fallback,
+                    is_fallback_413=member_req.is_fallback_413,
                     is_active=member_req.is_active,
                     preferred_node_ids=member_req.preferred_node_ids,
                 )
@@ -420,6 +421,7 @@ async def add_group_member(
             weight=request.weight,
             priority=request.priority,
             is_fallback=request.is_fallback,
+            is_fallback_413=request.is_fallback_413,
             is_active=request.is_active,
             preferred_node_ids=request.preferred_node_ids,
         )
@@ -436,6 +438,63 @@ async def add_group_member(
         await model_group_manager.reload()
 
         return response
+
+
+@router.put("/{name}/members/{member_id}", response_model=ModelGroupMemberResponse)
+async def update_group_member(
+    name: str,
+    member_id: int,
+    request: ModelGroupMemberRequest,
+    admin: str = Depends(verify_admin)
+):
+    """
+    Update an existing group member.
+
+    Supports partial or full field updates (e.g. is_fallback_413, priority, etc.).
+    """
+    async with async_session_maker() as session:
+        repo = ModelGroupRepository(session)
+
+        group = await repo.get_group_by_name(name)
+        if not group:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model group '{name}' not found"
+            )
+
+        members = await repo.get_members_by_group_name(name)
+        member = next((m for m in members if m.id == member_id), None)
+        if not member:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Member with id {member_id} not found in group '{name}'"
+            )
+
+        # Apply updates
+        if request.model_display_name is not None:
+            member.model_display_name = request.model_display_name
+        if request.capability_tags is not None:
+            member.capability_tags = request.capability_tags
+        if request.weight is not None:
+            member.weight = request.weight
+        if request.priority is not None:
+            member.priority = request.priority
+        if request.is_fallback is not None:
+            member.is_fallback = request.is_fallback
+        if request.is_fallback_413 is not None:
+            member.is_fallback_413 = request.is_fallback_413
+        if request.is_active is not None:
+            member.is_active = request.is_active
+        if request.preferred_node_ids is not None:
+            await repo._sync_preferred_nodes(member, request.preferred_node_ids)
+
+        await session.commit()
+        await model_group_manager.reload()
+
+        # Refresh member to get latest state
+        updated_members = await repo.get_members_by_group_name(name)
+        updated_member = next((m for m in updated_members if m.id == member_id), member)
+        return await _member_to_response(session, updated_member)
 
 
 @router.delete("/{name}/members/{member_id}", status_code=204)
@@ -530,6 +589,7 @@ async def _members_to_response(
             weight=m.weight,
             priority=m.priority,
             is_fallback=m.is_fallback,
+            is_fallback_413=m.is_fallback_413,
             is_active=m.is_active,
             preferred_node_ids=by_mid.get(m.id, []),
         )

@@ -420,6 +420,7 @@ class ModelGroupMember(Base):
     weight = Column(Integer, default=1, nullable=False)  # For weighted strategy
     priority = Column(Integer, default=0, nullable=False)  # For priority strategy (lower = higher priority)
     is_fallback = Column(Boolean, default=False, nullable=False)
+    is_fallback_413 = Column(Boolean, default=False, nullable=False)  # If true: use this member as 413 fallback for the group
     is_active = Column(Boolean, default=True, nullable=False)
 
     # Relationships
