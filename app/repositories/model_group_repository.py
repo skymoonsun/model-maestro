@@ -125,6 +125,24 @@ class ModelGroupRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_413_fallback_member(
+        self, group_name: str, exclude_model: Optional[str] = None
+    ) -> Optional[ModelGroupMember]:
+        """Get the member flagged as 413 fallback for a group."""
+        stmt = (
+            select(ModelGroupMember)
+            .join(ModelGroup)
+            .options(selectinload(ModelGroupMember.preferred_nodes))
+            .where(ModelGroup.name == group_name)
+            .where(ModelGroupMember.is_active == True)
+            .where(ModelGroupMember.is_fallback_413 == True)
+        )
+        if exclude_model:
+            stmt = stmt.where(ModelGroupMember.model_display_name != exclude_model)
+        stmt = stmt.order_by(ModelGroupMember.priority)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def _sync_preferred_nodes(self, member: ModelGroupMember, node_ids: Optional[List[int]]) -> None:
         """Persist preferred nodes via junction table (avoids lazy-load on secondary in async)."""
         await self.session.execute(
@@ -154,6 +172,7 @@ class ModelGroupRepository:
         weight: int = 1,
         priority: int = 0,
         is_fallback: bool = False,
+        is_fallback_413: bool = False,
         is_active: bool = True,
         preferred_node_ids: Optional[List[int]] = None,
     ) -> Optional[ModelGroupMember]:
@@ -169,6 +188,7 @@ class ModelGroupRepository:
             weight=weight,
             priority=priority,
             is_fallback=is_fallback,
+            is_fallback_413=is_fallback_413,
             is_active=is_active,
         )
         self.session.add(member)

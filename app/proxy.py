@@ -1024,9 +1024,9 @@ class OllamaProxy:
     
     # HTTP status codes that should trigger a retry on another node
     # (model might be available on a different node)
-    NODE_RETRYABLE_STATUS_CODES = {400, 404, 408, 423, 429, 500, 502, 503, 504}
+    NODE_RETRYABLE_STATUS_CODES = {400, 404, 408, 413, 423, 429, 500, 502, 503, 504}
     # Upstream errors that trigger the next member in a model group (after node retry)
-    MODEL_GROUP_FAILOVER_STATUS_CODES = frozenset({404, 408, 429, 500, 502, 503, 504})
+    MODEL_GROUP_FAILOVER_STATUS_CODES = frozenset({404, 408, 413, 429, 500, 502, 503, 504})
 
     _CHAT_COMPLETION_ENDPOINTS = (
         "/v1/chat/completions",
@@ -1097,7 +1097,17 @@ class OllamaProxy:
         if not self._should_model_group_failover(status_code, original_group, attempt):
             return None
 
-        fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
+        fallback_model = None
+        if status_code == 413:
+            fallback_model = self._get_413_fallback_model(original_group, failed_for_group)
+            if fallback_model and fallback_model not in tried_models:
+                logger.warning(
+                    f"[FAILOVER-413] Using 413-specific fallback: {fallback_model}"
+                )
+
+        if not fallback_model:
+            fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
+
         if not fallback_model or fallback_model in tried_models:
             logger.warning(
                 f"[FAILOVER] No remaining members in group '{original_group}' "
@@ -1105,9 +1115,10 @@ class OllamaProxy:
             )
             return None
 
-        logger.warning(
-            f"[FAILOVER] Error {status_code}, trying fallback model: {fallback_model}"
-        )
+        if status_code != 413:
+            logger.warning(
+                f"[FAILOVER] Error {status_code}, trying fallback model: {fallback_model}"
+            )
         tried_models.add(fallback_model)
 
         current_data = current_data.copy()
@@ -1154,6 +1165,10 @@ class OllamaProxy:
             f"[FAILOVER] Retrying with fallback model {fallback_model} (attempt {attempt + 2})"
         )
         return current_data, current_url, new_api_key, new_headers, new_node_type, fb_allowed
+
+    def _get_413_fallback_model(self, group_name: str, failed_model: str) -> Optional[str]:
+        """Return the 413 fallback model for a group, if any member is flagged is_fallback_413."""
+        return model_group_manager.get_fallback_413(group_name, failed_model)
 
     @staticmethod
     def _short_upstream_error(

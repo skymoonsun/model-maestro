@@ -454,6 +454,11 @@ export const modelGroupsApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  updateMember: (name: string, memberId: number, data: ModelGroupMemberCreate) =>
+    adminFetch<ModelGroupMember>(`/admin/model-groups/${encodeURIComponent(name)}/members/${memberId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   removeMember: (name: string, memberId: number) =>
     adminFetch<void>(`/admin/model-groups/${encodeURIComponent(name)}/members/${memberId}`, {
       method: 'DELETE',
@@ -957,6 +962,8 @@ export interface ModelGroupMember {
   capability_tags: string[] | null;
   weight: number;
   priority: number;
+  is_fallback: boolean;
+  is_fallback_413: boolean;
   is_active: boolean;
   preferred_node_ids: number[];
 }
@@ -997,6 +1004,8 @@ export type ModelGroupMemberCreate = {
   capability_tags?: string[] | null;
   weight?: number;
   priority?: number;
+  is_fallback?: boolean;
+  is_fallback_413?: boolean;
   is_active?: boolean;
   preferred_node_ids?: number[] | null;
   /** @deprecated use preferred_node_ids */
