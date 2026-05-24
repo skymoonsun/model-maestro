@@ -103,9 +103,10 @@ For a more detailed setup guide, see [`docs/SETUP.md`](docs/SETUP.md).
 - **Antigravity Support** — Google v1internal API proxy via OAuth 2.0. Access Gemini and Claude models through Google's infrastructure as a first-class provider alongside Ollama and vLLM.
 - **AWS Bedrock Support** — Native AWS Bedrock Converse API node type with automatic credential forwarding, image input and streaming support.
 - **vLLM Support** — Native vLLM (OpenAI-compatible) node type with automatic health checks, model discovery and `Authorization: Bearer` header forwarding.
+- **Cursor AI Support** — Connect Cursor API keys via the `cursor` node type. Automatically routes OpenAI-compatible requests to Cursor's backend (StandardAgents proxy or Cursor directly) with health checks and model discovery.
 - **Public Tunnel** — One-click Cloudflare (quick or named tunnel) and ngrok integration to expose your local API publicly without manual setup.
 - **Model Groups** — Group models into logical units with fallback chains. Requests dynamically resolve to the best member based on capability tags (vision, tools) and strategy.
-- **Node Health Management** — Automatic health checks, model discovery and availability tracking for Ollama, vLLM, Antigravity and Bedrock nodes.
+- **Node Health Management** — Automatic health checks, model discovery and availability tracking for Ollama, vLLM, Antigravity, Bedrock **and Cursor** nodes.
 - **Per-Node Warmup Toggle** — Enable or disable model warmup per node via admin UI.
 - **Drag-and-Drop Node Priority** — Reorder node cards in the admin panel to update fallback priority visually.
 - **User-Level Access Control** — Per-user model/node/node-model allowlists and rate limits (requests / tokens per day). Restrict a user to specific nodes or even specific models on specific nodes.
@@ -358,8 +359,8 @@ The Next.js dashboard (`http://localhost:3000`) provides a visual interface for 
 |---|---|
 | **Dashboard** | Node health, model counts, user statistics |
 | **Users** | Create users, manage tokens, assign models/nodes/node-models, set limits, activate/deactivate |
-| **Nodes** | Add/edit Ollama, vLLM, Antigravity and Bedrock nodes, set codes, view health, trigger discovery, drag-and-drop priority |
-| **AI Models > Models** | Tabbed view for Ollama, vLLM and Antigravity models with sync buttons, capabilities and context length |
+| **Nodes** | Add/edit Ollama, vLLM, Cursor, Antigravity and Bedrock nodes, set codes, view health, trigger discovery, drag-and-drop priority |
+| **AI Models > Models** | Tabbed view for Ollama, vLLM, **Cursor**, Antigravity and Bedrock models with sync buttons, capabilities and context length |
 | **AI Models > Mappings** | Display↔Real name mappings with provider badge (Ollama/vLLM/Antigravity), node-scoped overrides, context length, capabilities, sync caps |
 | **AI Models > Groups** | Create groups, add members, set strategy, reorder fallbacks |
 | **AI Models > Config** | Per-model tool restrictions and settings |
@@ -733,8 +734,9 @@ A model mapping can be bound to a specific node so the same display name resolve
 Model Maestro is designed to be the backend for modern AI-powered IDEs and tools. See the full integration guide for step-by-step setup:
 
 - **[Claude Code](docs/IDE_INTEGRATION.md#claude-code)** — `ANTHROPIC_BASE_URL` override
+- **[Codex](docs/IDE_INTEGRATION.md#openai-codex)** — `OPENAI_BASE_URL` + `OPENAI_API_KEY` (VS Code extension & CLI)
 - **[OpenClaw](docs/IDE_INTEGRATION.md#openclaw)** — `openclaw.json` provider configuration
-- **[Cursor](docs/IDE_INTEGRATION.md#cursor)** — OpenAI API Key + custom base URL
+- **[Cursor IDE](docs/IDE_INTEGRATION.md#cursor)** — OpenAI API Key + custom base URL
 - **[Grafana Assistant](docs/IDE_INTEGRATION.md#grafana-assistant)** — Grafana plugin with domain bypass script or reverse proxy
 
 For complete configuration examples and troubleshooting, see [`docs/IDE_INTEGRATION.md`](docs/IDE_INTEGRATION.md).

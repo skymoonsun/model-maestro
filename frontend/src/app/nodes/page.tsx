@@ -239,10 +239,12 @@ function NodeCard({
                                         ? 'bg-green-500/10 text-green-400 border-green-500/30'
                                         : node.node_type === 'bedrock'
                                         ? 'bg-orange-500/10 text-orange-400 border-orange-500/30'
+                                        : node.node_type === 'cursor'
+                                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
                                         : ''
                                 }`}
                             >
-                                {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type === 'antigravity' ? 'Antigravity' : node.node_type === 'bedrock' ? 'Bedrock' : node.node_type}
+                                {node.node_type === 'vllm' ? 'vLLM' : node.node_type === 'ollama' ? 'Ollama' : node.node_type === 'antigravity' ? 'Antigravity' : node.node_type === 'bedrock' ? 'Bedrock' : node.node_type === 'cursor' ? 'Cursor' : node.node_type}
                             </Badge>
                             {node.code && (
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono text-cyan-400 border-cyan-400/30 bg-cyan-400/10">
@@ -286,7 +288,9 @@ function NodeCard({
                     </div>
                 </div>
                 <p className="text-xs text-muted-foreground font-mono mt-1 truncate" title={node.base_url}>
-                    {node.base_url}
+                    {node.node_type === 'antigravity' || node.node_type === 'bedrock' || node.node_type === 'cursor'
+                        ? 'Auto (managed)'
+                        : node.base_url}
                 </p>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -342,10 +346,14 @@ function NodeCard({
                                 </div>
                                 <div>
                                     <Label>Base URL</Label>
-                                    <Input
-                                        value={form.base_url}
-                                        onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
-                                    />
+                                    {form.node_type !== 'antigravity' && form.node_type !== 'bedrock' && form.node_type !== 'cursor' ? (
+                                        <Input
+                                            value={form.base_url}
+                                            onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
+                                        />
+                                    ) : (
+                                        <Input value={form.base_url || 'Auto (managed)'} disabled />
+                                    )}
                                 </div>
                                 <div>
                                     <Label>API Key (optional)</Label>
@@ -403,6 +411,7 @@ function NodeCard({
                                             <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
                                             <SelectItem value="antigravity">Antigravity (Google v1internal)</SelectItem>
                                             <SelectItem value="bedrock">AWS Bedrock</SelectItem>
+                                            <SelectItem value="cursor">Cursor AI</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -422,6 +431,22 @@ function NodeCard({
                                             }
                                         }}
                                     />
+                                )}
+                                {form.node_type === 'cursor' && (
+                                    <div>
+                                        <Label>Cursor API Key</Label>
+                                        <Input
+                                            type="password"
+                                            placeholder="crsr_..."
+                                            value={form.api_key || ''}
+                                            onChange={(e) =>
+                                                setForm((f) => ({ ...f, api_key: e.target.value || undefined }))
+                                            }
+                                        />
+                                        <p className="text-xs text-muted-foreground mt-1">
+                                            Get your API key from cursor.com/dashboard → Integrations → API Keys
+                                        </p>
+                                    </div>
                                 )}
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
@@ -519,7 +544,8 @@ function NodeCard({
                                     disabled={
                                         updateMut.isPending ||
                                         (form.node_type === 'bedrock' &&
-                                            !isBedrockNodeFormValid(form, bedrockAuthMode))
+                                            !isBedrockNodeFormValid(form, bedrockAuthMode)) ||
+                                        (form.node_type === 'cursor' && !form.api_key?.trim())
                                     }
                                 >
                                     Save
@@ -619,11 +645,15 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                     </div>
                     <div>
                         <Label>Base URL</Label>
-                        <Input
-                            placeholder={form.node_type === 'vllm' ? 'https://api.example.com/llm/model' : 'http://192.168.1.10:11434'}
-                            value={form.base_url}
-                            onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
-                        />
+                        {form.node_type !== 'antigravity' && form.node_type !== 'bedrock' && form.node_type !== 'cursor' ? (
+                            <Input
+                                placeholder={form.node_type === 'vllm' ? 'https://api.example.com/llm/model' : 'http://192.168.1.10:11434'}
+                                value={form.base_url}
+                                onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
+                            />
+                        ) : (
+                            <Input value="Auto (managed)" disabled />
+                        )}
                     </div>
                     <div>
                         <Label>API Key (optional)</Label>
@@ -701,6 +731,7 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                                 <SelectItem value="vllm">vLLM (OpenAI-compatible)</SelectItem>
                                 <SelectItem value="antigravity">Antigravity (Google v1internal)</SelectItem>
                                 <SelectItem value="bedrock">AWS Bedrock</SelectItem>
+                                <SelectItem value="cursor">Cursor AI</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -796,9 +827,11 @@ function AddNodeDialog({ onSuccess }: { onSuccess: () => void }) {
                             !form.name ||
                             (form.node_type !== 'antigravity' &&
                                 form.node_type !== 'bedrock' &&
+                                form.node_type !== 'cursor' &&
                                 !form.base_url) ||
                             (form.node_type === 'bedrock' &&
                                 !isBedrockNodeFormValid(form, bedrockAuthMode)) ||
+                            (form.node_type === 'cursor' && !form.api_key?.trim()) ||
                             mut.isPending
                         }
                     >
