@@ -154,20 +154,47 @@ Optional explicit model list (inferenceModels) — use opaque ids from discovery
 }`,
     },
     {
+        id: 'codex',
+        name: 'Codex (OpenAI)',
+        logo: '/guide/openai.svg',
+        color: 'text-emerald-400',
+        bg: 'bg-emerald-400/10 border-emerald-400/30',
+        description: 'OpenAI\'s agentic coding assistant (VS Code extension & standalone CLI). Standard OpenAI-compatible API.',
+        steps: [
+            'Set OPENAI_BASE_URL to your Maestro /v1 endpoint.',
+            'Set OPENAI_API_KEY to your Maestro JWT token.',
+            'Add to shell profile (zsh: ~/.zshrc, bash: ~/.bashrc).',
+            'For VS Code: add to terminal.integrated.env settings.',
+            'Codex inherits these env vars automatically — no custom UI needed.',
+        ],
+        code: `export OPENAI_BASE_URL="https://maestro.example.com/v1"
+export OPENAI_API_KEY="<your-maestro-jwt-token>"
+
+codex`,
+        note: 'Uses standard /v1/chat/completions — no extra endpoints. Works with any model Maestro exposes. Ensure ANTHROPIC_DEFAULT_HAIKU_MODEL is pinned if subagents spawn Claude models.',
+    },
+    {
         id: 'cursor',
-        name: 'Cursor',
+        name: 'Cursor IDE',
         logo: '/guide/cursor.svg',
         color: 'text-purple-400',
         bg: 'bg-purple-400/10 border-purple-400/30',
-        description: 'AI-native code editor using custom OpenAI base URLs.',
+        description: 'AI-native code editor using custom OpenAI base URLs. Also supports Cursor AI provider nodes directly.',
         steps: [
             'Requires Cursor Pro subscription for custom API keys.',
             'Cursor servers must reach your Maestro instance publicly (VPS / tunnel).',
             'Settings → Models → OpenAI → Override Base URL.',
+            'For Cursor AI node: create a cursor node in admin panel with your Cursor API key.',
         ],
-        code: `OpenAI API Key:  <your-maestro-jwt-token>
-Override OpenAI Base URL:  https://maestro.example.com/cursor`,
-        note: 'The /cursor endpoint proxies OpenAI-compatible requests with Cursor-specific model-name mapping.',
+        code: `Cursor IDE (OpenAI provider):
+OpenAI API Key:  <your-maestro-jwt-token>
+Override OpenAI Base URL:  https://maestro.example.com/cursor
+
+Cursor AI Node (backend):
+Node Type: cursor
+API Key: crsr_xxx (from cursor.com/dashboard → Integrations → API Keys)
+Base URL: Auto (managed) — defaults to cursor-api.standardagents.ai/v1`,
+        note: 'The /cursor endpoint proxies OpenAI-compatible requests with Cursor-specific model-name mapping. For Cursor AI nodes, the proxy connects directly to Cursor\'s backend and auto-generates the base URL.',
     },
     {
         id: 'grafana',
@@ -240,6 +267,24 @@ API Token:     <your-maestro-jwt-token>`,
                 extNote: 'Pin Haiku and subagent models to names Maestro routes. ANTHROPIC_SMALL_FAST_MODEL is deprecated; use ANTHROPIC_DEFAULT_HAIKU_MODEL.',
             },
             {
+                extId: 'codex-ext',
+                extName: 'Codex',
+                extLogo: '/guide/openai.svg',
+                extSteps: [
+                    'Install the Codex extension from the VS Code marketplace.',
+                    'Set OPENAI_BASE_URL and OPENAI_API_KEY in your shell profile.',
+                    'For VS Code add these to terminal.integrated.env settings.',
+                    'Restart VS Code; Codex picks up env vars automatically.',
+                ],
+                extCode: `{
+    "terminal.integrated.env.osx": {
+        "OPENAI_BASE_URL": "https://maestro.example.com/v1",
+        "OPENAI_API_KEY": "<your-maestro-jwt-token>"
+    }
+}`,
+                extNote: 'Codex has no dedicated "custom base URL" UI — only env vars. Standard /v1 endpoint works with any model Maestro exposes.',
+            },
+            {
                 extId: 'kilo-code-ext',
                 extName: 'Kilo Code',
                 extLogo: '/guide/kilocode.svg',
@@ -281,6 +326,16 @@ const providers = [
         features: ['OpenAI-compatible API', 'Streaming SSE', 'Bearer auth forwarding', 'max_model_len discovery'],
     },
     {
+        id: 'cursor',
+        name: 'Cursor AI',
+        logo: '/guide/cursor.svg',
+        color: 'text-cyan-400',
+        bg: 'bg-cyan-400/10 border-cyan-400/30',
+        type: 'cursor',
+        endpoints: ['/v1/chat/completions', '/v1/models'],
+        features: ['OpenAI-compatible proxy', 'Bearer auth forwarding', 'Auto base URL', 'Model discovery'],
+    },
+    {
         id: 'antigravity',
         name: 'Antigravity',
         logo: '/guide/antigravity.svg',
@@ -310,7 +365,7 @@ export default function GuidePage() {
             <div className="mb-8">
                 <h1 className="text-3xl font-bold tracking-tight">Integration Guide</h1>
                 <p className="text-muted-foreground mt-2 max-w-2xl">
-                    Connect your favorite IDEs and tools to Model Maestro — including Claude Code, Claude Desktop (Cowork 3P), VS Code, Cursor, and OpenClaw. Supports Ollama, vLLM, Antigravity, and Bedrock providers out of the box.
+                    Connect your favorite IDEs and tools to Model Maestro — including Claude Code, Claude Desktop (Cowork 3P), OpenAI Codex, Cursor, and OpenClaw. Supports Ollama, vLLM, Cursor AI, Antigravity, and Bedrock providers out of the box.
                 </p>
             </div>
 

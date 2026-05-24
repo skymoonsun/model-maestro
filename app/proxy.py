@@ -1269,6 +1269,25 @@ class OllamaProxy:
                 bedrock_auth_mode=getattr(node, "bedrock_auth_mode", None),
             )
 
+        if node_type == "cursor":
+            from app.cursor_proxy import cursor_credentials_configured, proxy_cursor_request
+
+            node = await self._get_active_node_by_base_url(base_url)
+            if not node or not cursor_credentials_configured(node.api_key):
+                logger.warning(f"[Cursor] Missing or invalid API key on node {base_url}")
+                return None
+            logger.info(f"[Cursor] Routing request to Cursor AI for model={model_name}")
+            return await proxy_cursor_request(
+                data=data,
+                stream=stream,
+                endpoint=endpoint,
+                base_url=base_url,
+                api_key=node.api_key,
+                model_name=model_name or data.get("model", "unknown"),
+                username=username,
+                node_id=getattr(node, "id", None),
+            )
+
         return None
 
     async def _resolve_node_id_by_url(self, base_url: str) -> Optional[int]:

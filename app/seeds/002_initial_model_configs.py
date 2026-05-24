@@ -69,6 +69,13 @@ MODEL_CONFIGS = [
         "default_context_length": 163840,
         "description": "Cogito modelleri",
     },
+    {
+        "model_prefix": "composer",
+        "allowed_tools": None,
+        "unsupported_params": None,
+        "default_context_length": 200000,
+        "description": "Cursor Composer modelleri (composer-2.5 vb.)",
+    },
 ]
 
 

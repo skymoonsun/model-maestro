@@ -289,7 +289,7 @@ class OllamaNode(Base):
     priority = Column(Integer, default=0)  # Higher = preferred (fallback order)
     weight = Column(Integer, default=100)  # Load balancing weight
     is_active = Column(Boolean, default=True, nullable=False)
-    node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama', 'vllm', 'antigravity', 'bedrock'
+    node_type = Column(String(50), default='ollama', nullable=False)  # 'ollama', 'vllm', 'antigravity', 'bedrock', 'cursor'
     warmup_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Enable model warmup for this node
     auto_sync_enabled = Column(Boolean, default=True, nullable=False, server_default='true')  # Include in background model discovery sync
     code = Column(String(30), unique=True, nullable=True, index=True)  # Short routing code e.g. "trmix", "us-east-1"

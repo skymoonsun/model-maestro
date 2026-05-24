@@ -358,6 +358,176 @@ Cursor supports custom OpenAI base URLs for all LLM requests.
 
 ---
 
+## OpenAI Codex
+
+OpenAI Codex (also known as **Codex CLI** or **Codex Agent**) is OpenAI's agentic coding assistant. It is available as:
+
+1. **VS Code Extension** — `vscode-codex` extension in the VS Code marketplace
+2. **Desktop / Standalone CLI** — `codex` CLI tool (installed via `npm install -g @openai/codex` as of late 2025 / early 2026 previews)
+3. **Future IDE integrations** — OpenAI continues expanding Codex to more editors
+
+Codex speaks standard **OpenAI API** (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`). Model Maestro's existing OpenAI-compatible endpoints support Codex out of the box — no additional backend code is required.
+
+### How Codex Connects
+
+Codex reads three environment variables (or VS Code settings) to determine the backend:
+
+| Variable / Setting | Description | Value for Maestro |
+|---|---|---|
+| `OPENAI_BASE_URL` | Custom API base URL | `https://maestro.example.com/v1` |
+| `OPENAI_API_KEY` | Bearer token for authentication | Your Maestro JWT token |
+| `OPENAI_ORG_ID` | Organization ID (optional, usually ignored by gateways) | Leave empty |
+
+### CLI / Desktop App Setup
+
+```bash
+export OPENAI_BASE_URL="https://maestro.example.com/v1"
+export OPENAI_API_KEY="<your-maestro-jwt-token>"
+
+codex
+```
+
+To make the variables persist across sessions, add them to your shell profile:
+
+**macOS / Linux (zsh):**
+
+```bash
+echo 'export OPENAI_BASE_URL="https://maestro.example.com/v1"' >> ~/.zshrc
+echo 'export OPENAI_API_KEY="<your-maestro-jwt-token>"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**macOS / Linux (bash):**
+
+```bash
+echo 'export OPENAI_BASE_URL="https://maestro.example.com/v1"' >> ~/.bashrc
+echo 'export OPENAI_API_KEY="<your-maestro-jwt-token>"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**Windows (PowerShell):**
+
+```powershell
+[Environment]::SetEnvironmentVariable("OPENAI_BASE_URL", "https://maestro.example.com/v1", "User")
+[Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "<your-maestro-jwt-token>", "User")
+```
+
+### VS Code Extension Setup
+
+The Codex VS Code extension reads the same `OPENAI_BASE_URL` and `OPENAI_API_KEY` environment variables. Configure them via VS Code settings:
+
+#### Method 1 — Terminal / shell profile (recommended)
+
+Set the env vars in the shell that launches VS Code, or in your shell profile (`.zshrc`, `.bashrc`, etc.). The Codex extension inherits them automatically.
+
+#### Method 2 — VS Code `settings.json`
+
+Add the environment variables directly in VS Code user settings:
+
+```json
+{
+    "terminal.integrated.env.osx": {
+        "OPENAI_BASE_URL": "https://maestro.example.com/v1",
+        "OPENAI_API_KEY": "<your-maestro-jwt-token>"
+    },
+    "terminal.integrated.env.linux": {
+        "OPENAI_BASE_URL": "https://maestro.example.com/v1",
+        "OPENAI_API_KEY": "<your-maestro-jwt-token>"
+    },
+    "terminal.integrated.env.windows": {
+        "OPENAI_BASE_URL": "https://maestro.example.com/v1",
+        "OPENAI_API_KEY": "<your-maestro-jwt-token>"
+    }
+}
+```
+
+> **Note:** As of early 2026 preview builds, the Codex VS Code extension does **not** expose a dedicated "custom base URL" UI setting like Cursor does. It relies exclusively on environment variables. Re-launch VS Code after setting them.
+
+### Model Selection
+
+Codex needs to pick a model from Maestro's catalog. When `OPENAI_BASE_URL` is set, Codex calls `GET /v1/models` and lists whatever Maestro returns.
+
+**How Maestro serves models to Codex:**
+
+| Maestro Feature | Codex Impact |
+|---|---|
+| Model mappings (`/admin/model-mappings`) | Display names appear in Codex model picker |
+| Node sync (`/admin/nodes/{id}/sync-models`) | Catalog is populated from healthy nodes |
+| User-model assignments (`/admin/users/{username}/models`) | Only permitted models are listed |
+| Model groups (`/admin/model-groups`) | Group names also appear as selectable models |
+
+If you want a specific model to be the **default** for Codex, map it in Maestro and ensure the discovery endpoint returns it at the top of the list. Codex typically pre-selects the first model returned by `/v1/models`.
+
+### Codex Features Supported by Maestro
+
+| Codex Feature | Maestro Support | Notes |
+|---|---|---|
+| `/v1/chat/completions` | Full | Streaming + non-streaming; tool calls supported via proxy |
+| `/v1/models` | Full | Auto-discovery from node catalogs |
+| Streaming responses | Full | Server-Sent Events (SSE) via `proxy.py` |
+| Tool / function calling | Full | Kimi/DeepSeek XML tool calls auto-converted to OpenAI format |
+| Multi-turn conversations | Full | Message history forwarded verbatim |
+| Embeddings (`/v1/embeddings`) | Full | Routed to any available embedding model |
+| File context / codebase indexing | Client-side | Codex reads local files; Maestro only sees the prompt |
+| Agentic loops (plan → execute → review) | Full | Multiple chat-completion calls; each routed independently |
+| Custom system prompts | Partial | Maestro injects `num_ctx` and `keep_alive`; custom system prompt forwarded as-is |
+
+### What Codex Sends vs. What Maestro Does
+
+Codex uses standard OpenAI request shapes. Maestro processes them like any other OpenAI-compatible client:
+
+```json
+// Codex sends
+{
+  "model": "glm-5:latest",
+  "messages": [
+    { "role": "system", "content": "You are a helpful coding assistant." },
+    { "role": "user", "content": "Refactor this function to use async/await." }
+  ],
+  "stream": true,
+  "tools": [...]
+}
+```
+
+Maestro then:
+1. Resolves `"glm-5:latest"` via `model_mapper` → `glm-5:cloud`
+2. Selects a healthy node via `load_balancer`
+3. Forwards the request to that node (Ollama, vLLM, Antigravity, Bedrock, or Cursor)
+4. Streams the response back to Codex in OpenAI SSE format
+
+### Differences from Claude Code / Cursor
+
+| Aspect | Claude Code (Maestro `/claude/`) | Cursor (Maestro `/cursor/`) | Codex (Maestro `/v1/`) |
+|---|---|---|---|
+| Protocol | Anthropic Messages API | OpenAI Chat Completions | OpenAI Chat Completions |
+| Base URL suffix | `/claude/` | `/cursor/` | `/v1/` |
+| Model names | `claude-3-5-sonnet-20241022` | `composer-2.5` | Same as Maestro mappings |
+| Special headers | `X-Maestro-Client: claude-desktop` | None required | None required |
+| System prompt handling | Anthropic `system` block | OpenAI `messages[0]` style | OpenAI `messages[0]` style |
+| Tool call format | Anthropic `tool_use` / `tool_result` | OpenAI `tool_calls` | OpenAI `tool_calls` |
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| `401 Unauthorized` | `OPENAI_API_KEY` is missing or expired | Verify `OPENAI_API_KEY` contains your Maestro JWT; regenerate in admin panel if needed |
+| `404 Not Found` on `/v1/models` | Wrong base URL | Use `https://maestro.example.com/v1` (trailing `/v1` required) |
+| Empty model list | No models discovered on any node | Sync models from at least one healthy node; create model mappings |
+| Model not found at runtime | `model` id in request not in Maestro catalog | Map it in `/admin/model-mappings` or sync the node that hosts it |
+| Codex hangs / no response | Streaming timeout or node down | Check Maestro logs; verify selected node is healthy; retry with `stream: false` for debugging |
+| Tool call errors | Backend node (e.g. Ollama) rejects tools | Check model config; some models need `tools` stripped; use model-specific config in `/admin/model-config` |
+| Codex doesn't pick up new model | Extension caches `/v1/models` | Restart Codex / VS Code; the Codex cache TTL is ~30 seconds on the client side |
+
+### Future Enhancements (when Codex ships new features)
+
+OpenAI Codex is under active development. The following features are anticipated and Model Maestro is already prepared:
+
+- **`/v1/responses` API** — Not confirmed in Codex, but if added, Maestro can add a lightweight passthrough endpoint that maps `input` → `messages` (similar to how `/cursor/chat/completions` handles Cursor's Responses API format today).
+- **Custom reasoning / thinking tokens** — Maestro's `proxy.py` already extracts `reasoning`/`reasoning_content` fields from upstream responses and forwards them in OpenAI-compatible format.
+- **Multi-modal (image upload)** — Maestro's `_strip_images_from_messages()` and vision detection in `proxy.py` handle image content; just ensure the backend model supports vision.
+
+---
+
 ## Grafana Assistant
 
 Grafana Assistant is an official Grafana plugin that adds AI-powered features inside Grafana dashboards. Model Maestro provides a fully compatible backend for this plugin.

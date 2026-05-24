@@ -93,6 +93,18 @@ class NodeManager:
             is_healthy, error = await health_check_antigravity(oauth_tokens, timeout=timeout)
             return is_healthy, error, None
 
+        # Cursor nodes: simple Bearer API key health check
+        if node_type == 'cursor':
+            from app.cursor_proxy import cursor_credentials_configured, health_check_cursor
+            if not cursor_credentials_configured(api_key):
+                return False, "Missing or invalid Cursor API key for cursor node", None
+            is_healthy, error = await health_check_cursor(
+                api_key=api_key or "",
+                base_url=base_url,
+                timeout=max(timeout, 10.0),
+            )
+            return is_healthy, error, None
+
         # Bedrock nodes: IAM or API key + region (secret not required for api_key mode)
         if node_type == 'bedrock':
             from app.bedrock_proxy import bedrock_credentials_configured, health_check_bedrock
@@ -236,6 +248,19 @@ class NodeManager:
                 region=aws_region,
                 session_token=aws_session_token,
                 bedrock_auth_mode=bedrock_auth_mode,
+            )
+            return success, models, error, None
+
+        # Cursor nodes use Cursor AI model discovery
+        if node_type == 'cursor':
+            from app.cursor_proxy import cursor_credentials_configured, discover_cursor_models
+
+            if not cursor_credentials_configured(api_key):
+                return False, [], "Missing or invalid Cursor API key for cursor node", None
+            success, models, error = await discover_cursor_models(
+                api_key=api_key or "",
+                base_url=base_url,
+                timeout=timeout,
             )
             return success, models, error, None
 
