@@ -311,3 +311,69 @@ def test_codex_responses_tool_call_streaming():
 
         # Clean dependency overrides
         app.dependency_overrides.clear()
+
+
+def test_codex_responses_history_conversion():
+    from app.main import get_current_user, check_model_access, ollama_proxy
+
+    app.dependency_overrides[get_current_user] = lambda: "test-user"
+
+    async def mock_check_access(*args):
+        return True
+
+    with patch("app.main.check_model_access", side_effect=mock_check_access), \
+         patch("app.main.get_context_length_for_model", return_value=4096), \
+         patch("app.services.config_manager.is_model_in_maintenance", return_value=False), \
+         patch("app.services.config_manager.get_model_unsupported_params", return_value=[]), \
+         patch("app.services.config_manager.get_ollama_unsupported_params", return_value=[]):
+
+        ollama_proxy.check_user_limits = AsyncMock(return_value=True)
+
+        async def mock_body_iterator():
+            yield b"data: " + json.dumps({
+                "id": "chatcmpl-4",
+                "object": "chat.completion.chunk",
+                "choices": [{"delta": {"content": "Final joke content"}, "finish_reason": "stop"}]
+            }).encode() + b"\n\n"
+            yield b"data: [DONE]\n\n"
+
+        mock_response = StreamingResponse(mock_body_iterator(), media_type="text/event-stream")
+
+        # Capture the request payload that was sent to proxy_request
+        captured_data = {}
+        async def mock_proxy_request(method, endpoint, data, **kwargs):
+            captured_data.update(data)
+            return mock_response
+
+        ollama_proxy.proxy_request = mock_proxy_request
+
+        client = TestClient(app)
+
+        headers = {"Authorization": "Bearer test-jwt-token"}
+
+        # Simulated responses API input structure with message list
+        payload = {
+            "model": "gpt-4",
+            "input": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "Hi! How can I help?"},
+                {"role": "user", "content": "tell me a joke"}
+            ],
+            "instructions": "Be funny"
+        }
+
+        response = client.post("/codex/responses", json=payload, headers=headers)
+        assert response.status_code == 200
+
+        # Assert correct conversions occurred
+        assert "messages" in captured_data
+        msgs = captured_data["messages"]
+        assert len(msgs) == 4
+        assert msgs[0] == {"role": "system", "content": "Be funny"}
+        assert msgs[1] == {"role": "user", "content": "hello"}
+        assert msgs[2] == {"role": "assistant", "content": "Hi! How can I help?"}
+        assert msgs[3] == {"role": "user", "content": "tell me a joke"}
+
+        # Clean overrides
+        app.dependency_overrides.clear()
+
