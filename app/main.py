@@ -1487,6 +1487,7 @@ async def codex_responses(
 
     model_name = data.get('model', '')
     logger.info(f"User {username} requesting Codex Responses - model: {model_name}")
+    logger.debug(f"[Codex] Received raw payload from client: {json.dumps(data)}")
 
     has_access = await check_model_access(username, model_name)
     if not has_access:
@@ -1516,6 +1517,7 @@ async def codex_responses(
 
     # Input mapping
     raw_input = data.get("input")
+    logger.info(f"[Codex] Input type status: type={type(raw_input).__name__}, items={len(raw_input) if isinstance(raw_input, list) else 1}")
     if raw_input:
         if isinstance(raw_input, str):
             messages.append({"role": "user", "content": raw_input})
@@ -1671,9 +1673,22 @@ async def codex_responses(
             "id": response_id,
             "object": "response",
             "created_at": int(time.time()),
+            "completed_at": None,
             "status": "in_progress",
             "model": model_name,
             "instructions": data.get("instructions"),
+            "background": False,
+            "error": None,
+            "incomplete_details": None,
+            "max_tool_calls": None,
+            "previous_response_id": None,
+            "prompt_cache_key": None,
+            "reasoning": None,
+            "safety_identifier": None,
+            "service_tier": "default",
+            "store": False,
+            "text": {"format": {"type": "text"}},
+            "top_logprobs": 0,
             "output": [],
             "tools": data.get("tools", []),
             "tool_choice": data.get("tool_choice", "auto"),
@@ -1684,7 +1699,8 @@ async def codex_responses(
             "frequency_penalty": 0,
             "max_output_tokens": data.get("max_output_tokens"),
             "parallel_tool_calls": True,
-            "metadata": {}
+            "metadata": {},
+            "usage": None
         }
 
         try:
@@ -1694,6 +1710,7 @@ async def codex_responses(
                 "sequence_number": seq_num,
                 "response": response_obj
             }
+            logger.info(f"[Codex] Emitting response.created (seq={seq_num})")
             yield f"event: response.created\ndata: {json.dumps(created_event)}\n\n".encode('utf-8')
             seq_num += 1
 
@@ -1703,6 +1720,7 @@ async def codex_responses(
                 "sequence_number": seq_num,
                 "response": response_obj
             }
+            logger.info(f"[Codex] Emitting response.in_progress (seq={seq_num})")
             yield f"event: response.in_progress\ndata: {json.dumps(in_progress_event)}\n\n".encode('utf-8')
             seq_num += 1
 
@@ -2077,6 +2095,7 @@ async def codex_responses(
                 "sequence_number": seq_num,
                 "response": response_obj
             }
+            logger.info(f"[Codex] Emitting response.completed (seq={seq_num})")
             yield f"event: response.completed\ndata: {json.dumps(completed_event)}\n\n".encode('utf-8')
         except Exception as ex:
             logger.error(f"Error in responses_stream_converter generator: {ex}", exc_info=True)
