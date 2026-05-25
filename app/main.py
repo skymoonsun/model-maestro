@@ -1614,7 +1614,10 @@ async def _cc_sse_to_responses_sse(proxy_resp, model_name: str):
                 cc = json.loads(data_str)
             except (json.JSONDecodeError, ValueError):
                 continue
-            delta = cc.get('choices', [{}])[0].get('delta', {})
+            choices = cc.get('choices', [])
+            if not choices:
+                continue
+            delta = choices[0].get('delta', {}) if isinstance(choices[0], dict) else {}
             content = delta.get('content', '')
             if content:
                 text_content += content
