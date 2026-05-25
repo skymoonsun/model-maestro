@@ -1542,11 +1542,8 @@ async def codex_responses(
     if 'stream_options' not in data:
         data['stream_options'] = {'include_usage': True}
 
-    # Get streaming SSE response from proxy and pass through as-is.
-    # Codex Desktop App with wire_api="responses" appears to accept
-    # standard Chat-Completions SSE when the upstream is a provider
-    # that does not natively implement the Responses API (like Ollama).
-    return await ollama_proxy.proxy_request(
+    # Get streaming response from proxy and convert to Response Streaming SSE.
+    proxy_resp = await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=data,
@@ -1557,8 +1554,100 @@ async def codex_responses(
         url_path="/codex/responses"
     )
 
+    return StreamingResponse(
+        _cc_sse_to_responses_sse(proxy_resp, model_name),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
-@app.post("/codex/chat/completions", tags=["Codex Desktop App"])
+
+async def _cc_sse_to_responses_sse(proxy_resp, model_name: str):
+    """Convert Chat Completions SSE → Codex Response Streaming SSE."""
+    import json
+
+    response_id = f"resp_{int(time.time())}"
+
+    # --- response.created ---
+    yield b'event: response.created\n'
+    created_body = json.dumps({
+        "type": "response.created",
+        "response": {
+            "id": response_id,
+            "status": "in_progress",
+            "model": model_name,
+            "output": []
+        }
+    })
+    yield f'data: {created_body}\n\n'.encode()
+
+    text_content = ""
+
+    # Iterate proxy StreamingResponse body_iterator
+    async for chunk in proxy_resp.body_iterator:
+        text = chunk.decode('utf-8') if isinstance(chunk, bytes) else str(chunk)
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line.startswith('data:'):
+                continue
+            data_str = line[5:].strip()
+            if data_str == '[DONE]':
+                # --- response.completed ---
+                yield b'event: response.completed\n'
+                completed_body = json.dumps({
+                    "type": "response.completed",
+                    "response": {
+                        "id": response_id,
+                        "status": "completed",
+                        "model": model_name,
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": text_content}]
+                            }
+                        ]
+                    }
+                })
+                yield f'data: {completed_body}\n\n'.encode()
+                return
+            try:
+                cc = json.loads(data_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            delta = cc.get('choices', [{}])[0].get('delta', {})
+            content = delta.get('content', '')
+            if content:
+                text_content += content
+                # --- response.output_text.delta ---
+                yield b'event: response.output_text.delta\n'
+                delta_body = json.dumps({
+                    "type": "response.output_text.delta",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": {"text": content}
+                })
+                yield f'data: {delta_body}\n\n'.encode()
+
+    # If no [DONE], emit completed on EOF
+    yield b'event: response.completed\n'
+    completed_body = json.dumps({
+        "type": "response.completed",
+        "response": {
+            "id": response_id,
+            "status": "completed",
+            "model": model_name,
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text_content}]
+                }
+            ]
+        }
+    })
+    yield f'data: {completed_body}\n\n'.encode()
+
+
 async def codex_chat_completions(
     request: Request,
     username: str = Depends(get_current_user)
