@@ -1768,6 +1768,7 @@ async def codex_responses(
 
                         # ── Option A: Reasoning (Thinking) content ───────────────────
                         reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+                        logger.info(f"[Codex Debug] Option A: reasoning_delta={reasoning_delta!r}, reasoning_done={reasoning_done}, reasoning_started={reasoning_started}")
                         if reasoning_delta and not reasoning_done:
                             if not reasoning_started:
                                 reasoning_started = True
@@ -1875,6 +1876,7 @@ async def codex_responses(
 
                         # ── Option C: Message Text Content ───────────────────────────
                         text_delta = delta.get("content")
+                        logger.info(f"[Codex Debug] Option C: text_delta={text_delta!r}, message_started={message_started}")
                         if text_delta:
                             # If reasoning was active and not closed, close it first
                             if reasoning_started and not reasoning_done:
