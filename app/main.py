@@ -14,6 +14,7 @@ for uv_name in ("uvicorn.access", "uvicorn"):
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, Depends, Request, HTTPException, status, Query
 from fastapi.responses import JSONResponse
+from starlette.responses import StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
