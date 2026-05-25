@@ -1542,8 +1542,11 @@ async def codex_responses(
     if 'stream_options' not in data:
         data['stream_options'] = {'include_usage': True}
 
-    # Get raw Chat Completions streaming response from proxy
-    proxy_resp = await ollama_proxy.proxy_request(
+    # Get streaming SSE response from proxy and pass through as-is.
+    # Codex Desktop App with wire_api="responses" appears to accept
+    # standard Chat-Completions SSE when the upstream is a provider
+    # that does not natively implement the Responses API (like Ollama).
+    return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=data,
@@ -1553,50 +1556,6 @@ async def codex_responses(
         source="Codex-Desktop",
         url_path="/codex/responses"
     )
-
-    # proxy_resp is a StreamingResponse; convert Chat-Completions SSE
-    # into Response Streaming SSE that Codex expects.
-    return StreamingResponse(
-        _cc_sse_to_responses_sse(proxy_resp, model_name),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-async def _cc_sse_to_responses_sse(proxy_resp, model_name: str):
-    """Convert Chat Completions SSE → Codex Response Streaming SSE."""
-    import json
-
-    # Emit response.created
-    yield b'event: response.created\n'
-    created_data = json.dumps({"object": "response", "id": f"resp_{int(time.time())}", "status": "in_progress", "model": model_name})
-    yield f'data: {created_data}\n\n'.encode()
-
-    # Stream content from proxy
-    async for chunk in proxy_resp.body_iterator:
-        text = chunk.decode('utf-8') if isinstance(chunk, bytes) else str(chunk)
-        for line in text.split('\n'):
-            if not line.startswith('data: '):
-                continue
-            data_str = line[6:]
-            if data_str == '[DONE]':
-                yield b'event: response.completed\n'
-                yield b'data: {"status": "completed"}\n\n'
-                return
-            try:
-                cc = json.loads(data_str)
-                delta = cc.get('choices', [{}])[0].get('delta', {})
-                content = delta.get('content', '')
-                if content:
-                    event_data = {"delta": {"text": content}}
-                    yield b'event: response.output_text.delta\n'
-                    yield f'data: {json.dumps(event_data)}\n\n'.encode()
-            except (json.JSONDecodeError, ValueError, IndexError, KeyError):
-                continue
-
-    # If we exit the loop without [DONE], still emit completed
-    yield b'event: response.completed\n'
-    yield b'data: {"status": "completed"}\n\n'
 
 
 @app.post("/codex/chat/completions", tags=["Codex Desktop App"])
