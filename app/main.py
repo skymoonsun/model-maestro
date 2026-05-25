@@ -1569,7 +1569,8 @@ async def _cc_sse_to_responses_sse(proxy_resp, model_name: str):
 
     # Emit response.created
     yield b'event: response.created\n'
-    yield f'data: {"object": "response", "id": "resp_{int(time.time())}", "status": "in_progress", "model": "{model_name}"}\n\n'.encode()
+    created_data = json.dumps({"object": "response", "id": f"resp_{int(time.time())}", "status": "in_progress", "model": model_name})
+    yield f'data: {created_data}\n\n'.encode()
 
     # Stream content from proxy
     async for chunk in proxy_resp.body_iterator:
