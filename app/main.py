@@ -1386,6 +1386,170 @@ def _chat_completions_to_responses(cc_response, model_name: str) -> dict:
 
 
 # =============================================================================
+# CODEX DESKTOP APP ENDPOINTS
+# =============================================================================
+# The Codex Desktop App (like Ollama launch) uses a dedicated provider config
+# with profile + model_catalog_json + model_provider. These endpoints mirror
+# the OpenAI API but under /codex/ prefix so the app sees Maestro as a native
+# provider (wire_api = "responses").
+
+@app.get("/codex/models", tags=["Codex Desktop App"])
+async def codex_list_models(username: str = Depends(get_current_user)):
+    """
+    Return models in Codex Desktop App catalog format.
+
+    Same as /v1/models but with the rich Codex model metadata needed for
+    model_catalog_json (base_instructions, context_window, capabilities, etc.)
+    """
+    logger.info(f"User {username} requesting Codex model catalog")
+
+    # Get models from /v1/models endpoint (already filtered by user access)
+    openai_models = await openai_list_models(username)
+    data = openai_models.get("data", [])
+
+    # Build Codex catalog format
+    codex_models = []
+    for idx, m in enumerate(data):
+        model_id = m.get("id", "")
+        # Skip group entries (they don't have real endpoints)
+        if not model_id or model_id.startswith("group-"):
+            continue
+
+        # Get context length from model config
+        ctx = get_context_length_for_model(model_id)
+
+        # Determine capabilities
+        input_modalities = ["text"]
+        supports_image = False
+        # Simple heuristic for vision support
+        vision_keywords = ["vision", "kimi", "claude", "gpt-4", "glm", "gemini"]
+        if any(kw in model_id.lower() for kw in vision_keywords):
+            input_modalities = ["text", "image"]
+            supports_image = True
+
+        codex_models.append({
+            "id": model_id,
+            "name": model_id,
+            "object": "model",
+            "created": 0,
+            "owned_by": "maestro",
+            "context_window": ctx,
+            "max_context_window": ctx,
+            "effective_context_window_percent": 95,
+            "description": f"Maestro model: {model_id}",
+            "display_name": m.get("name", model_id),
+            "slug": model_id,
+            "priority": idx,
+            "shell_type": "default",
+            "input_modalities": input_modalities,
+            "supported_in_api": True,
+            "supports_image_detail_original": supports_image,
+            "supports_parallel_tool_calls": False,
+            "supports_reasoning_summaries": False,
+            "supports_search_tool": False,
+            "support_verbosity": False,
+            "truncation_policy": {"limit": 10000, "mode": "bytes"},
+            "default_reasoning_summary": "auto",
+            "visibility": "list",
+            "web_search_tool_type": "text",
+            "additional_speed_tiers": [],
+            "apply_patch_tool_type": None,
+            "auto_compact_token_limit": None,
+            "availability_nux": None,
+            "base_instructions": "You are Codex, a helpful coding assistant.",
+            "default_reasoning_level": None,
+            "default_verbosity": None,
+            "experimental_supported_tools": [],
+            "model_messages": None,
+            "supported_reasoning_levels": [],
+            "upgrade": None,
+        })
+
+    return {"object": "list", "data": codex_models}
+
+
+@app.post("/codex/responses", tags=["Codex Desktop App"])
+async def codex_responses(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    Codex Desktop App Responses API endpoint.
+
+    Mirrors /v1/responses but with source="Codex-Desktop" for logging.
+    """
+    return await openai_responses(request, username)
+
+
+@app.post("/codex/chat/completions", tags=["Codex Desktop App"])
+async def codex_chat_completions(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    Codex Desktop App Chat Completions endpoint.
+
+    Mirrors /v1/chat/completions but with source="Codex-Desktop" for logging.
+    """
+    return await openai_chat_completions(request, username)
+
+
+@app.post("/codex/completions", tags=["Codex Desktop App"])
+async def codex_completions(
+    request: CompletionRequest,
+    username: str = Depends(get_current_user)
+):
+    """
+    Codex Desktop App Completions endpoint.
+
+    Mirrors /v1/completions but with source="Codex-Desktop" for logging.
+    """
+    logger.info(f"User {username} requesting Codex completion - model: {request.model}")
+    return await openai_completions(request, username)
+
+
+@app.post("/codex/embeddings", tags=["Codex Desktop App"])
+async def codex_embeddings(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    Codex Desktop App Embeddings endpoint.
+
+    Mirrors /v1/embeddings but with source="Codex-Desktop" for logging.
+    """
+    body = await request.body()
+    data = json.loads(body.decode('utf-8')) if body else {}
+    model_name = data.get('model', '')
+    logger.info(f"User {username} requesting Codex embeddings - model: {model_name}")
+
+    # Check model access
+    has_access = await check_model_access(username, model_name)
+    if not has_access:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Bu modele erişim yetkiniz yok: {model_name}"
+        )
+
+    # Check user limits
+    within_limits = await ollama_proxy.check_user_limits(username, "embeddings")
+    if not within_limits:
+        raise HTTPException(
+            status_code=429,
+            detail="User has exceeded their request or token limit"
+        )
+
+    return await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/v1/embeddings",
+        data=data,
+        username=username,
+        source="Codex-Desktop",
+        url_path="/codex/embeddings"
+    )
+
+
+# =============================================================================
 # OPENAI COMPLETIONS ENDPOINT
 # =============================================================================
 
