@@ -1465,7 +1465,7 @@ async def codex_list_models(username: str = Depends(get_current_user)):
             "upgrade": None,
         })
 
-    return {"object": "list", "data": codex_models}
+    return {"models": codex_models}
 
 
 @app.post("/codex/responses", tags=["Codex Desktop App"])
