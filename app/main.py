@@ -1956,7 +1956,44 @@ async def codex_responses(
                     except Exception as e:
                         logger.error(f"Error parsing OpenAI stream chunk line: {line}. Error: {e}")
 
-            # ── Step 3: Stream finalized, wrap up remaining done/completed events ─────
+            # Step 3: Stream finalized, wrap up remaining done/completed events
+            # Fallback: if no text message was emitted but reasoning was,
+            # surface reasoning as the message content so Codex UI shows something
+            if not message_started and reasoning_started and reasoning_content:
+                message_started = True
+                text_content = reasoning_content
+                # Retroactively emit message structure events
+                added_event = {
+                    "type": "response.output_item.added",
+                    "sequence_number": seq_num,
+                    "output_index": 0,
+                    "item": {
+                        "id": message_id,
+                        "type": "message",
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": []
+                    }
+                }
+                yield f"event: response.output_item.added\ndata: {json.dumps(added_event)}\n\n".encode('utf-8')
+                seq_num += 1
+
+                part_added_event = {
+                    "type": "response.content_part.added",
+                    "sequence_number": seq_num,
+                    "output_index": 0,
+                    "item_id": message_id,
+                    "content_index": 0,
+                    "part": {
+                        "type": "output_text",
+                        "text": "",
+                        "annotations": [],
+                        "logprobs": []
+                    }
+                }
+                yield f"event: response.content_part.added\ndata: {json.dumps(part_added_event)}\n\n".encode('utf-8')
+                seq_num += 1
+
             # A. Resolve active reasoning if not completed
             if reasoning_started and not reasoning_done:
                 reasoning_done = True
