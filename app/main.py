@@ -1558,6 +1558,8 @@ async def codex_responses(
         url_path="/codex/responses"
     )
 
+    logger.info(f"Codex raw response type: {type(raw_response).__name__}")
+
     return StreamingResponse(
         _fake_responses_streaming(raw_response, model_name),
         media_type="text/event-stream",
