@@ -1477,15 +1477,16 @@ async def codex_responses(
     """
     Codex Desktop App Responses API endpoint.
 
-    Proxies directly to Ollama's native /v1/responses endpoint.
-    Ollama (v0.13.3+) natively supports the OpenAI Responses API
-    and returns Response Streaming SSE. No conversion needed.
+    Converts Responses API input payload to Chat Completions,
+    proxies through Model Maestro's load-balanced proxy,
+    and streams back Response Streaming SSE formatted messages.
     """
+    import uuid
     body = await request.body()
     data = json.loads(body.decode('utf-8')) if body else {}
 
     model_name = data.get('model', '')
-    logger.info(f"User {username} requesting Codex Responses via Ollama /v1/responses - model: {model_name}")
+    logger.info(f"User {username} requesting Codex Responses - model: {model_name}")
 
     has_access = await check_model_access(username, model_name)
     if not has_access:
@@ -1499,31 +1500,581 @@ async def codex_responses(
     if config_manager.is_model_in_maintenance(model_name):
         raise HTTPException(status_code=503, detail=f"Bu model şu anda bakımdadır: {model_name}")
 
-    # Strip unsupported params but keep Responses API shape
+    # Step 1: Convert Responses API to Chat Completions format
+    chat_data = {
+        "model": model_name,
+        "stream": True,
+    }
+
+    # Messages conversion
+    messages = []
+
+    # Instructions -> system message
+    instructions = data.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+
+    # Input mapping
+    raw_input = data.get("input")
+    if raw_input:
+        if isinstance(raw_input, str):
+            messages.append({"role": "user", "content": raw_input})
+        elif isinstance(raw_input, list):
+            for item in raw_input:
+                item_type = item.get("type", "message")
+
+                # Check for historical messages
+                if item_type == "message" or "role" in item:
+                    role = item.get("role")
+                    content = item.get("content")
+                    # If content is list of parts (like text, image)
+                    if isinstance(content, list):
+                        mapped_parts = []
+                        for part in content:
+                            part_type = part.get("type")
+                            if part_type in ("input_text", "text", "output_text"):
+                                mapped_parts.append({"type": "text", "text": part.get("text", "")})
+                            elif part_type in ("input_image", "image"):
+                                image_url = part.get("image_url", {})
+                                mapped_parts.append({"type": "image_url", "image_url": image_url})
+                        messages.append({"role": role, "content": mapped_parts})
+                    else:
+                        # plain string content
+                        messages.append({"role": role, "content": content or ""})
+
+                elif item_type == "function_call":
+                    # Tool call history representation in chat history
+                    tool_calls = [{
+                        "id": item.get("call_id", f"call_{uuid.uuid4().hex[:12]}"),
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name"),
+                            "arguments": item.get("arguments")
+                        }
+                    }]
+                    # Find last assistant message or merge
+                    if messages and messages[-1]["role"] == "assistant":
+                        if "tool_calls" not in messages[-1]:
+                            messages[-1]["tool_calls"] = []
+                        messages[-1]["tool_calls"].extend(tool_calls)
+                    else:
+                        messages.append({
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": tool_calls
+                        })
+
+                elif item_type == "function_call_output":
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": item.get("call_id"),
+                        "content": item.get("output", "")
+                    })
+
+    chat_data["messages"] = messages
+
+    # Tools mapping
+    tools = data.get("tools")
+    if tools:
+        mapped_tools = []
+        for t in tools:
+            mapped_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t.get("name"),
+                    "description": t.get("description", ""),
+                    "parameters": t.get("parameters", {})
+                }
+            })
+        chat_data["tools"] = mapped_tools
+        if "tool_choice" in data:
+            chat_data["tool_choice"] = data["tool_choice"]
+
+    # Forward parameters
+    if "temperature" in data:
+        chat_data["temperature"] = data["temperature"]
+    if "top_p" in data:
+        chat_data["top_p"] = data["top_p"]
+    if "max_output_tokens" in data:
+        chat_data["max_tokens"] = data["max_output_tokens"]
+
+    # Filter unsupported / system parameters like standard chat completions
     unsupported_params = config_manager.get_model_unsupported_params(model_name)
     if unsupported_params:
-        removed = [p for p in unsupported_params if p in data]
-        if removed:
-            data = {k: v for k, v in data.items() if k not in removed}
-            logger.info(f"Removed {', '.join(removed)} for model {model_name}")
+        removed_params = [p for p in unsupported_params if p in chat_data]
+        if removed_params:
+            chat_data = {k: v for k, v in chat_data.items() if k not in removed_params}
 
-    # Ensure stream is set (Codex always streams via /v1/responses)
-    data['stream'] = True
+    # Remove parameters that Ollama doesn't recognize
+    ollama_unsupported_params = config_manager.get_ollama_unsupported_params()
+    removed_ollama_params = [param for param in ollama_unsupported_params if param in chat_data]
+    if removed_ollama_params:
+        chat_data = {k: v for k, v in chat_data.items() if k not in removed_ollama_params}
+
+    # Inject stream and steam options
+    chat_data['stream'] = True
+    chat_data['stream_options'] = {'include_usage': True}
+
+    ctx_length = get_context_length_for_model(model_name)
+    if 'options' not in chat_data:
+        chat_data['options'] = {}
+    if isinstance(chat_data['options'], dict) and 'num_ctx' not in chat_data['options']:
+        chat_data['options']['num_ctx'] = ctx_length
+
+    if 'keep_alive' not in chat_data:
+        chat_data['keep_alive'] = -1
 
     skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
     client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
 
-    # Proxy directly to Ollama's native /v1/responses endpoint
-    return await ollama_proxy.proxy_request(
+    # Step 2: Make request to Model Maestro's load-balanced proxy
+    response = await ollama_proxy.proxy_request(
         method="POST",
-        endpoint="/v1/responses",
-        data=data,
+        endpoint="/v1/chat/completions",
+        data=chat_data,
         stream=True,
         username=username,
         client_headers=client_headers,
-        source="Codex-Desktop",
-        url_path="/codex/responses"
+        source="Codex-Desktop"
     )
+
+    if not isinstance(response, StreamingResponse):
+        # If proxy returned a normal response (likely error), return it directly
+        return response
+
+    async def responses_stream_converter():
+        response_id = f"resp_{uuid.uuid4().hex[:16]}"
+        message_id = f"msg_{uuid.uuid4().hex[:16]}"
+        reasoning_item_id = f"rs_{uuid.uuid4().hex[:16]}"
+
+        seq_num = 1
+
+        reasoning_started = False
+        reasoning_done = False
+        message_started = False
+        message_done = False
+
+        text_content = ""
+        reasoning_content = ""
+
+        # Tools representation
+        tool_call_started = False
+        tool_call_items = []
+        active_tool_index = -1
+
+        # Usage stats
+        usage_input_tokens = 0
+        usage_output_tokens = 0
+
+        # Init base response object
+        response_obj = {
+            "id": response_id,
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": "in_progress",
+            "model": model_name,
+            "instructions": data.get("instructions"),
+            "output": [],
+            "tools": data.get("tools", []),
+            "tool_choice": data.get("tool_choice", "auto"),
+            "truncation": data.get("truncation", "disabled"),
+            "temperature": data.get("temperature", 1.0),
+            "top_p": data.get("top_p", 1.0),
+            "presence_penalty": 0,
+            "frequency_penalty": 0,
+            "max_output_tokens": data.get("max_output_tokens"),
+            "parallel_tool_calls": True,
+            "metadata": {}
+        }
+
+        # 1. response.created
+        created_event = {
+            "type": "response.created",
+            "sequence_number": seq_num,
+            "response": response_obj
+        }
+        yield f"event: response.created\ndata: {json.dumps(created_event)}\n\n"
+        seq_num += 1
+
+        # 2. response.in_progress
+        in_progress_event = {
+            "type": "response.in_progress",
+            "sequence_number": seq_num,
+            "response": response_obj
+        }
+        yield f"event: response.in_progress\ndata: {json.dumps(in_progress_event)}\n\n"
+        seq_num += 1
+
+        buffer = ""
+        # Read from source stream
+        async for raw_chunk in response.body_iterator:
+            if isinstance(raw_chunk, bytes):
+                buffer += raw_chunk.decode('utf-8', errors='ignore')
+            else:
+                buffer += raw_chunk
+
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    chunk_json = json.loads(data_str)
+                    choices = chunk_json.get("choices", [])
+                    usage = chunk_json.get("usage")
+                    if usage:
+                        usage_input_tokens = usage.get("prompt_tokens", 0)
+                        usage_output_tokens = usage.get("completion_tokens", 0)
+
+                    if not choices:
+                        continue
+
+                    choice = choices[0]
+                    delta = choice.get("delta", {})
+
+                    # ── Option A: Reasoning (Thinking) content ───────────────────
+                    # Support standard OpenWebUI / Deepseek / Anthropic reasoning_content or reasoning
+                    reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+                    if reasoning_delta and not reasoning_done:
+                        if not reasoning_started:
+                            reasoning_started = True
+                            added_event = {
+                                "type": "response.output_item.added",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item": {
+                                    "id": reasoning_item_id,
+                                    "type": "reasoning",
+                                    "status": "in_progress",
+                                    "summary": []
+                                }
+                            }
+                            yield f"event: response.output_item.added\ndata: {json.dumps(added_event)}\n\n"
+                            seq_num += 1
+
+                        reasoning_content += reasoning_delta
+                        delta_event = {
+                            "type": "response.reasoning_summary_text.delta",
+                            "sequence_number": seq_num,
+                            "output_index": 0,
+                            "item_id": reasoning_item_id,
+                            "summary_index": 0,
+                            "delta": reasoning_delta
+                        }
+                        yield f"event: response.reasoning_summary_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+                        seq_num += 1
+                        continue
+
+                    # ── Option B: Functions/Tools call ───────────────────────────
+                    tool_calls = delta.get("tool_calls")
+                    if tool_calls:
+                        # If reasoning was active and not closed, close it first
+                        if reasoning_started and not reasoning_done:
+                            reasoning_done = True
+                            done_event1 = {
+                                "type": "response.reasoning_summary_text.done",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item_id": reasoning_item_id,
+                                "summary_index": 0,
+                                "text": reasoning_content
+                            }
+                            yield f"event: response.reasoning_summary_text.done\ndata: {json.dumps(done_event1)}\n\n"
+                            seq_num += 1
+
+                            done_event2 = {
+                                "type": "response.output_item.done",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item": {
+                                    "id": reasoning_item_id,
+                                    "type": "reasoning",
+                                    "status": "completed",
+                                    "summary": [{"type": "summary_text", "text": reasoning_content}],
+                                    "encrypted_content": reasoning_content
+                                }
+                            }
+                            yield f"event: response.output_item.done\ndata: {json.dumps(done_event2)}\n\n"
+                            seq_num += 1
+
+                        # Handle tool call events
+                        tc = tool_calls[0]
+                        tc_id = tc.get("id")
+                        tc_func = tc.get("function", {})
+                        tc_name = tc_func.get("name")
+                        tc_args = tc_func.get("arguments", "")
+
+                        if tc_id:
+                            # New tool call starts
+                            tool_call_started = True
+                            active_tool_index = len(tool_call_items)
+                            tc_item_id = f"fc_{response_id}_{active_tool_index}"
+                            tool_call_items.append({
+                                "id": tc_item_id,
+                                "type": "function_call",
+                                "status": "in_progress",
+                                "call_id": tc_id,
+                                "name": tc_name or "",
+                                "arguments": tc_args or ""
+                            })
+
+                            added_event = {
+                                "type": "response.output_item.added",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item": tool_call_items[active_tool_index]
+                            }
+                            yield f"event: response.output_item.added\ndata: {json.dumps(added_event)}\n\n"
+                            seq_num += 1
+
+                        if tc_args and active_tool_index >= 0:
+                            tool_call_items[active_tool_index]["arguments"] += tc_args
+                            delta_event = {
+                                "type": "response.function_call_arguments.delta",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item_id": tool_call_items[active_tool_index]["id"],
+                                "delta": tc_args
+                            }
+                            yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(delta_event)}\n\n"
+                            seq_num += 1
+                        continue
+
+                    # ── Option C: Message Text Content ───────────────────────────
+                    text_delta = delta.get("content")
+                    if text_delta:
+                        # If reasoning was active and not closed, close it first
+                        if reasoning_started and not reasoning_done:
+                            reasoning_done = True
+                            done_event1 = {
+                                "type": "response.reasoning_summary_text.done",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item_id": reasoning_item_id,
+                                "summary_index": 0,
+                                "text": reasoning_content
+                            }
+                            yield f"event: response.reasoning_summary_text.done\ndata: {json.dumps(done_event1)}\n\n"
+                            seq_num += 1
+
+                            done_event2 = {
+                                "type": "response.output_item.done",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item": {
+                                    "id": reasoning_item_id,
+                                    "type": "reasoning",
+                                    "status": "completed",
+                                    "summary": [{"type": "summary_text", "text": reasoning_content}],
+                                    "encrypted_content": reasoning_content
+                                }
+                            }
+                            yield f"event: response.output_item.done\ndata: {json.dumps(done_event2)}\n\n"
+                            seq_num += 1
+
+                        # If first message content, add output item and first content part
+                        if not message_started:
+                            message_started = True
+                            added_event = {
+                                "type": "response.output_item.added",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item": {
+                                    "id": message_id,
+                                    "type": "message",
+                                    "status": "in_progress",
+                                    "role": "assistant",
+                                    "content": []
+                                }
+                            }
+                            yield f"event: response.output_item.added\ndata: {json.dumps(added_event)}\n\n"
+                            seq_num += 1
+
+                            part_added_event = {
+                                "type": "response.content_part.added",
+                                "sequence_number": seq_num,
+                                "output_index": 0,
+                                "item_id": message_id,
+                                "content_index": 0,
+                                "part": {
+                                    "type": "output_text",
+                                    "text": "",
+                                    "annotations": [],
+                                    "logprobs": []
+                                }
+                            }
+                            yield f"event: response.content_part.added\ndata: {json.dumps(part_added_event)}\n\n"
+                            seq_num += 1
+
+                        text_content += text_delta
+                        delta_event = {
+                            "type": "response.output_text.delta",
+                            "sequence_number": seq_num,
+                            "output_index": 0,
+                            "item_id": message_id,
+                            "content_index": 0,
+                            "delta": text_delta,
+                            "logprobs": []
+                        }
+                        yield f"event: response.output_text.delta\ndata: {json.dumps(delta_event)}\n\n"
+                        seq_num += 1
+                except Exception as e:
+                    logger.error(f"Error parsing OpenAI stream chunk line: {line}. Error: {e}")
+
+        # ── Step 3: Stream finalized, wrap up remaining done/completed events ─────
+        # A. Resolve active reasoning if not completed
+        if reasoning_started and not reasoning_done:
+            reasoning_done = True
+            done_event1 = {
+                "type": "response.reasoning_summary_text.done",
+                "sequence_number": seq_num,
+                "output_index": 0,
+                "item_id": reasoning_item_id,
+                "summary_index": 0,
+                "text": reasoning_content
+            }
+            yield f"event: response.reasoning_summary_text.done\ndata: {json.dumps(done_event1)}\n\n"
+            seq_num += 1
+
+            done_event2 = {
+                "type": "response.output_item.done",
+                "sequence_number": seq_num,
+                "output_index": 0,
+                "item": {
+                    "id": reasoning_item_id,
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": reasoning_content}],
+                    "encrypted_content": reasoning_content
+                }
+            }
+            yield f"event: response.output_item.done\ndata: {json.dumps(done_event2)}\n\n"
+            seq_num += 1
+
+        # B. Resolve active tool calls
+        if tool_call_started:
+            for idx, item in enumerate(tool_call_items):
+                item["status"] = "completed"
+                done_args_event = {
+                    "type": "response.function_call_arguments.done",
+                    "sequence_number": seq_num,
+                    "output_index": 0,
+                    "item_id": item["id"],
+                    "arguments": item["arguments"]
+                }
+                yield f"event: response.function_call_arguments.done\ndata: {json.dumps(done_args_event)}\n\n"
+                seq_num += 1
+
+                done_item_event = {
+                    "type": "response.output_item.done",
+                    "sequence_number": seq_num,
+                    "output_index": 0,
+                    "item": item
+                }
+                yield f"event: response.output_item.done\ndata: {json.dumps(done_item_event)}\n\n"
+                seq_num += 1
+
+        # C. Resolve active text message
+        if message_started and not message_done:
+            message_done = True
+            done_text_event = {
+                "type": "response.output_text.done",
+                "sequence_number": seq_num,
+                "output_index": 0,
+                "item_id": message_id,
+                "content_index": 0,
+                "text": text_content,
+                "logprobs": []
+            }
+            yield f"event: response.output_text.done\ndata: {json.dumps(done_text_event)}\n\n"
+            seq_num += 1
+
+            done_part_event = {
+                "type": "response.content_part.done",
+                "sequence_number": seq_num,
+                "output_index": 0,
+                "item_id": message_id,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": text_content,
+                    "annotations": [],
+                    "logprobs": []
+                }
+            }
+            yield f"event: response.content_part.done\ndata: {json.dumps(done_part_event)}\n\n"
+            seq_num += 1
+
+            done_item_event = {
+                "type": "response.output_item.done",
+                "sequence_number": seq_num,
+                "output_index": 0,
+                "item": {
+                    "id": message_id,
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": text_content,
+                        "annotations": [],
+                        "logprobs": []
+                    }]
+                }
+            }
+            yield f"event: response.output_item.done\ndata: {json.dumps(done_item_event)}\n\n"
+            seq_num += 1
+
+        # D. Final response object
+        final_output = []
+        if reasoning_started:
+            final_output.append({
+                "id": reasoning_item_id,
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [{"type": "summary_text", "text": reasoning_content}],
+                "encrypted_content": reasoning_content
+            })
+        if tool_call_started:
+            final_output.extend(tool_call_items)
+        if message_started:
+            final_output.append({
+                "id": message_id,
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": text_content,
+                    "annotations": [],
+                    "logprobs": []
+                }]
+            })
+
+        response_obj["status"] = "completed"
+        response_obj["completed_at"] = int(time.time())
+        response_obj["output"] = final_output
+        response_obj["usage"] = {
+            "input_tokens": usage_input_tokens if usage_input_tokens > 0 else 100,
+            "output_tokens": usage_output_tokens if usage_output_tokens > 0 else 100,
+            "total_tokens": (usage_input_tokens + usage_output_tokens) if (usage_input_tokens + usage_output_tokens) > 0 else 200,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        }
+
+        completed_event = {
+            "type": "response.completed",
+            "sequence_number": seq_num,
+            "response": response_obj
+        }
+        yield f"event: response.completed\ndata: {json.dumps(completed_event)}\n\n"
+
+    return StreamingResponse(responses_stream_converter(), media_type="text/event-stream")
 
 
 async def codex_chat_completions(
