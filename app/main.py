@@ -1542,106 +1542,21 @@ async def codex_responses(
     if 'stream_options' not in data:
         data['stream_options'] = {'include_usage': True}
 
-    # Non-streaming approach: get full response, emit fake streaming
-    data['stream'] = False
-    if 'stream_options' in data:
-        del data['stream_options']
-
-    raw_response = await ollama_proxy.proxy_request(
+    # Ollama taklidi: proxy'den gelen StreamingResponse'ü olduğu gibi return et
+    # wire_api="responses" ile Codex Response Streaming parser'ı çalışıyor
+    # Ama upstream Chat Completions SSE formatında gelince
+    # Codex bunu kendi Ollama client'ı gibi parse ediyor mu?
+    # Deneyelim.
+    return await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=data,
-        stream=False,
+        stream=True,
         username=username,
         client_headers=client_headers,
         source="Codex-Desktop",
         url_path="/codex/responses"
     )
-
-    logger.info(f"Codex raw response type: {type(raw_response).__name__}")
-
-    return StreamingResponse(
-        _fake_responses_streaming(raw_response, model_name),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-async def _fake_responses_streaming(raw_response, model_name: str):
-    """Convert non-streaming Chat Completions response to
-    Response Streaming SSE (word-by-word to simulate streaming)."""
-    import json
-
-    # Parse response
-    cc: dict = {}
-    if isinstance(raw_response, dict):
-        cc = raw_response
-    elif isinstance(raw_response, str):
-        try:
-            cc = json.loads(raw_response)
-        except (json.JSONDecodeError, ValueError):
-            cc = {}
-    elif hasattr(raw_response, 'body'):
-        body = raw_response.body
-        if isinstance(body, bytes):
-            cc = json.loads(body.decode('utf-8'))
-        elif hasattr(body, 'decode'):
-            cc = json.loads(body.decode())
-        else:
-            cc = json.loads(body)
-
-    response_id = cc.get('id', f"resp_{int(time.time())}")
-    choice = cc.get('choices', [{}])[0] if cc.get('choices') else {}
-    message = choice.get('message', {}) if choice else {}
-    content_text = message.get('content', '') if isinstance(message.get('content'), str) else ''
-
-    # Emit response.created
-    yield b'event: response.created\n'
-    created_body = json.dumps({
-        "type": "response.created",
-        "response": {
-            "id": response_id,
-            "object": "response",
-            "status": "in_progress",
-            "model": model_name,
-            "output": []
-        }
-    })
-    yield f'data: {created_body}\n\n'.encode()
-
-    # Stream content word by word
-    words = content_text.split(' ')
-    for word in words:
-        text = word + ' '
-        yield b'event: response.output_text.delta\n'
-        delta_body = json.dumps({
-            "type": "response.output_text.delta",
-            "output_index": 0,
-            "content_index": 0,
-            "delta": {"text": text}
-        })
-        yield f'data: {delta_body}\n\n'.encode()
-        await asyncio.sleep(0.01)  # Simulate streaming latency
-
-    # Emit response.completed
-    yield b'event: response.completed\n'
-    completed_body = json.dumps({
-        "type": "response.completed",
-        "response": {
-            "id": response_id,
-            "object": "response",
-            "status": "completed",
-            "model": model_name,
-            "output": [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": content_text}]
-                }
-            ]
-        }
-    })
-    yield f'data: {completed_body}\n\n'.encode()
 
 
 async def codex_chat_completions(
