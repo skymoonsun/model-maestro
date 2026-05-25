@@ -1122,6 +1122,270 @@ async def openai_chat_completions(
 
 
 # =============================================================================
+# OPENAI RESPONSES API ENDPOINT (for Codex Desktop App)
+# =============================================================================
+# The Codex Desktop App uses OpenAI's Responses API (POST /v1/responses)
+# rather than Chat Completions. We accept in Responses format, convert
+# to Chat Completions internally, and convert the response back.
+
+@app.post("/v1/responses", tags=["OpenAI Compatible API"])
+async def openai_responses(
+    request: Request,
+    username: str = Depends(get_current_user)
+):
+    """
+    OpenAI Responses API compatible endpoint.
+
+    Accepts OpenAI Responses API request format (used by Codex Desktop App):
+    - input: list of content items or messages
+    - model: model identifier
+    - reasoning, tools, temperature, etc.
+
+    Converts to Chat Completions internally and returns Responses format.
+    Streaming not yet supported (returned as full response).
+    """
+    body = await request.body()
+    req = json.loads(body.decode('utf-8')) if body else {}
+
+    model_name = req.get('model', '')
+    logger.info(f"User {username} requesting Responses API - model: {model_name}")
+
+    # Check model access
+    has_access = await check_model_access(username, model_name)
+    if not has_access:
+        raise HTTPException(status_code=403, detail=f"Bu modele erişim yetkiniz yok: {model_name}")
+
+    within_limits = await ollama_proxy.check_user_limits(username, "chat")
+    if not within_limits:
+        raise HTTPException(status_code=429, detail="User has exceeded their request or token limit")
+
+    from app.services import config_manager
+    if config_manager.is_model_in_maintenance(model_name):
+        raise HTTPException(status_code=503, detail=f"Bu model şu anda bakımdadır: {model_name}")
+
+    # Convert Responses API request to Chat Completions request
+    data = _responses_to_chat_completions(req)
+
+    # Remove unsupported params for this model
+    unsupported_params = config_manager.get_model_unsupported_params(model_name)
+    if unsupported_params:
+        removed = [p for p in unsupported_params if p in data]
+        if removed:
+            data = {k: v for k, v in data.items() if k not in removed}
+            logger.info(f"Removed {', '.join(removed)} for model {model_name}")
+
+    # Tool filtering
+    if "tools" in data and data["tools"]:
+        filtered_tools = filter_tools_for_model(model_name, data["tools"])
+        if len(filtered_tools) != len(data["tools"]):
+            data["tools"] = filtered_tools
+            allowed_names = {t.get("function", {}).get("name") for t in filtered_tools if t.get("type") == "function"}
+            tool_choice = data.get("tool_choice")
+            if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+                fn_name = tool_choice.get("function", {}).get("name")
+                if fn_name and fn_name not in allowed_names:
+                    data["tool_choice"] = "auto"
+
+    # Ollama unsupported params
+    ollama_unsupported = config_manager.get_ollama_unsupported_params()
+    removed_ollama = [p for p in ollama_unsupported if p in data]
+    if removed_ollama:
+        data = {k: v for k, v in data.items() if k not in ollama_unsupported}
+
+    # Inject context length and keep_alive
+    ctx_length = get_context_length_for_model(model_name)
+    if 'options' not in data:
+        data['options'] = {}
+    if isinstance(data['options'], dict) and 'num_ctx' not in data['options']:
+        data['options']['num_ctx'] = ctx_length
+    if 'keep_alive' not in data:
+        data['keep_alive'] = -1
+
+    # Client headers
+    skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
+    client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
+
+    # Call chat completions internally (non-streaming)
+    data['stream'] = False
+    if 'stream_options' in data:
+        del data['stream_options']
+
+    raw_response = await ollama_proxy.proxy_request(
+        method="POST",
+        endpoint="/v1/chat/completions",
+        data=data,
+        stream=False,
+        username=username,
+        client_headers=client_headers,
+        source="Codex-Desktop-Responses",
+        url_path="/v1/responses"
+    )
+
+    # Convert Chat Completions response to Responses API format
+    return _chat_completions_to_responses(raw_response, model_name)
+
+
+def _responses_to_chat_completions(req: dict) -> dict:
+    """Convert OpenAI Responses API request to Chat Completions format."""
+    data = {}
+
+    # Copy standard params
+    for key in ['model', 'temperature', 'top_p', 'max_tokens', 'max_completion_tokens',
+                'frequency_penalty', 'presence_penalty', 'stop', 'seed', 'response_format',
+                'parallel_tool_calls', 'store', 'metadata', 'service_tier']:
+        if key in req:
+            data[key] = req[key]
+
+    # Convert 'input' to 'messages'
+    input_items = req.get('input', [])
+    messages = []
+    system_content = None
+
+    if isinstance(input_items, list):
+        for item in input_items:
+            if isinstance(item, dict):
+                item_type = item.get('type', '')
+                if item_type == 'text' or item_type == 'input_text':
+                    messages.append({'role': 'user', 'content': item.get('text', '')})
+                elif item_type == 'message':
+                    role = item.get('role', 'user')
+                    content = item.get('content', [])
+                    # Handle content as string or array
+                    if isinstance(content, str):
+                        messages.append({'role': role, 'content': content})
+                    elif isinstance(content, list):
+                        # Content items (text, image, etc.)
+                        text_parts = []
+                        for c in content:
+                            if isinstance(c, dict):
+                                if c.get('type') == 'text':
+                                    text_parts.append(c.get('text', ''))
+                                elif 'text' in c:
+                                    text_parts.append(c['text'])
+                        if text_parts:
+                            messages.append({'role': role, 'content': '\n'.join(text_parts)})
+                    else:
+                        messages.append({'role': role, 'content': str(content)})
+                elif item_type == 'input_image':
+                    # Images not supported in chat completions directly; skip
+                    pass
+            elif isinstance(item, str):
+                messages.append({'role': 'user', 'content': item})
+    elif isinstance(input_items, str):
+        messages.append({'role': 'user', 'content': input_items})
+
+    # Handle 'instructions' as system prompt
+    if 'instructions' in req and isinstance(req['instructions'], str):
+        system_content = req['instructions']
+
+    if system_content:
+        messages.insert(0, {'role': 'system', 'content': system_content})
+
+    data['messages'] = messages
+
+    # Convert tools
+    if 'tools' in req:
+        data['tools'] = req['tools']
+    if 'tool_choice' in req:
+        data['tool_choice'] = req['tool_choice']
+
+    # Convert reasoning to reasoning_effort
+    if 'reasoning' in req and isinstance(req['reasoning'], dict):
+        effort = req['reasoning'].get('effort')
+        if effort:
+            data['reasoning_effort'] = effort
+
+    return data
+
+
+def _chat_completions_to_responses(cc_response, model_name: str) -> dict:
+    """Convert Chat Completions response to OpenAI Responses API format."""
+    # Handle different response types (dict, JSONResponse, str, etc.)
+    cc: dict = {}
+    if isinstance(cc_response, dict):
+        cc = cc_response
+    elif isinstance(cc_response, str):
+        try:
+            cc = json.loads(cc_response)
+        except (json.JSONDecodeError, ValueError):
+            cc = {}
+    elif hasattr(cc_response, 'body'):
+        body = cc_response.body
+        if isinstance(body, bytes):
+            cc = json.loads(body.decode('utf-8'))
+        elif hasattr(body, 'decode'):
+            cc = json.loads(body.decode())
+        else:
+            cc = json.loads(body)
+    else:
+        cc = {}
+
+    # Build response
+    choice = cc.get('choices', [{}])[0] if cc.get('choices') else {}
+    message = choice.get('message', {}) if choice else {}
+
+    # Extract text content
+    content_text = ''
+    if isinstance(message.get('content'), str):
+        content_text = message['content']
+
+    # Extract tool calls
+    tool_calls = message.get('tool_calls', [])
+
+    # Build output items
+    output_items = []
+
+    if content_text:
+        output_items.append({
+            'type': 'message',
+            'role': 'assistant',
+            'content': [{'type': 'output_text', 'text': content_text}]
+        })
+
+    if tool_calls:
+        for tc in tool_calls:
+            output_items.append({
+                'type': 'function_call',
+                'id': tc.get('id', ''),
+                'call_id': tc.get('id', ''),
+                'name': tc.get('function', {}).get('name', ''),
+                'arguments': tc.get('function', {}).get('arguments', '{}')
+            })
+
+    # If no output, add empty message
+    if not output_items:
+        output_items.append({
+            'type': 'message',
+            'role': 'assistant',
+            'content': []
+        })
+
+    # Usage
+    usage = cc.get('usage', {})
+
+    # Build final response
+    response = {
+        'id': cc.get('id', ''),
+        'object': 'response',
+        'created': cc.get('created', int(time.time())),
+        'model': model_name,
+        'status': 'completed',
+        'output': output_items,
+        'usage': {
+            'input_tokens': usage.get('prompt_tokens', 0),
+            'output_tokens': usage.get('completion_tokens', 0),
+            'total_tokens': usage.get('total_tokens', 0)
+        }
+    }
+
+    # Add optional fields if present
+    if 'system_fingerprint' in cc:
+        response['system_fingerprint'] = cc['system_fingerprint']
+
+    return response
+
+
+# =============================================================================
 # OPENAI COMPLETIONS ENDPOINT
 # =============================================================================
 
