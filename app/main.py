@@ -1477,18 +1477,15 @@ async def codex_responses(
     """
     Codex Desktop App Responses API endpoint.
 
-    Accepts OpenAI Responses API format, converts to Chat Completions
-    internally, and returns Response Streaming SSE format (not Chat
-    Completions SSE). Codex expects:
-      event: response.created
-      event: response.output_text.delta
-      event: response.completed
+    Proxies directly to Ollama's native /v1/responses endpoint.
+    Ollama (v0.13.3+) natively supports the OpenAI Responses API
+    and returns Response Streaming SSE. No conversion needed.
     """
     body = await request.body()
-    req = json.loads(body.decode('utf-8')) if body else {}
+    data = json.loads(body.decode('utf-8')) if body else {}
 
-    model_name = req.get('model', '')
-    logger.info(f"User {username} requesting Codex Responses (streaming) - model: {model_name}")
+    model_name = data.get('model', '')
+    logger.info(f"User {username} requesting Codex Responses via Ollama /v1/responses - model: {model_name}")
 
     has_access = await check_model_access(username, model_name)
     if not has_access:
@@ -1502,8 +1499,7 @@ async def codex_responses(
     if config_manager.is_model_in_maintenance(model_name):
         raise HTTPException(status_code=503, detail=f"Bu model şu anda bakımdadır: {model_name}")
 
-    data = _responses_to_chat_completions(req)
-
+    # Strip unsupported params but keep Responses API shape
     unsupported_params = config_manager.get_model_unsupported_params(model_name)
     if unsupported_params:
         removed = [p for p in unsupported_params if p in data]
@@ -1511,45 +1507,16 @@ async def codex_responses(
             data = {k: v for k, v in data.items() if k not in removed}
             logger.info(f"Removed {', '.join(removed)} for model {model_name}")
 
-    if "tools" in data and data["tools"]:
-        filtered_tools = filter_tools_for_model(model_name, data["tools"])
-        if len(filtered_tools) != len(data["tools"]):
-            data["tools"] = filtered_tools
-            allowed_names = {t.get("function", {}).get("name") for t in filtered_tools if t.get("type") == "function"}
-            tool_choice = data.get("tool_choice")
-            if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
-                fn_name = tool_choice.get("function", {}).get("name")
-                if fn_name and fn_name not in allowed_names:
-                    data["tool_choice"] = "auto"
-
-    ollama_unsupported = config_manager.get_ollama_unsupported_params()
-    removed_ollama = [p for p in ollama_unsupported if p in data]
-    if removed_ollama:
-        data = {k: v for k, v in data.items() if k not in ollama_unsupported}
-
-    ctx_length = get_context_length_for_model(model_name)
-    if 'options' not in data:
-        data['options'] = {}
-    if isinstance(data['options'], dict) and 'num_ctx' not in data['options']:
-        data['options']['num_ctx'] = ctx_length
-    if 'keep_alive' not in data:
-        data['keep_alive'] = -1
+    # Ensure stream is set (Codex always streams via /v1/responses)
+    data['stream'] = True
 
     skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
     client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
 
-    data['stream'] = True
-    if 'stream_options' not in data:
-        data['stream_options'] = {'include_usage': True}
-
-    # Ollama taklidi: proxy'den gelen StreamingResponse'ü olduğu gibi return et
-    # wire_api="responses" ile Codex Response Streaming parser'ı çalışıyor
-    # Ama upstream Chat Completions SSE formatında gelince
-    # Codex bunu kendi Ollama client'ı gibi parse ediyor mu?
-    # Deneyelim.
+    # Proxy directly to Ollama's native /v1/responses endpoint
     return await ollama_proxy.proxy_request(
         method="POST",
-        endpoint="/v1/chat/completions",
+        endpoint="/v1/responses",
         data=data,
         stream=True,
         username=username,
