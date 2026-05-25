@@ -1477,8 +1477,11 @@ async def codex_responses(
     Codex Desktop App Responses API endpoint.
 
     Accepts OpenAI Responses API format, converts to Chat Completions
-    internally, and streams the response back (SSE). Codex consumes
-    the SSE directly — no Responses format conversion needed for streaming.
+    internally, and returns Response Streaming SSE format (not Chat
+    Completions SSE). Codex expects:
+      event: response.created
+      event: response.output_text.delta
+      event: response.completed
     """
     body = await request.body()
     req = json.loads(body.decode('utf-8')) if body else {}
@@ -1486,7 +1489,6 @@ async def codex_responses(
     model_name = req.get('model', '')
     logger.info(f"User {username} requesting Codex Responses (streaming) - model: {model_name}")
 
-    # Check model access
     has_access = await check_model_access(username, model_name)
     if not has_access:
         raise HTTPException(status_code=403, detail=f"Bu modele erişim yetkiniz yok: {model_name}")
@@ -1499,10 +1501,8 @@ async def codex_responses(
     if config_manager.is_model_in_maintenance(model_name):
         raise HTTPException(status_code=503, detail=f"Bu model şu anda bakımdadır: {model_name}")
 
-    # Convert Responses API request to Chat Completions
     data = _responses_to_chat_completions(req)
 
-    # Remove unsupported params for this model
     unsupported_params = config_manager.get_model_unsupported_params(model_name)
     if unsupported_params:
         removed = [p for p in unsupported_params if p in data]
@@ -1510,7 +1510,6 @@ async def codex_responses(
             data = {k: v for k, v in data.items() if k not in removed}
             logger.info(f"Removed {', '.join(removed)} for model {model_name}")
 
-    # Tool filtering
     if "tools" in data and data["tools"]:
         filtered_tools = filter_tools_for_model(model_name, data["tools"])
         if len(filtered_tools) != len(data["tools"]):
@@ -1522,13 +1521,11 @@ async def codex_responses(
                 if fn_name and fn_name not in allowed_names:
                     data["tool_choice"] = "auto"
 
-    # Ollama unsupported params
     ollama_unsupported = config_manager.get_ollama_unsupported_params()
     removed_ollama = [p for p in ollama_unsupported if p in data]
     if removed_ollama:
         data = {k: v for k, v in data.items() if k not in ollama_unsupported}
 
-    # Inject context length and keep_alive
     ctx_length = get_context_length_for_model(model_name)
     if 'options' not in data:
         data['options'] = {}
@@ -1537,16 +1534,15 @@ async def codex_responses(
     if 'keep_alive' not in data:
         data['keep_alive'] = -1
 
-    # Client headers
     skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
     client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
 
-    # FORCE STREAMING — Codex Desktop App expects SSE
     data['stream'] = True
     if 'stream_options' not in data:
         data['stream_options'] = {'include_usage': True}
 
-    return await ollama_proxy.proxy_request(
+    # Get raw Chat Completions streaming response from proxy
+    proxy_resp = await ollama_proxy.proxy_request(
         method="POST",
         endpoint="/v1/chat/completions",
         data=data,
@@ -1556,6 +1552,49 @@ async def codex_responses(
         source="Codex-Desktop",
         url_path="/codex/responses"
     )
+
+    # proxy_resp is a StreamingResponse; convert Chat-Completions SSE
+    # into Response Streaming SSE that Codex expects.
+    return StreamingResponse(
+        _cc_sse_to_responses_sse(proxy_resp, model_name),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+async def _cc_sse_to_responses_sse(proxy_resp, model_name: str):
+    """Convert Chat Completions SSE → Codex Response Streaming SSE."""
+    import json
+
+    # Emit response.created
+    yield b'event: response.created\n'
+    yield f'data: {"object": "response", "id": "resp_{int(time.time())}", "status": "in_progress", "model": "{model_name}"}\n\n'.encode()
+
+    # Stream content from proxy
+    async for chunk in proxy_resp.body_iterator:
+        text = chunk.decode('utf-8') if isinstance(chunk, bytes) else str(chunk)
+        for line in text.split('\n'):
+            if not line.startswith('data: '):
+                continue
+            data_str = line[6:]
+            if data_str == '[DONE]':
+                yield b'event: response.completed\n'
+                yield b'data: {"status": "completed"}\n\n'
+                return
+            try:
+                cc = json.loads(data_str)
+                delta = cc.get('choices', [{}])[0].get('delta', {})
+                content = delta.get('content', '')
+                if content:
+                    event_data = {"delta": {"text": content}}
+                    yield b'event: response.output_text.delta\n'
+                    yield f'data: {json.dumps(event_data)}\n\n'.encode()
+            except (json.JSONDecodeError, ValueError, IndexError, KeyError):
+                continue
+
+    # If we exit the loop without [DONE], still emit completed
+    yield b'event: response.completed\n'
+    yield b'data: {"status": "completed"}\n\n'
 
 
 @app.post("/codex/chat/completions", tags=["Codex Desktop App"])
