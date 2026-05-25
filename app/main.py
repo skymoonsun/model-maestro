@@ -1626,6 +1626,9 @@ async def codex_responses(
     if 'keep_alive' not in chat_data:
         chat_data['keep_alive'] = -1
 
+    # Log converted input history messages for debugging
+    logger.info(f"[Codex Messages] Converted messages: {json.dumps(chat_data['messages'])}")
+
     skip_headers = {'host', 'content-length', 'transfer-encoding', 'connection', 'accept-encoding', 'cookie', 'accept', 'content-type'}
     client_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip_headers}
 
@@ -1728,6 +1731,8 @@ async def codex_responses(
             done_received = False
             # Read from source stream
             async for raw_chunk in response.body_iterator:
+                # Log raw chunk received from upstream proxy
+                logger.info(f"[Codex Debug] Raw chunk: {raw_chunk}")
                 if done_received:
                     break
 
