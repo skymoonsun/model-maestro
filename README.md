@@ -734,7 +734,7 @@ A model mapping can be bound to a specific node so the same display name resolve
 Model Maestro is designed to be the backend for modern AI-powered IDEs and tools. See the full integration guide for step-by-step setup:
 
 - **[Claude Code](docs/IDE_INTEGRATION.md#claude-code)** — `ANTHROPIC_BASE_URL` override
-- **[Codex](docs/IDE_INTEGRATION.md#openai-codex)** — `OPENAI_BASE_URL` + `OPENAI_API_KEY` (VS Code extension & CLI)
+- **[Codex](docs/IDE_INTEGRATION.md#openai-codex)** — Run `./scripts/codex-maestro` for the Codex Desktop App (auto-configures Responses API streaming via Maestro; no manual env vars needed). For the VS Code extension or CLI, set `OPENAI_BASE_URL` + `OPENAI_API_KEY`. Use a Maestro model group as the default model for dynamic switching without restarting Codex.
 - **[OpenClaw](docs/IDE_INTEGRATION.md#openclaw)** — `openclaw.json` provider configuration
 - **[Cursor IDE](docs/IDE_INTEGRATION.md#cursor)** — OpenAI API Key + custom base URL
 - **[Grafana Assistant](docs/IDE_INTEGRATION.md#grafana-assistant)** — Grafana plugin with domain bypass script or reverse proxy

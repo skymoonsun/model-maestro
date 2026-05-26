@@ -159,19 +159,26 @@ Optional explicit model list (inferenceModels) — use opaque ids from discovery
         logo: '/guide/openai.svg',
         color: 'text-emerald-400',
         bg: 'bg-emerald-400/10 border-emerald-400/30',
-        description: 'OpenAI\'s agentic coding assistant (VS Code extension & standalone CLI). Standard OpenAI-compatible API.',
+        description: 'OpenAI\'s agentic coding assistant. Use the Desktop App via launcher script (recommended) or the VS Code extension / CLI via env vars.',
         steps: [
-            'Set OPENAI_BASE_URL to your Maestro /v1 endpoint.',
-            'Set OPENAI_API_KEY to your Maestro JWT token.',
-            'Add to shell profile (zsh: ~/.zshrc, bash: ~/.bashrc).',
-            'For VS Code: add to terminal.integrated.env settings.',
-            'Codex inherits these env vars automatically — no custom UI needed.',
+            'Desktop App (recommended): run ./scripts/codex-maestro — no env vars needed.',
+            'Do NOT include /v1 in MAESTRO_URL. Script handles /codex/ paths automatically.',
+            'Uses Responses API streaming via Maestro on-the-fly conversion.',
+            'For VS Code extension or CLI: set OPENAI_BASE_URL to /v1 and OPENAI_API_KEY.',
+            'Use a Maestro model group as the default model for dynamic switching.',
         ],
-        code: `export OPENAI_BASE_URL="https://maestro.example.com/v1"
+        code: `# Desktop App — recommended
+MAESTRO_URL=https://maestro.example.com \
+  MAESTRO_TOKEN=<your-jwt> \
+  MAESTRO_MODEL=kimi-k2.6:latest \
+  ./scripts/codex-maestro
+
+# VS Code Extension / CLI
+export OPENAI_BASE_URL="https://maestro.example.com/v1"
 export OPENAI_API_KEY="<your-maestro-jwt-token>"
 
 codex`,
-        note: 'Uses standard /v1/chat/completions — no extra endpoints. Works with any model Maestro exposes. Ensure ANTHROPIC_DEFAULT_HAIKU_MODEL is pinned if subagents spawn Claude models.',
+        note: 'The Desktop App uses Responses API (wire_api=responses). Maestro converts to Chat Completions on the fly and streams back with Codex-compatible SSE events. In-app model switching does not work reliably with custom providers — use a Maestro model group and switch members via the admin UI instead.',
     },
     {
         id: 'cursor',
@@ -282,7 +289,7 @@ API Token:     <your-maestro-jwt-token>`,
         "OPENAI_API_KEY": "<your-maestro-jwt-token>"
     }
 }`,
-                extNote: 'Codex has no dedicated "custom base URL" UI — only env vars. Standard /v1 endpoint works with any model Maestro exposes.',
+                extNote: 'Codex has no dedicated "custom base URL" UI — only env vars. Standard /v1 endpoint works with any model Maestro exposes. For dynamic model switching, create a Maestro model group and select the group name as your default model.',
             },
             {
                 extId: 'kilo-code-ext',
