@@ -368,17 +368,59 @@ OpenAI Codex (also known as **Codex CLI** or **Codex Agent**) is OpenAI's agenti
 
 Codex speaks standard **OpenAI API** (`/v1/chat/completions`, `/v1/models`, `/v1/embeddings`). Model Maestro's existing OpenAI-compatible endpoints support Codex out of the box — no additional backend code is required.
 
-### How Codex Connects
+### Codex Desktop App (Recommended)
 
-Codex reads three environment variables (or VS Code settings) to determine the backend:
+The easiest way to use Codex with Maestro is the **Codex Desktop App** via the built-in launcher script. It configures the Desktop App automatically — no manual env vars needed.
+
+#### Quick Start
+
+```bash
+./scripts/codex-maestro
+```
+
+The script interactively prompts for your Maestro URL, JWT token, and default model. It rewrites `~/.codex/config.toml` with a dedicated Maestro profile, fetches the model catalog, launches the app, and restores your original config on exit.
+
+Alternatively, run non-interactively:
+
+```bash
+MAESTRO_URL=https://maestro.example.com \
+  MAESTRO_TOKEN=<your-jwt> \
+  MAESTRO_MODEL=kimi-k2.6:latest \
+  ./scripts/codex-maestro
+```
+
+> **Note:** Do **not** include `/v1` in `MAESTRO_URL`. The script handles `/codex/` paths automatically.
+
+#### How the launcher works
+
+1. Backs up your existing `~/.codex/config.toml`
+2. Writes a new config with `wire_api = "responses"` so Codex uses the Responses API
+3. Sets `openai_base_url` to `{maestro_url}/codex/` — Maestro converts Responses API → Chat Completions on the fly
+4. Fetches the model catalog from Maestro so the model picker is populated
+5. Launches `/Applications/Codex.app`
+6. On exit (Cmd+Q), restores your original config automatically
+
+#### Model Switching with Groups
+
+The Codex Desktop App has a model picker, but **in-app model switching does not work reliably** when using a custom provider. The app caches the model list and may not refresh. Instead:
+
+1. **Create a model group** in Maestro Admin (`AI Models > Groups`) with the models you want to rotate between
+2. **Select the group name** as the model in Codex App (e.g. `coding-group`)
+3. **Switch active models via Maestro UI** — Maestro dynamically resolves the group to the best member based on the group's strategy (round-robin, weighted, priority)
+
+This gives you dynamic model switching without restarting Codex.
+
+### Codex VS Code Extension / CLI
+
+For the VS Code extension or standalone CLI, use the standard OpenAI env vars.
 
 | Variable / Setting | Description | Value for Maestro |
 |---|---|---|
 | `OPENAI_BASE_URL` | Custom API base URL | `https://maestro.example.com/v1` |
 | `OPENAI_API_KEY` | Bearer token for authentication | Your Maestro JWT token |
-| `OPENAI_ORG_ID` | Organization ID (optional, usually ignored by gateways) | Leave empty |
+| `OPENAI_ORG_ID` | Organization ID (optional) | Leave empty |
 
-### CLI / Desktop App Setup
+#### CLI / Desktop App Setup
 
 ```bash
 export OPENAI_BASE_URL="https://maestro.example.com/v1"
@@ -412,15 +454,15 @@ source ~/.bashrc
 [Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "<your-maestro-jwt-token>", "User")
 ```
 
-### VS Code Extension Setup
+#### VS Code Extension Setup
 
-The Codex VS Code extension reads the same `OPENAI_BASE_URL` and `OPENAI_API_KEY` environment variables. Configure them via VS Code settings:
+The Codex VS Code extension reads the same `OPENAI_BASE_URL` and `OPENAI_API_KEY` environment variables.
 
-#### Method 1 — Terminal / shell profile (recommended)
+##### Method 1 — Terminal / shell profile (recommended)
 
 Set the env vars in the shell that launches VS Code, or in your shell profile (`.zshrc`, `.bashrc`, etc.). The Codex extension inherits them automatically.
 
-#### Method 2 — VS Code `settings.json`
+##### Method 2 — VS Code `settings.json`
 
 Add the environment variables directly in VS Code user settings:
 

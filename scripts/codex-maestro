@@ -9,11 +9,16 @@ set -euo pipefail
 #   ./scripts/codex-maestro
 #
 #   # Non-interactive
-#   MAESTRO_URL=https://maestro.gokaygunes.com/v1 MAESTRO_TOKEN=xxx \
+#   MAESTRO_URL=https://maestro.example.com MAESTRO_TOKEN=xxx \
 #     MAESTRO_MODEL=kimi-k2.6:latest \
 #     ./scripts/codex-maestro
 
 # ── Colors ─────────────────────────────────────────────────────
+# ANSI escape codes for terminal styling.
+# \033[ is the CSI (Control Sequence Introducer).
+#   0;32m = green foreground  |  1;33m = bold yellow
+#   0;36m = cyan foreground  |  1m    = bold
+#   0m    = reset all attributes
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
@@ -21,7 +26,7 @@ BOLD='\033[1m'
 RESET='\033[0m'
 
 # ── Defaults ───────────────────────────────────────────────────
-DEFAULT_URL="https://maestro.gokaygunes.com/v1"
+DEFAULT_URL="https://maestro.example.com"
 DEFAULT_MODEL="kimi-k2.6:latest"
 
 # ── Env var overrides ──────────────────────────────────────────
@@ -122,7 +127,7 @@ write_config() {
         codex_base="${base_url}/codex/"
     fi
 
-    local provider="maestro-launch-codex-app"
+    local provider="ollama-launch-codex-app"
 
     # Preserve existing [projects] entries by cat'ing them back
     local projects_block=""
@@ -135,26 +140,26 @@ write_config() {
     fi
 
     cat > "$CONFIG_TOML" <<EOF
-profile = "${provider}"
+profile = "ollama-launch-codex-app"
 
 model = "${model}"
 
-model_provider = "${provider}"
+model_provider = "ollama-launch-codex-app"
 
 model_catalog_json = "${MODELS_JSON}"
 
 notify = ["${HOME}/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
 
-[profiles.${provider}]
+[profiles.ollama-launch-codex-app]
 model = "${model}"
 openai_base_url = "${codex_base}"
-model_provider = "${provider}"
+model_provider = "ollama-launch-codex-app"
 model_catalog_json = "${MODELS_JSON}"
 
-[model_providers.${provider}]
+[model_providers.ollama-launch-codex-app]
 name = "Maestro"
 base_url = "${codex_base}"
-wire_api = "chat_completions"
+wire_api = "responses"
 
 [marketplaces.openai-bundled]
 last_updated = "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
