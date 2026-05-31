@@ -109,32 +109,34 @@ async def create_node(
             if existing_code:
                 raise HTTPException(status_code=400, detail=f"Node code '{request.code}' already exists")
 
-        # Auto-generate base_url for Bedrock if not provided
+        # ------------------------------------------------------------------
+        # Resolve provider-specific base_url (managed nodes ignore user input)
+        # ------------------------------------------------------------------
         base_url = request.base_url
-        if request.node_type == 'bedrock' and (not base_url or not base_url.strip()):
+
+        if request.node_type == 'bedrock':
             region = request.aws_region or 'us-east-1'
             base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
-
-        bedrock_mode: Optional[str] = request.bedrock_auth_mode
-        aws_secret = request.aws_secret_key
-        aws_session = request.aws_session_token
-        if request.node_type == 'bedrock':
             bedrock_mode = _validate_bedrock_node_fields(
                 api_key=request.api_key,
                 aws_secret_key=request.aws_secret_key,
                 aws_region=request.aws_region,
                 bedrock_auth_mode=request.bedrock_auth_mode,
             )
+            aws_secret = request.aws_secret_key
+            aws_session = request.aws_session_token
             if bedrock_mode == 'api_key':
                 aws_secret = None
                 aws_session = None
 
-        # Validate Cursor API key when creating a Cursor node
-        if request.node_type == 'cursor':
+        elif request.node_type == 'cursor':
+            from app.cursor_proxy import _cursor_base_url
+
             _validate_cursor_node_fields(api_key=request.api_key)
-            # Use default Cursor proxy if not provided
+            # Use the supplied proxy URL if present, otherwise fall back
+            # to the third-party default (https://cursor-api.standardagents.ai/v1).
             if not base_url or not base_url.strip():
-                base_url = 'https://cursor-api.standardagents.ai/v1'
+                base_url = f"{_cursor_base_url()}/v1"
 
         # Create node
         node = await repo.create(
@@ -378,11 +380,18 @@ async def update_node(
                 update_data["aws_session_token"] = None
 
         if effective_type == "cursor":
+            from app.cursor_proxy import _cursor_base_url
+
             _validate_cursor_node_fields(
                 api_key=update_data.get("api_key", existing_node.api_key),
             )
-            if not update_data.get("base_url", existing_node.base_url):
-                update_data["base_url"] = "https://api2.cursor.sh/v1"
+            # If the user sent base_url (even empty string) set a sensible default;
+            # otherwise leave the existing value untouched (partial update).
+            if "base_url" in update_data:
+                provided = str(update_data["base_url"] or "").strip()
+                if not provided:
+                    existing = existing_node.base_url
+                    update_data["base_url"] = existing if existing and str(existing).strip() else f"{_cursor_base_url()}/v1"
 
         if request.scoped_models is not None:
             update_data["scoped_models"] = request.scoped_models
