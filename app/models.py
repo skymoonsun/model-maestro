@@ -511,7 +511,7 @@ class OAuthTokens(BaseModel):
 class OllamaNodeCreate(BaseModel):
     """Create a new Ollama node"""
     name: str
-    base_url: str
+    base_url: Optional[str] = None
     api_key: Optional[str] = None
     priority: Optional[int] = 0
     weight: Optional[int] = 100

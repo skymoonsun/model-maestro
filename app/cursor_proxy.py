@@ -23,18 +23,19 @@ from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
-# Cursor API base — always uses Cursor's official endpoint regardless of node config.
-# The base_url stored on the node is ignored; this ensures the proxy always talks
-# to the right upstream even if the user leaves the field empty or enters junk.
-_CURSOR_API_BASE = "https://api2.cursor.sh"
+# Default Cursor API base (third-party proxy that supports /v1/models).
+# Users may override this via their node config if they have a different proxy.
+_CURSOR_API_BASE = "https://cursor-api.standardagents.ai"
 
 
 def _cursor_base_url(node_base_url: Optional[str] = None) -> str:
     """Return the Cursor API base URL.
 
-    Always returns the hardcoded official endpoint.
-    The node base_url is accepted for API compatibility but never used.
+    If the node has a configured base_url, use it (e.g. a custom Cursor proxy).
+    Otherwise fall back to the third-party default which exposes /v1/models.
     """
+    if node_base_url and str(node_base_url).strip():
+        return str(node_base_url).rstrip('/')
     return _CURSOR_API_BASE
 
 
@@ -55,7 +56,10 @@ async def health_check_cursor(
     if not cursor_credentials_configured(api_key):
         return False, "Missing or invalid Cursor API key (expected crsr_... prefix)"
 
-    url = f"{base_url.rstrip('/')}/models"
+    # Use the node's configured base_url (e.g. https://cursor-api.standardagents.ai/v1).
+    # follow_redirects=True handles 308 Permanent Redirect responses gracefully.
+    effective_base = _cursor_base_url(base_url)
+    url = f"{effective_base.rstrip('/')}/models"
     headers = {
         "Authorization": f"Bearer {api_key.strip()}",
         "Content-Type": "application/json",
@@ -63,7 +67,20 @@ async def health_check_cursor(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=headers, follow_redirects=False)
+
+            # Manual redirect handling — httpx strips Authorization on
+            # cross-origin redirects, so we follow manually with headers intact.
+            redirect_count = 0
+            while resp.status_code in (301, 302, 303, 307, 308) and redirect_count < 3:
+                location = resp.headers.get("Location")
+                if not location:
+                    break
+                resolved = str(httpx.URL(str(resp.url)).join(location))
+                logger.info(f"[Cursor] Health check redirect {resp.status_code} -> {resolved}")
+                resp = await client.get(resolved, headers=headers, follow_redirects=False)
+                redirect_count += 1
+
             if resp.status_code == 200:
                 return True, None
             if resp.status_code == 401:
@@ -94,7 +111,9 @@ async def discover_cursor_models(
     if not cursor_credentials_configured(api_key):
         return False, [], "Missing or invalid Cursor API key"
 
-    url = f"{base_url.rstrip('/')}/models"
+    # Use the node's configured base_url (respect user's Cursor proxy choice).
+    effective_base = _cursor_base_url(base_url)
+    url = f"{effective_base.rstrip('/')}/models"
     headers = {
         "Authorization": f"Bearer {api_key.strip()}",
         "Content-Type": "application/json",
@@ -102,7 +121,20 @@ async def discover_cursor_models(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=headers, follow_redirects=False)
+
+            # Manual redirect handling — httpx strips Authorization on
+            # cross-origin redirects, so we follow manually with headers intact.
+            redirect_count = 0
+            while resp.status_code in (301, 302, 303, 307, 308) and redirect_count < 3:
+                location = resp.headers.get("Location")
+                if not location:
+                    break
+                resolved = str(httpx.URL(str(resp.url)).join(location))
+                logger.info(f"[Cursor] Discovery redirect {resp.status_code} -> {resolved}")
+                resp = await client.get(resolved, headers=headers, follow_redirects=False)
+                redirect_count += 1
+
             if resp.status_code != 200:
                 body = resp.text[:200]
                 return False, [], f"Cursor model discovery failed: HTTP {resp.status_code} – {body}"
@@ -154,7 +186,9 @@ async def proxy_cursor_request(
             detail="Cursor node is missing a valid API key (expected crsr_... prefix)",
         )
 
-    url = f"{base_url.rstrip('/')}{endpoint}"
+    # Use the node's configured base_url, falling back to the default Cursor proxy.
+    effective_base = _cursor_base_url(base_url)
+    url = f"{effective_base.rstrip('/')}{endpoint}"
 
     # Sanitize request body for Cursor if necessary.
     # Cursor supports standard OpenAI chat completions, but some fields may differ.
@@ -177,7 +211,21 @@ async def proxy_cursor_request(
             logger.info(
                 f"[Cursor] Streaming request to {url} model={request_body.get('model')}"
             )
-            resp = await client.post(url, json=request_body, headers=headers)
+            resp = await client.post(url, json=request_body, headers=headers, follow_redirects=False)
+
+            # Manual redirect handling for streaming — httpx strips Authorization
+            # on cross-origin redirects. Resolve Location and retry once.
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location")
+                if location:
+                    resolved = str(httpx.URL(url).join(location))
+                    logger.info(f"[Cursor] Streaming redirect {resp.status_code} -> {resolved}")
+                    await client.aclose()
+                    client = httpx.AsyncClient(
+                        timeout=httpx.Timeout(1200.0, connect=30.0),
+                        limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+                    )
+                    resp = await client.post(resolved, json=request_body, headers=headers, follow_redirects=False)
 
             if resp.status_code >= 400:
                 body = await resp.aread()
@@ -210,7 +258,19 @@ async def proxy_cursor_request(
         logger.info(
             f"[Cursor] Non-streaming request to {url} model={request_body.get('model')}"
         )
-        resp = await client.post(url, json=request_body, headers=headers)
+        resp = await client.post(url, json=request_body, headers=headers, follow_redirects=False)
+
+        # Manual redirect handling — httpx strips Authorization on cross-origin redirects.
+        redirect_count = 0
+        while resp.status_code in (301, 302, 303, 307, 308) and redirect_count < 3:
+            location = resp.headers.get("Location")
+            if not location:
+                break
+            resolved = str(httpx.URL(url).join(location))
+            logger.info(f"[Cursor] Non-streaming redirect {resp.status_code} -> {resolved}")
+            resp = await client.post(resolved, json=request_body, headers=headers, follow_redirects=False)
+            redirect_count += 1
+
         body = await resp.aread()
 
         if resp.status_code >= 400:
