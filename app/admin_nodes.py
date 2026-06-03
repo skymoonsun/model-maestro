@@ -113,6 +113,9 @@ async def create_node(
         # Resolve provider-specific base_url (managed nodes ignore user input)
         # ------------------------------------------------------------------
         base_url = request.base_url
+        aws_secret = None
+        aws_session = None
+        bedrock_mode = None
 
         if request.node_type == 'bedrock':
             region = request.aws_region or 'us-east-1'
