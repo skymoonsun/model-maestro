@@ -14,6 +14,22 @@ from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
 
+# Bedrock Converse API tool ID regex: ^[a-zA-Z0-9_-]+$
+# Claude Code sends base64-like IDs; strip anything outside the allowed set.
+_TOOL_ID_ALLOWED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def _sanitize_tool_id(tool_id: str) -> str:
+    """Strip characters Bedrock rejects from tool IDs, then truncate to 64 chars."""
+    if not tool_id:
+        return tool_id
+    cleaned = "".join(c for c in tool_id if c in _TOOL_ID_ALLOWED)
+    cleaned = cleaned[:64]
+    if not cleaned:
+        cleaned = f"call_{__import__('uuid').uuid4().hex[:12]}"
+    return cleaned
+
+
 # Serialize boto3 Bedrock API-key auth (uses process-wide AWS_BEARER_TOKEN_BEDROCK).
 _BEDROCK_API_KEY_LOCK = asyncio.Lock()
 
@@ -487,7 +503,7 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
 
                 elif ptype == "tool_use" and role == "assistant":
                     tu_name = part.get("name", "")
-                    tu_id = part.get("id", "")
+                    tu_id = _sanitize_tool_id(part.get("id", ""))
                     if tu_id:
                         tool_call_names[tu_id] = tu_name
                     if tu_name == "local_shell_call":
@@ -501,7 +517,7 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
                     })
 
                 elif ptype == "tool_result" and role == "user":
-                    tr_id = part.get("tool_use_id", "")
+                    tr_id = _sanitize_tool_id(part.get("tool_use_id", ""))
                     tr_name = part.get("name") or tool_call_names.get(tr_id, "")
                     if tr_name == "local_shell_call":
                         tr_name = "shell"
@@ -533,7 +549,7 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
                     continue
                 name = func.get("name", "")
                 arguments = func.get("arguments", "{}")
-                call_id = tc.get("id", "")
+                call_id = _sanitize_tool_id(tc.get("id", ""))
                 if name == "local_shell_call":
                     name = "shell"
                 try:
@@ -552,7 +568,7 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
 
         # ---- tool response (OpenAI API format on tool/function messages) ----
         if msg.get("role") in ("tool", "function"):
-            tool_call_id = msg.get("tool_call_id", "")
+            tool_call_id = _sanitize_tool_id(msg.get("tool_call_id", ""))
             name = msg.get("name") or tool_call_names.get(tool_call_id, "")
             if name == "local_shell_call":
                 name = "shell"
@@ -660,7 +676,7 @@ def _bedrock_response_to_openai(
         elif "toolUse" in block:
             tool_use = block["toolUse"]
             tool_calls.append({
-                "id": tool_use.get("toolUseId", "call_1"),
+                "id": _sanitize_tool_id(tool_use.get("toolUseId", "call_1")),
                 "type": "function",
                 "function": {
                     "name": tool_use.get("name", ""),
