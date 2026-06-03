@@ -434,42 +434,152 @@ async def _get_bedrock_clients(
 # ---------------------------------------------------------------------------
 
 def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Convert OpenAI message format to Bedrock Converse content-blocks."""
-    bedrock_messages = []
+    """Convert OpenAI message format to Bedrock Converse content-blocks.
+
+    Supports text, images, tool_use, tool_result, tool_calls, and tool responses.
+    Filters out empty text blocks (Bedrock rejects blank text fields).
+    """
+    bedrock_messages: List[Dict[str, Any]] = []
+    tool_call_names: Dict[str, str] = {}
+
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content")
-        if role not in ("user", "assistant"):
+
+        # Bedrock only accepts "user" and "assistant" roles
+        if role in ("system", "developer"):
+            continue
+        if role in ("tool", "function"):
             role = "user"
 
-        bedrock_content = []
-        if isinstance(content, str):
+        bedrock_content: List[Dict[str, Any]] = []
+
+        # ---- string content ----
+        if isinstance(content, str) and content.strip():
             bedrock_content.append({"text": content})
+
+        # ---- list content (OpenAI blocks) ----
         elif isinstance(content, list):
             for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text" or "text" in part:
-                        bedrock_content.append({"text": part.get("text", "")})
-                    elif part.get("type") == "image_url" or "image_url" in part:
-                        # Bedrock supports base64 images via image block
-                        image_url = part.get("image_url", {})
-                        url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
-                        if url.startswith("data:"):
-                            # Parse data:image/jpeg;base64,<data>
-                            header, b64data = url.split(",", 1)
-                            media_type = header.split(";")[0].split(":")[1]
-                            bedrock_content.append({
-                                "image": {
-                                    "format": media_type.split("/")[-1],
-                                    "source": {"bytes": b64data}
-                                }
-                            })
-                        else:
-                            bedrock_content.append({"text": f"[Image: {url}]"})
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type", "")
+
+                if ptype == "text":
+                    txt = part.get("text", "")
+                    if txt.strip():
+                        bedrock_content.append({"text": txt})
+
+                elif ptype == "image_url":
+                    image_url = part.get("image_url", {})
+                    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+                    if url.startswith("data:"):
+                        header, b64data = url.split(",", 1)
+                        media_type = header.split(";")[0].split(":")[1]
+                        bedrock_content.append({
+                            "image": {
+                                "format": media_type.split("/")[-1],
+                                "source": {"bytes": b64data}
+                            }
+                        })
+                    else:
+                        bedrock_content.append({"text": f"[Image: {url}]"})
+
+                elif ptype == "tool_use" and role == "assistant":
+                    tu_name = part.get("name", "")
+                    tu_id = part.get("id", "")
+                    if tu_id:
+                        tool_call_names[tu_id] = tu_name
+                    if tu_name == "local_shell_call":
+                        tu_name = "shell"
+                    bedrock_content.append({
+                        "toolUse": {
+                            "toolUseId": tu_id,
+                            "name": tu_name,
+                            "input": part.get("input", {}) or {},
+                        }
+                    })
+
+                elif ptype == "tool_result" and role == "user":
+                    tr_id = part.get("tool_use_id", "")
+                    tr_name = part.get("name") or tool_call_names.get(tr_id, "")
+                    if tr_name == "local_shell_call":
+                        tr_name = "shell"
+                    tr_content = part.get("content", "")
+                    if isinstance(tr_content, list):
+                        tr_texts = [
+                            b.get("text", "")
+                            for b in tr_content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        tr_content = "\n".join(tr_texts) if tr_texts else ""
+                    elif not isinstance(tr_content, str):
+                        tr_content = str(tr_content) if tr_content is not None else ""
+                    bedrock_content.append({
+                        "toolResult": {
+                            "toolUseId": tr_id,
+                            "content": [{"text": tr_content}],
+                        }
+                    })
+
+        # ---- tool_calls (OpenAI API format on assistant messages) ----
+        tool_calls = msg.get("tool_calls")
+        if tool_calls and role == "assistant":
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                func = tc.get("function", {})
+                if not isinstance(func, dict):
+                    continue
+                name = func.get("name", "")
+                arguments = func.get("arguments", "{}")
+                call_id = tc.get("id", "")
+                if name == "local_shell_call":
+                    name = "shell"
+                try:
+                    args_parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+                except (json.JSONDecodeError, TypeError):
+                    args_parsed = {}
+                if call_id:
+                    tool_call_names[call_id] = name
+                bedrock_content.append({
+                    "toolUse": {
+                        "toolUseId": call_id,
+                        "name": name,
+                        "input": args_parsed,
+                    }
+                })
+
+        # ---- tool response (OpenAI API format on tool/function messages) ----
+        if msg.get("role") in ("tool", "function"):
+            tool_call_id = msg.get("tool_call_id", "")
+            name = msg.get("name") or tool_call_names.get(tool_call_id, "")
+            if name == "local_shell_call":
+                name = "shell"
+            content_val = ""
+            if isinstance(content, str):
+                content_val = content
+            elif isinstance(content, list):
+                texts = [
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                content_val = "\n".join(texts)
+            bedrock_content.append({
+                "toolResult": {
+                    "toolUseId": tool_call_id,
+                    "content": [{"text": content_val}],
+                }
+            })
+
+        # If nothing valid was extracted, add a tiny placeholder so Bedrock doesn't
+        # choke on an empty message — but *only* when there are no tool blocks.
         if not bedrock_content:
-            bedrock_content.append({"text": ""})
+            bedrock_content.append({"text": "..."})
 
         bedrock_messages.append({"role": role, "content": bedrock_content})
+
     return bedrock_messages
 
 
