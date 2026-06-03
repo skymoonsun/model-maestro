@@ -35,6 +35,27 @@ logger = logging.getLogger(__name__)
 # (quota exhausted) — that hammers prod and hides the real error.
 _V1INTERNAL_ENDPOINT_FALLBACK_CODES = frozenset({408, 404, 500, 502, 503, 504})
 
+# Google v1internal tool_use.id regex: ^[a-zA-Z0-9_-]+$
+# Claude Code sends base64-like IDs that may contain + / =; strip those chars.
+_TOOL_ID_ALLOWED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def _sanitize_tool_id(tool_id: str) -> str:
+    """Strip characters Google v1internal rejects from tool IDs, then truncate to 64 chars.
+
+    Google v1internal regex: ^[a-zA-Z0-9_-]+$
+    Claude Code may send base64-like IDs (toolu_01H…); most chars are already safe,
+    but we defensively strip anything outside the allowed set.
+    """
+    if not tool_id:
+        return tool_id
+    cleaned = "".join(c for c in tool_id if c in _TOOL_ID_ALLOWED)
+    cleaned = cleaned[:64]
+    if not cleaned:
+        # If stripping empties the ID, generate a fresh v1internal-safe ID
+        cleaned = f"call_{uuid.uuid4().hex[:12]}"
+    return cleaned
+
 # Sentinel accepted by Gemini v1internal when no real thought signature is available
 # (e.g. Claude Code tool_use replay). See Antigravity-Manager openai/request.rs.
 GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
@@ -261,7 +282,8 @@ def _convert_messages_to_contents(
                             parts.append({"text": text})
                     elif block_type == "tool_use" and role == "assistant":
                         tu_name = block.get("name", "")
-                        tu_id = block.get("id", "")
+                        tu_id_raw = block.get("id", "")
+                        tu_id = _sanitize_tool_id(tu_id_raw)
                         if tu_id:
                             tool_call_names[tu_id] = tu_name
                         if tu_name == "local_shell_call":
@@ -293,7 +315,8 @@ def _convert_messages_to_contents(
                         elif url.startswith("http"):
                             parts.append({"fileData": {"fileUri": url, "mimeType": "image/jpeg"}})
                     elif block_type == "tool_result" and role == "user":
-                        tr_id = block.get("tool_use_id", "")
+                        tr_id_raw = block.get("tool_use_id", "")
+                        tr_id = _sanitize_tool_id(tr_id_raw)
                         tr_name = block.get("name") or tool_call_names.get(tr_id, "") or "unknown"
                         if tr_name == "local_shell_call":
                             tr_name = "shell"
@@ -326,7 +349,8 @@ def _convert_messages_to_contents(
                     continue
                 name = func.get("name", "")
                 arguments = func.get("arguments", "{}")
-                call_id = tc.get("id", "")
+                call_id_raw = tc.get("id", "")
+                call_id = _sanitize_tool_id(call_id_raw)
 
                 # Normalize shell tool name
                 if name == "local_shell_call":
@@ -357,7 +381,8 @@ def _convert_messages_to_contents(
 
         # Handle tool response
         if role in ("tool", "function"):
-            tool_call_id = msg.get("tool_call_id", "")
+            tool_call_id_raw = msg.get("tool_call_id", "")
+            tool_call_id = _sanitize_tool_id(tool_call_id_raw)
             name = msg.get("name") or tool_call_names.get(tool_call_id, "")
             if not name:
                 name = "unknown"
