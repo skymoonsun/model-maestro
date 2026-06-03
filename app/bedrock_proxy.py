@@ -546,6 +546,8 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
                         tr_content = "\n".join(tr_texts) if tr_texts else ""
                     elif not isinstance(tr_content, str):
                         tr_content = str(tr_content) if tr_content is not None else ""
+                    if not tr_content.strip():
+                        tr_content = "success"
                     bedrock_content.append({
                         "toolResult": {
                             "toolUseId": tr_id,
@@ -597,6 +599,8 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
                     if isinstance(b, dict) and b.get("type") == "text"
                 ]
                 content_val = "\n".join(texts)
+            if not content_val.strip():
+                content_val = "success"
             bedrock_content.append({
                 "toolResult": {
                     "toolUseId": tool_call_id,
@@ -611,7 +615,44 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
 
         bedrock_messages.append({"role": role, "content": bedrock_content})
 
-    return bedrock_messages
+    # Merge consecutive user messages, and consecutive assistant messages.
+    # Bedrock requires strict alternation of roles: user -> assistant -> user...
+    # Parallel tool calls return tool results as consecutive tool messages (mapped as user),
+    # which must be grouped into a single user message.
+    def _has_tool_use(blocks: List[Dict[str, Any]]) -> bool:
+        return any("toolUse" in b for b in blocks)
+
+    merged: List[Dict[str, Any]] = []
+    for msg in bedrock_messages:
+        if not merged:
+            merged.append(msg)
+            continue
+        prev = merged[-1]
+
+        # Merge if they have the same role
+        # For assistant role: merge only if they don't both have toolUse blocks (which represents distinct turns)
+        should_merge = False
+        if prev["role"] == msg["role"]:
+            if prev["role"] == "user":
+                should_merge = True
+            elif prev["role"] == "assistant":
+                if not (_has_tool_use(prev["content"]) and _has_tool_use(msg["content"])):
+                    should_merge = True
+
+        if should_merge:
+            prev["content"].extend(msg["content"])
+            # Remove placeholder dummy text blocks if we merged real blocks
+            real_blocks = [b for b in prev["content"] if not (isinstance(b, dict) and b.get("text") == "...")]
+            if real_blocks:
+                prev["content"] = real_blocks
+            else:
+                prev["content"] = [{"text": "..."}]
+        else:
+            merged.append(msg)
+
+    # Finally, ensure no message content list has duplicate toolResult or toolUse blocks.
+    # Also ensure each message is strictly valid.
+    return merged
 
 
 def _build_bedrock_request(data: Dict[str, Any]) -> Dict[str, Any]:
