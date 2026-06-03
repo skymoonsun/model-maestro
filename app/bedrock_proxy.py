@@ -7,6 +7,7 @@ and vice versa for responses.
 import json
 import logging
 import asyncio
+import uuid
 from typing import Dict, Any, Optional, List, Tuple, AsyncGenerator
 
 from fastapi import HTTPException
@@ -17,6 +18,20 @@ logger = logging.getLogger(__name__)
 # Bedrock Converse API tool ID regex: ^[a-zA-Z0-9_-]+$
 # Claude Code sends base64-like IDs; strip anything outside the allowed set.
 _TOOL_ID_ALLOWED = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def _sanitize_tool_id(tool_id: str) -> str:
+    """Strip characters Bedrock Converse rejects from tool IDs, then truncate to 64 chars.
+
+    Bedrock regex: ^[a-zA-Z0-9_-]+$
+    """
+    if not tool_id:
+        return tool_id
+    cleaned = "".join(c for c in tool_id if c in _TOOL_ID_ALLOWED)
+    cleaned = cleaned[:64]
+    if not cleaned:
+        cleaned = f"call_{uuid.uuid4().hex[:12]}"
+    return cleaned
 
 
 def _sanitize_tool_id(tool_id: str) -> str:
@@ -877,9 +892,20 @@ async def proxy_bedrock_request(
     )
 
     def _converse_kwargs(target_model_id: str) -> Dict[str, Any]:
+        msgs = bedrock_request.get("messages", [])
+        # Log message structures and tool IDs for debugging
+        for i, m in enumerate(msgs):
+            role = m.get("role")
+            parts = m.get("content", [])
+            for j, p in enumerate(parts):
+                if "toolUse" in p:
+                    logger.info(f"[Bedrock][Debug] msg.{i}.content.{j}.toolUse ID={p['toolUse'].get('toolUseId')}")
+                elif "toolResult" in p:
+                    logger.info(f"[Bedrock][Debug] msg.{i}.content.{j}.toolResult ID={p['toolResult'].get('toolUseId')}")
+
         kwargs: Dict[str, Any] = {
             "modelId": target_model_id,
-            "messages": bedrock_request.get("messages", []),
+            "messages": msgs,
         }
         if "inferenceConfig" in bedrock_request:
             kwargs["inferenceConfig"] = bedrock_request["inferenceConfig"]
