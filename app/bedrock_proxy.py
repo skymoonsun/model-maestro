@@ -934,15 +934,23 @@ async def proxy_bedrock_request(
 
     def _converse_kwargs(target_model_id: str) -> Dict[str, Any]:
         msgs = bedrock_request.get("messages", [])
-        # Log message structures and tool IDs for debugging
+        # Log message structures, roles, and tool IDs for debugging
         for i, m in enumerate(msgs):
             role = m.get("role")
             parts = m.get("content", [])
-            for j, p in enumerate(parts):
-                if "toolUse" in p:
-                    logger.info(f"[Bedrock][Debug] msg.{i}.content.{j}.toolUse ID={p['toolUse'].get('toolUseId')}")
+            part_types = []
+            for p in parts:
+                if "text" in p:
+                    part_types.append("text")
+                elif "image" in p:
+                    part_types.append("image")
+                elif "toolUse" in p:
+                    part_types.append(f"toolUse({p['toolUse'].get('toolUseId')})")
                 elif "toolResult" in p:
-                    logger.info(f"[Bedrock][Debug] msg.{i}.content.{j}.toolResult ID={p['toolResult'].get('toolUseId')}")
+                    part_types.append(f"toolResult({p['toolResult'].get('toolUseId')})")
+                else:
+                    part_types.append("unknown")
+            logger.info(f"[Bedrock][Debug] msg.{i} role={role} parts={part_types}")
 
         kwargs: Dict[str, Any] = {
             "modelId": target_model_id,
