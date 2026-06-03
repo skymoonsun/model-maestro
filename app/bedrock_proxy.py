@@ -650,6 +650,18 @@ def _openai_messages_to_bedrock(messages: List[Dict[str, Any]]) -> List[Dict[str
         else:
             merged.append(msg)
 
+    # Reorder parts for user messages to make sure toolResults come before text blocks.
+    # Bedrock backend with Claude models fails validation if a text block exists
+    # prior to a toolResult block in the same user turn.
+    def _reorder_bedrock_parts(content: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        results = [p for p in content if "toolResult" in p]
+        text_and_others = [p for p in content if "toolResult" not in p]
+        return results + text_and_others
+
+    for msg in merged:
+        if msg["role"] == "user":
+            msg["content"] = _reorder_bedrock_parts(msg["content"])
+
     # Finally, ensure no message content list has duplicate toolResult or toolUse blocks.
     # Also ensure each message is strictly valid.
     return merged
