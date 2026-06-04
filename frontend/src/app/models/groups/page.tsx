@@ -86,6 +86,9 @@ function SortableMemberCard({
                     {member.is_fallback_413 && (
                         <Badge variant="outline" className="text-amber-600 border-amber-500/40 text-xs">413 FB</Badge>
                     )}
+                    {member.is_metadata_source && (
+                        <Badge className="bg-sky-100 text-sky-700 border-sky-300 text-xs">Meta</Badge>
+                    )}
                     {member.capability_tags && member.capability_tags.length > 0 && (
                         <div className="flex gap-1">
                             {member.capability_tags.map((tag) => (
@@ -528,6 +531,7 @@ function GroupDetail({
                                                     priority: m.priority,
                                                     is_fallback: m.is_fallback,
                                                     is_fallback_413: m.is_fallback_413,
+                                                    is_metadata_source: m.is_metadata_source,
                                                     is_active: m.is_active,
                                                     capability_tags: m.capability_tags ?? [],
                                                     preferred_node_ids: m.preferred_node_ids,
@@ -587,6 +591,16 @@ function GroupDetail({
                                     onCheckedChange={(v) => setEditMemberForm((f) => f ? { ...f, is_fallback: v } : null)}
                                 />
                                 <Label>Fallback Member</Label>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Switch
+                                    checked={editMemberForm.is_metadata_source ?? false}
+                                    onCheckedChange={(v) => setEditMemberForm((f) => f ? { ...f, is_metadata_source: v } : null)}
+                                />
+                                <div>
+                                    <Label>Metadata Source</Label>
+                                    <p className="text-xs text-muted-foreground">The group&apos;s entry in /v1/models &amp; /api/tags inherits this member&apos;s metadata (e.g. embedding family/context). Only one member should be the source.</p>
+                                </div>
                             </div>
                             <div className="flex items-center gap-2">
                                 <Switch

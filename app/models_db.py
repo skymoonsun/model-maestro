@@ -421,6 +421,7 @@ class ModelGroupMember(Base):
     priority = Column(Integer, default=0, nullable=False)  # For priority strategy (lower = higher priority)
     is_fallback = Column(Boolean, default=False, nullable=False)
     is_fallback_413 = Column(Boolean, default=False, nullable=False)  # If true: use this member as 413 fallback for the group
+    is_metadata_source = Column(Boolean, default=False, nullable=False)  # If true: group's model-list entry inherits this member's metadata (details/size/context)
     is_active = Column(Boolean, default=True, nullable=False)
 
     # Relationships

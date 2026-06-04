@@ -173,6 +173,7 @@ class ModelGroupRepository:
         priority: int = 0,
         is_fallback: bool = False,
         is_fallback_413: bool = False,
+        is_metadata_source: bool = False,
         is_active: bool = True,
         preferred_node_ids: Optional[List[int]] = None,
     ) -> Optional[ModelGroupMember]:
@@ -189,6 +190,7 @@ class ModelGroupRepository:
             priority=priority,
             is_fallback=is_fallback,
             is_fallback_413=is_fallback_413,
+            is_metadata_source=is_metadata_source,
             is_active=is_active,
         )
         self.session.add(member)

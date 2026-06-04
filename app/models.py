@@ -857,6 +857,7 @@ class ModelGroupMemberRequest(BaseModel):
     priority: int = 0
     is_fallback: bool = False
     is_fallback_413: bool = False
+    is_metadata_source: bool = False
     is_active: bool = True
     preferred_node_ids: Optional[List[int]] = None
     preferred_node_id: Optional[int] = None  # deprecated: use preferred_node_ids
@@ -898,6 +899,7 @@ class ModelGroupMemberResponse(BaseModel):
     priority: int = 0
     is_fallback: bool = False
     is_fallback_413: bool = False
+    is_metadata_source: bool = False
     is_active: bool = True
     preferred_node_ids: List[int] = []
 
