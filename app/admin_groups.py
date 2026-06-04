@@ -152,6 +152,7 @@ async def create_model_group(
                     priority=member_req.priority,
                     is_fallback=member_req.is_fallback,
                     is_fallback_413=member_req.is_fallback_413,
+                    is_metadata_source=member_req.is_metadata_source,
                     is_active=member_req.is_active,
                     preferred_node_ids=member_req.preferred_node_ids,
                 )
@@ -422,6 +423,7 @@ async def add_group_member(
             priority=request.priority,
             is_fallback=request.is_fallback,
             is_fallback_413=request.is_fallback_413,
+            is_metadata_source=request.is_metadata_source,
             is_active=request.is_active,
             preferred_node_ids=request.preferred_node_ids,
         )
@@ -483,6 +485,8 @@ async def update_group_member(
             member.is_fallback = request.is_fallback
         if request.is_fallback_413 is not None:
             member.is_fallback_413 = request.is_fallback_413
+        if request.is_metadata_source is not None:
+            member.is_metadata_source = request.is_metadata_source
         if request.is_active is not None:
             member.is_active = request.is_active
         if request.preferred_node_ids is not None:
@@ -590,6 +594,7 @@ async def _members_to_response(
             priority=m.priority,
             is_fallback=m.is_fallback,
             is_fallback_413=m.is_fallback_413,
+            is_metadata_source=m.is_metadata_source,
             is_active=m.is_active,
             preferred_node_ids=by_mid.get(m.id, []),
         )

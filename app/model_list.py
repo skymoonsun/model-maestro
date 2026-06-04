@@ -18,6 +18,30 @@ def _user_may_use_group(
     return any(m in allowed for m in member_names)
 
 
+def _metadata_source_display_name(group_name: str) -> Optional[str]:
+    """
+    Return the ``model_display_name`` of the member explicitly flagged as the
+    group's metadata source, or None if none is flagged.
+
+    When more than one active member is flagged, the highest-priority one
+    (lowest ``priority`` number) wins. The group's public model-list entry then
+    inherits that member's metadata (details/family/size/context length), so an
+    embedding group reports embedding-shaped metadata instead of the generic
+    ``model_group`` placeholder.
+    """
+    data = model_group_manager._groups.get(group_name)
+    if not data:
+        return None
+    members = data.get("members") or []
+    flagged = [
+        m for m in members
+        if getattr(m, "is_metadata_source", False) and m.is_active
+    ]
+    if not flagged:
+        return None
+    return min(flagged, key=lambda m: m.priority).model_display_name
+
+
 async def get_visible_catalog_group_names(
     user_models_data: Optional[Dict[str, Any]],
 ) -> List[str]:
@@ -57,25 +81,42 @@ def append_groups_to_ollama_models(
         for m in models
         if isinstance(m, dict)
     }
+    # Index existing real-model entries by their catalog id (display name) so a
+    # group can inherit the metadata of its flagged metadata-source member.
+    by_name = {
+        (m.get("name") or m.get("model")): m
+        for m in models
+        if isinstance(m, dict)
+    }
     for name in group_names:
         if name in existing:
             continue
-        ctx = get_context_length_for_model(name)
-        entry: Dict[str, Any] = {
-            "name": name,
-            "model": name,
-            "modified_at": "",
-            "size": 0,
-            "digest": "",
-            "details": {
-                "family": "model_group",
-                "families": ["model_group"],
-                "parameter_size": "group",
-                "quantization_level": "",
-            },
-        }
-        if ctx:
-            entry["context_length"] = ctx
+
+        source_name = _metadata_source_display_name(name)
+        source_entry = by_name.get(source_name) if source_name else None
+
+        if source_entry:
+            # Inherit the member's real metadata; only the identity is the group's.
+            entry = dict(source_entry)
+            entry["name"] = name
+            entry["model"] = name
+        else:
+            ctx = get_context_length_for_model(name)
+            entry = {
+                "name": name,
+                "model": name,
+                "modified_at": "",
+                "size": 0,
+                "digest": "",
+                "details": {
+                    "family": "model_group",
+                    "families": ["model_group"],
+                    "parameter_size": "group",
+                    "quantization_level": "",
+                },
+            }
+            if ctx:
+                entry["context_length"] = ctx
         models.append(entry)
     return models
 
@@ -86,17 +127,30 @@ def append_groups_to_openai_models(
 ) -> List[Dict[str, Any]]:
     """Add synthetic OpenAI-style entries for model groups."""
     existing = {m.get("id") for m in models if isinstance(m, dict)}
+    # Index existing real-model entries by their catalog id (display name) so a
+    # group can inherit the metadata of its flagged metadata-source member.
+    by_id = {m.get("id"): m for m in models if isinstance(m, dict)}
     for name in group_names:
         if name in existing:
             continue
-        entry: Dict[str, Any] = {
-            "id": name,
-            "object": "model",
-            "created": 0,
-            "owned_by": "model-maestro",
-        }
-        ctx = get_context_length_for_model(name)
-        if ctx:
-            entry["max_model_len"] = ctx
+
+        source_name = _metadata_source_display_name(name)
+        source_entry = by_id.get(source_name) if source_name else None
+
+        if source_entry:
+            # Inherit the member's real metadata (size/digest/details/max_model_len);
+            # only the identity stays the group's.
+            entry = dict(source_entry)
+            entry["id"] = name
+        else:
+            entry = {
+                "id": name,
+                "object": "model",
+                "created": 0,
+                "owned_by": "model-maestro",
+            }
+            ctx = get_context_length_for_model(name)
+            if ctx:
+                entry["max_model_len"] = ctx
         models.append(entry)
     return models

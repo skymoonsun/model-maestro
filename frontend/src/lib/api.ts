@@ -969,6 +969,7 @@ export interface ModelGroupMember {
   priority: number;
   is_fallback: boolean;
   is_fallback_413: boolean;
+  is_metadata_source: boolean;
   is_active: boolean;
   preferred_node_ids: number[];
 }
@@ -1011,6 +1012,7 @@ export type ModelGroupMemberCreate = {
   priority?: number;
   is_fallback?: boolean;
   is_fallback_413?: boolean;
+  is_metadata_source?: boolean;
   is_active?: boolean;
   preferred_node_ids?: number[] | null;
   /** @deprecated use preferred_node_ids */
