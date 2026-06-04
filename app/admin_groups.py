@@ -576,15 +576,17 @@ async def _members_to_response(
         return []
     ids = [m.id for m in members]
     r = await session.execute(
-        select(model_group_member_nodes.c.member_id, model_group_member_nodes.c.node_id).where(
-            model_group_member_nodes.c.member_id.in_(ids)
+        select(
+            model_group_member_nodes.c.member_id,
+            model_group_member_nodes.c.node_id,
         )
+        .where(model_group_member_nodes.c.member_id.in_(ids))
+        # Highest per-member priority first so the UI shows nodes in routing order.
+        .order_by(model_group_member_nodes.c.priority.desc())
     )
     by_mid: dict[int, List[int]] = defaultdict(list)
     for mid, nid in r.all():
         by_mid[mid].append(nid)
-    for mid in by_mid:
-        by_mid[mid].sort()
     return [
         ModelGroupMemberResponse(
             id=m.id,

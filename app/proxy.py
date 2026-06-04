@@ -1390,14 +1390,21 @@ class OllamaProxy:
         self,
         data: Optional[Dict[str, Any]],
         model_name: Optional[str],
-    ) -> Optional[List[int]]:
-        """Strip internal preferred-node keys from request body and compute LB restriction."""
+    ) -> Tuple[Optional[List[int]], Optional[Dict[int, int]]]:
+        """
+        Strip internal preferred-node keys from request body and compute LB restriction.
+
+        Returns (allowed_node_ids, node_priority_overrides). The overrides map
+        (node_id -> per-member priority, higher = preferred) lets a group member
+        override the node's global priority during selection.
+        """
         if not isinstance(data, dict):
             mmap = model_mapper.get_restricted_node_ids(model_name) if model_name else None
             logger.debug(f"[LB][RoutingDebug] data is not dict, model={model_name}, mapping_restrict={mmap}")
-            return mmap
+            return mmap, None
         legacy = data.pop('_preferred_node_id', None)
         pids = data.pop('_preferred_node_ids', None)
+        overrides = data.pop('_node_priority_overrides', None)
         if legacy is not None and not pids:
             pids = [legacy]
 
@@ -1410,9 +1417,9 @@ class OllamaProxy:
         merged = self._merge_allowed_node_ids(pids, mmap)
         logger.info(
             f"[LB][RoutingDebug] model={model_name} _preferred_node_ids={pids} "
-            f"mapping_restrict={mmap} merged={merged}"
+            f"mapping_restrict={mmap} merged={merged} node_priority_overrides={overrides}"
         )
-        return merged
+        return merged, overrides
 
     async def _gather_nodes_for_model_candidates(
         self,
@@ -1468,6 +1475,7 @@ class OllamaProxy:
         allowed_node_ids: Optional[List[int]] = None,
         routing_catalog_names: Optional[List[str]] = None,
         strict_allowed_nodes: bool = False,
+        node_priority_overrides: Optional[Dict[int, int]] = None,
     ) -> Tuple[str, Optional[str], str, Optional[Dict[str, Any]], bool]:
         """
         Select the best node URL for a model using load balancing.
@@ -1623,6 +1631,17 @@ class OllamaProxy:
                     logger.debug(f"[LB] All nodes excluded for model {model_name}, no alternatives")
                     return "", None, 'ollama', None, False
 
+            # Per-member node priority override: a group member can reorder its own
+            # preferred nodes, overriding each node's global priority for this request
+            # only. Copy the node dicts so the shared/cached candidates stay untouched.
+            if node_priority_overrides:
+                nodes = [
+                    {**n, "priority": node_priority_overrides[n.get("node_id")]}
+                    if n.get("node_id") in node_priority_overrides
+                    else n
+                    for n in nodes
+                ]
+
             # Select best node using load balancer (Redis-first, no session)
             selected_node = await load_balancer.select_node(
                 nodes, strategy="priority"
@@ -1712,12 +1731,14 @@ class OllamaProxy:
         # Handle 'model' field - resolve groups first
         if 'model' in data_copy:
             original_model = data_copy['model']
-            resolved_model, preferred_node_ids = await model_group_manager.resolve_model_with_metadata(original_model, data_copy)
+            resolved_model, preferred_node_ids, node_priority_overrides = await model_group_manager.resolve_model_with_metadata(original_model, data_copy)
             if resolved_model != original_model:
                 logger.info(f"[ModelGroup] Resolved group '{original_model}' -> '{resolved_model}' (preferred_nodes={preferred_node_ids})")
             data_copy['model'] = resolved_model
             if preferred_node_ids:
                 data_copy['_preferred_node_ids'] = preferred_node_ids
+            if node_priority_overrides:
+                data_copy['_node_priority_overrides'] = node_priority_overrides
 
         # Handle 'name' field (used in show, delete, pull, push) - resolve groups
         if 'name' in data_copy:
@@ -2537,7 +2558,7 @@ class OllamaProxy:
                 rc.append(original_group)
             routing_catalog_names = rc if rc else None
 
-        routing_allowed_node_ids = self._prepare_routing_allowed(data, model_name)
+        routing_allowed_node_ids, node_priority_overrides = self._prepare_routing_allowed(data, model_name)
         group_strict_nodes = is_node_scoped or (
             is_group_request and bool(routing_allowed_node_ids)
         )
@@ -2554,6 +2575,7 @@ class OllamaProxy:
             routing_catalog_names=routing_catalog_names,
             strict_allowed_nodes=is_node_scoped
             or (is_group_request and bool(routing_allowed_node_ids)),
+            node_priority_overrides=node_priority_overrides,
         )
 
         # Block if no node found (model unavailable)
@@ -2716,6 +2738,7 @@ class OllamaProxy:
                     routing_catalog_names=routing_catalog_names,
                     source=source,
                     url_path=url_path,
+                    node_priority_overrides=node_priority_overrides,
                 )
 
             # Non-streaming requests with failover support
@@ -2744,6 +2767,7 @@ class OllamaProxy:
                 routing_catalog_names=routing_catalog_names,
                 source=source,
                 url_path=url_path,
+                node_priority_overrides=node_priority_overrides,
             )
 
         except HTTPException:
@@ -2785,6 +2809,7 @@ class OllamaProxy:
         routing_catalog_names: Optional[List[str]] = None,
         source: Optional[str] = None,
         url_path: Optional[str] = None,
+        node_priority_overrides: Optional[Dict[int, int]] = None,
     ):
         """
         Handle streaming requests with automatic failover.
@@ -2881,6 +2906,7 @@ class OllamaProxy:
                                 allowed_node_ids=allowed_node_ids,
                                 routing_catalog_names=routing_catalog_names,
                                 strict_allowed_nodes=strict_allowed_nodes,
+                                node_priority_overrides=node_priority_overrides,
                             )
                             if new_base_url:
                                 if (
@@ -3043,6 +3069,7 @@ class OllamaProxy:
                                     allowed_node_ids=allowed_node_ids,
                                     routing_catalog_names=routing_catalog_names,
                                     strict_allowed_nodes=strict_allowed_nodes,
+                                    node_priority_overrides=node_priority_overrides,
                                 )
                                 if new_base_url:
                                     if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3684,6 +3711,7 @@ class OllamaProxy:
                             allowed_node_ids=allowed_node_ids,
                             routing_catalog_names=routing_catalog_names,
                             strict_allowed_nodes=strict_allowed_nodes,
+                            node_priority_overrides=node_priority_overrides,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -3818,6 +3846,7 @@ class OllamaProxy:
         routing_catalog_names: Optional[List[str]] = None,
         source: Optional[str] = None,
         url_path: Optional[str] = None,
+        node_priority_overrides: Optional[Dict[int, int]] = None,
     ):
         """
         Handle non-streaming requests with automatic failover.
@@ -3897,6 +3926,7 @@ class OllamaProxy:
                         allowed_node_ids=allowed_node_ids,
                         routing_catalog_names=routing_catalog_names,
                         strict_allowed_nodes=strict_allowed_nodes,
+                        node_priority_overrides=node_priority_overrides,
                     )
                     if new_base_url:
                         if (
@@ -4045,6 +4075,7 @@ class OllamaProxy:
                             allowed_node_ids=allowed_node_ids,
                             routing_catalog_names=routing_catalog_names,
                             strict_allowed_nodes=strict_allowed_nodes,
+                            node_priority_overrides=node_priority_overrides,
                         )
                         if new_base_url:
                             if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):
@@ -4189,6 +4220,7 @@ class OllamaProxy:
                         allowed_node_ids=allowed_node_ids,
                         routing_catalog_names=routing_catalog_names,
                         strict_allowed_nodes=strict_allowed_nodes,
+                        node_priority_overrides=node_priority_overrides,
                     )
                     if new_base_url:
                         if not bypass_node_access and username and not await self._check_user_node_access(username, new_base_url):

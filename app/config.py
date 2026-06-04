@@ -798,6 +798,8 @@ class ModelGroupManager:
         self._groups: Dict[str, Dict[str, Any]] = {}
         # Cache: group_name -> round_robin_index
         self._round_robin_indices: Dict[str, int] = {}
+        # Cache: member_id -> {node_id: priority} (per-member node priority override)
+        self._member_node_prio: Dict[int, Dict[int, int]] = {}
         # Track loaded state
         self._cache_loaded = False
 
@@ -809,12 +811,15 @@ class ModelGroupManager:
         try:
             from app.repositories.model_group_repository import ModelGroupRepository
             from app.database import async_session_maker
+            from app.models_db import model_group_member_nodes
+            from sqlalchemy import select as _select
 
             async with async_session_maker() as session:
                 repo = ModelGroupRepository(session)
                 groups = await repo.get_all_groups(active_only=True)
 
                 self._groups = {}
+                all_member_ids: List[int] = []
                 for group in groups:
                     members = await repo.get_members_by_group_name(group.name)
                     active_members = [m for m in members if m.is_active]
@@ -822,6 +827,21 @@ class ModelGroupManager:
                         "group": group,
                         "members": active_members,
                     }
+                    all_member_ids.extend(m.id for m in active_members)
+
+                # Cache per-(member, node) priorities so routing can override the global
+                # node priority for a member without lazy-loading the association.
+                self._member_node_prio = {}
+                if all_member_ids:
+                    rows = await session.execute(
+                        _select(
+                            model_group_member_nodes.c.member_id,
+                            model_group_member_nodes.c.node_id,
+                            model_group_member_nodes.c.priority,
+                        ).where(model_group_member_nodes.c.member_id.in_(all_member_ids))
+                    )
+                    for mid, nid, prio in rows.all():
+                        self._member_node_prio.setdefault(mid, {})[int(nid)] = int(prio or 0)
 
                 self._cache_loaded = True
                 print(f"[ModelGroupManager] Loaded {len(self._groups)} model groups from database")
@@ -829,6 +849,7 @@ class ModelGroupManager:
         except Exception as e:
             print(f"[ModelGroupManager] Error loading groups from DB: {e}")
             self._groups = {}
+            self._member_node_prio = {}
 
     def is_group(self, model_name: str) -> bool:
         """Check if a model name is a group"""
@@ -962,7 +983,7 @@ class ModelGroupManager:
 
     async def resolve_model_with_metadata(
         self, model_name: str, request_data: Optional[Dict[str, Any]] = None
-    ) -> Tuple[str, Optional[List[int]]]:
+    ) -> Tuple[str, Optional[List[int]], Optional[Dict[int, int]]]:
         """
         Resolve a group slug to a member ``model_display_name`` and that member's preferred nodes.
 
@@ -981,13 +1002,13 @@ class ModelGroupManager:
         Non-group ``model_name`` is returned unchanged with no preferred nodes.
 
         Returns:
-            Tuple of (actual_model_name, preferred_node_ids)
+            Tuple of (actual_model_name, preferred_node_ids, node_priority_overrides)
         """
         await self.ensure_loaded()
 
         # Not a group - return as-is (backward compatible)
         if model_name not in self._groups:
-            return model_name, None
+            return model_name, None, None
 
         group_data = self._groups[model_name]
         group = group_data["group"]
@@ -995,7 +1016,7 @@ class ModelGroupManager:
 
         if not members:
             logger.warning(f"[ModelGroupManager] Group '{model_name}' has no active members")
-            return model_name, None
+            return model_name, None, None
 
         # Detect if vision capability is needed
         needs_vision = False
@@ -1012,15 +1033,16 @@ class ModelGroupManager:
 
         if selected:
             pids = self.preferred_node_ids_for_member(selected)
+            overrides = self.node_priority_overrides_for_member(selected)
             logger.info(
                 f"[ModelGroupManager] Group '{model_name}' -> '{selected.model_display_name}' "
                 f"(strategy={group.strategy}, vision={needs_vision}, "
-                f"preferred_node_ids={pids})"
+                f"preferred_node_ids={pids}, node_priority_overrides={overrides})"
             )
-            return selected.model_display_name, pids
+            return selected.model_display_name, pids, overrides
 
         # Fallback: return group name (will be handled by model_mapper)
-        return model_name, None
+        return model_name, None, None
 
     async def resolve_model(
         self, model_name: str, request_data: Optional[Dict[str, Any]] = None
@@ -1037,7 +1059,7 @@ class ModelGroupManager:
         Returns:
             Actual model name to use (display_name from member)
         """
-        resolved, _ = await self.resolve_model_with_metadata(model_name, request_data)
+        resolved, _, _ = await self.resolve_model_with_metadata(model_name, request_data)
         return resolved
 
     def get_fallback(
@@ -1088,16 +1110,43 @@ class ModelGroupManager:
                 return member.model_display_name
         return None
 
-    @staticmethod
-    def preferred_node_ids_for_member(member: Any) -> Optional[List[int]]:
-        """Preferred node ids for one group member (LB runs only within this pool)."""
+    def preferred_node_ids_for_member(self, member: Any) -> Optional[List[int]]:
+        """
+        Preferred node ids for one group member (LB runs only within this pool).
+
+        Ordered by per-member priority (highest first) when priorities are set;
+        otherwise insertion/relationship order. De-duplicated, order preserved.
+        """
         pref = getattr(member, "preferred_nodes", None) or []
         ids: List[int] = []
+        seen: set = set()
         for node in pref:
             nid = getattr(node, "id", None)
-            if nid is not None:
-                ids.append(int(nid))
-        return sorted(set(ids)) if ids else None
+            if nid is None:
+                continue
+            nid = int(nid)
+            if nid not in seen:
+                seen.add(nid)
+                ids.append(nid)
+        # `preferred_nodes` is ordered by priority desc at the relationship level, but
+        # fall back to the cached priority map in case the relationship wasn't ordered.
+        prio = self._member_node_prio.get(getattr(member, "id", None) or -1)
+        if prio and any(prio.get(n, 0) for n in ids):
+            ids.sort(key=lambda n: prio.get(n, 0), reverse=True)
+        return ids if ids else None
+
+    def node_priority_overrides_for_member(self, member: Any) -> Optional[Dict[int, int]]:
+        """
+        Per-member node priority override map (node_id -> priority, higher = preferred).
+
+        Returns None when the member has no explicit priorities (all 0) so routing
+        falls back to the node's own global priority — preserving legacy behavior.
+        """
+        prio = self._member_node_prio.get(getattr(member, "id", None) or -1)
+        if not prio:
+            return None
+        active = {nid: p for nid, p in prio.items() if p}
+        return active or None
 
     def get_member_catalog_names(self, group_name: str) -> List[str]:
         """Member ``model_display_name`` values used to match node catalogs during LB."""

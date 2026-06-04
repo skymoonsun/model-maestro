@@ -128,6 +128,82 @@ function SortableMemberCard({
     );
 }
 
+// ==================== Preferred Node Priority (drag to order) ====================
+function SortablePreferredNodeRow({ id, name, rank, onRemove }: {
+    id: number; name: string; rank: number; onRemove: (id: number) => void;
+}) {
+    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
+    const style = { transform: CSS.Transform.toString(transform), transition };
+    return (
+        <div ref={setNodeRef} style={style} className="flex items-center gap-2 rounded-md border bg-card px-2 py-1.5">
+            <button {...attributes} {...listeners} className="cursor-grab touch-none text-muted-foreground hover:text-foreground">
+                <GripVertical className="h-3.5 w-3.5" />
+            </button>
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 tabular-nums">{rank}</Badge>
+            <span className="flex-1 text-sm truncate font-mono">{name}</span>
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={() => onRemove(id)}>
+                <Trash2 className="h-3 w-3" />
+            </Button>
+        </div>
+    );
+}
+
+function PreferredNodesEditor({ value, onChange, hostingNodes }: {
+    value: number[];
+    onChange: (ids: number[]) => void;
+    hostingNodes: { id: number; name: string }[];
+}) {
+    const sensors = useSensors(
+        useSensor(PointerSensor),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    );
+    const nameOf = (id: number) => hostingNodes.find((n) => n.id === id)?.name ?? `#${id}`;
+    const available = hostingNodes.filter((n) => !value.includes(n.id));
+    const onDragEnd = (e: DragEndEvent) => {
+        const { active, over } = e;
+        if (over && active.id !== over.id) {
+            onChange(arrayMove(value, value.indexOf(Number(active.id)), value.indexOf(Number(over.id))));
+        }
+    };
+    return (
+        <div className="space-y-2">
+            <Label>Preferred Nodes — drag to set priority (top = highest)</Label>
+            <p className="text-xs text-muted-foreground">
+                Overrides the global node priority for this group member only. Empty = use the node&apos;s global priority across all nodes hosting this model.
+            </p>
+            {value.length > 0 ? (
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+                    <SortableContext items={value} strategy={verticalListSortingStrategy}>
+                        <div className="space-y-1.5">
+                            {value.map((id, i) => (
+                                <SortablePreferredNodeRow
+                                    key={id}
+                                    id={id}
+                                    name={nameOf(id)}
+                                    rank={i + 1}
+                                    onRemove={(rid) => onChange(value.filter((x) => x !== rid))}
+                                />
+                            ))}
+                        </div>
+                    </SortableContext>
+                </DndContext>
+            ) : (
+                <p className="text-xs text-muted-foreground italic">No preferred nodes set.</p>
+            )}
+            {available.length > 0 && (
+                <Select onValueChange={(v) => onChange([...value, Number(v)])} value="">
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="+ Add preferred node" /></SelectTrigger>
+                    <SelectContent>
+                        {available.map((n) => (
+                            <SelectItem key={n.id} value={String(n.id)}>{n.name}</SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            )}
+        </div>
+    );
+}
+
 // ==================== Group Detail ====================
 function GroupDetail({
     group,
@@ -247,6 +323,17 @@ function GroupDetail({
     const [editMemberOpen, setEditMemberOpen] = useState(false);
     const [editMemberForm, setEditMemberForm] = useState<ModelGroupMemberCreate | null>(null);
     const [editMemberId, setEditMemberId] = useState<number | null>(null);
+
+    // Nodes that host the member currently being edited (for the preferred-node priority editor).
+    const editHostingNodes = useMemo(() => {
+        const name = editMemberForm?.model_display_name;
+        if (!name || !nodesData) return [];
+        const mapping = mappingsData?.find((m) => m.display_name === name);
+        const realName = mapping?.real_name ?? name;
+        return nodesData
+            .filter((node) => node.models?.some((m) => m.model_name === realName || m.model_name === name))
+            .map((n) => ({ id: n.id, name: n.name }));
+    }, [editMemberForm?.model_display_name, nodesData, mappingsData]);
 
     const updateMemberMut = useMutation({
         mutationFn: ({ id, data }: { id: number; data: ModelGroupMemberCreate }) => modelGroupsApi.updateMember(group.name, id, data),
@@ -609,6 +696,11 @@ function GroupDetail({
                                 />
                                 <Label>Active</Label>
                             </div>
+                            <PreferredNodesEditor
+                                value={editMemberForm.preferred_node_ids ?? []}
+                                onChange={(ids) => setEditMemberForm((f) => f ? { ...f, preferred_node_ids: ids } : null)}
+                                hostingNodes={editHostingNodes}
+                            />
                         </div>
                     ) : (
                         <p className="text-sm text-muted-foreground py-4">Loading...</p>
