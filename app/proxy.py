@@ -1123,6 +1123,9 @@ class OllamaProxy:
 
         current_data = current_data.copy()
         current_data["model"] = fallback_model
+        # Remove stale routing metadata from the previous model before re-resolving
+        current_data.pop("_preferred_node_ids", None)
+        current_data.pop("_mapping_restrict_ids", None)
         current_data = await self._resolve_model_groups(current_data)
         rsnap.clear()
         for snap_key in ("model", "name", "source", "destination"):
