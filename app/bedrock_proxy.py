@@ -962,7 +962,6 @@ async def proxy_bedrock_request(
                     part_types.append(f"toolResult({p['toolResult'].get('toolUseId')})")
                 else:
                     part_types.append("unknown")
-            logger.info(f"[Bedrock][Debug] msg.{i} role={role} parts={part_types}")
 
         kwargs: Dict[str, Any] = {
             "modelId": target_model_id,
