@@ -152,16 +152,30 @@ class ModelGroupRepository:
         )
         if not node_ids:
             return
-        uniq = sorted({int(x) for x in node_ids})
-        result = await self.session.execute(select(OllamaNode).where(OllamaNode.id.in_(uniq)))
+        # Preserve caller order (it encodes per-member node priority: first = highest),
+        # de-duplicating while keeping first occurrence.
+        ordered: List[int] = []
+        seen: set = set()
+        for x in node_ids:
+            nid = int(x)
+            if nid not in seen:
+                seen.add(nid)
+                ordered.append(nid)
+        result = await self.session.execute(select(OllamaNode).where(OllamaNode.id.in_(seen)))
         nodes = list(result.scalars().all())
         found = {n.id for n in nodes}
-        missing = set(uniq) - found
+        missing = seen - found
         if missing:
             raise ValueError(f"Unknown node id(s): {sorted(missing)}")
+        # priority = N..1 (first node highest). Distinct positive values switch on the
+        # per-member override; legacy rows default to 0 (no override).
+        n = len(ordered)
         await self.session.execute(
             insert(model_group_member_nodes),
-            [{"member_id": member.id, "node_id": nid} for nid in uniq],
+            [
+                {"member_id": member.id, "node_id": nid, "priority": n - i}
+                for i, nid in enumerate(ordered)
+            ],
         )
 
     async def add_member(

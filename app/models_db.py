@@ -12,6 +12,11 @@ model_group_member_nodes = Table(
     Base.metadata,
     Column("member_id", Integer, ForeignKey("model_group_members.id", ondelete="CASCADE"), primary_key=True),
     Column("node_id", Integer, ForeignKey("ollama_nodes.id", ondelete="CASCADE"), primary_key=True),
+    # Per-member node priority (higher = preferred). 0 = unset → fall back to the
+    # node's own global priority. When the user orders preferred nodes (drag-sort),
+    # these become distinct positive values and override the global node priority
+    # for this group member only.
+    Column("priority", Integer, nullable=False, server_default="0"),
 )
 
 model_mapping_nodes = Table(
@@ -426,7 +431,11 @@ class ModelGroupMember(Base):
 
     # Relationships
     group = relationship("ModelGroup", back_populates="members")
-    preferred_nodes = relationship("OllamaNode", secondary=model_group_member_nodes)
+    preferred_nodes = relationship(
+        "OllamaNode",
+        secondary=model_group_member_nodes,
+        order_by=model_group_member_nodes.c.priority.desc(),
+    )
 
     # Unique constraint: one model per group
     __table_args__ = (
