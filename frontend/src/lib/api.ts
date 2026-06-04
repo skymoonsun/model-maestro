@@ -282,6 +282,11 @@ export const bedrockModelsApi = {
   list: () => adminFetch<VllmModel[]>('/admin/models/bedrock'),
 };
 
+// ==================== Cursor Models ====================
+export const cursorModelsApi = {
+  list: () => adminFetch<VllmModel[]>('/admin/models/cursor'),
+};
+
 // ==================== Model Config ====================
 export const modelConfigApi = {
   list: () => adminFetch<ModelConfig[]>('/admin/model-config'),

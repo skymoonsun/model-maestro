@@ -5,6 +5,7 @@ import OllamaModelsPage from './ollama/page';
 import VllmModelsPage from './vllm/page';
 import AntigravityModelsPage from './antigravity/page';
 import BedrockModelsPage from './bedrock/page';
+import CursorModelsPage from './cursor/page';
 
 export default function ModelsPage() {
     return (
@@ -15,6 +16,7 @@ export default function ModelsPage() {
                     <TabsTrigger value="vllm">vLLM Models</TabsTrigger>
                     <TabsTrigger value="antigravity">Antigravity Models</TabsTrigger>
                     <TabsTrigger value="bedrock">Bedrock Models</TabsTrigger>
+                    <TabsTrigger value="cursor">Cursor Models</TabsTrigger>
                 </TabsList>
                 <TabsContent value="ollama" className="space-y-4">
                     <OllamaModelsPage />
@@ -27,6 +29,9 @@ export default function ModelsPage() {
                 </TabsContent>
                 <TabsContent value="bedrock" className="space-y-4">
                     <BedrockModelsPage />
+                </TabsContent>
+                <TabsContent value="cursor" className="space-y-4">
+                    <CursorModelsPage />
                 </TabsContent>
             </Tabs>
         </div>
