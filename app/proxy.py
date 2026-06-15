@@ -3599,18 +3599,21 @@ class OllamaProxy:
                                                 logger.debug(f"[STREAM] Received [DONE] marker")
                                                 yield b'data: [DONE]\n\n'
                                                 done_marker_sent = True
-                                            else:
-                                                # Non-SSE format (native Ollama)
-                                                logger.info(f"[OLLAMA IN NATIVE] {line.decode('utf-8', errors='replace')[:200]}")
-                                                json_str = line.decode('utf-8', errors='replace').strip()
-                                                if json_str:
-                                                    try:
-                                                        json_data = _json_loads(json_str)
-                                                        mapped_data = await self._map_model_from_ollama(json_data)
-                                                        yield _json_dumps(mapped_data) + b'\n'
-                                                    except (_json_decode_error, UnicodeDecodeError) as e:
-                                                        logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
-                                                        yield line + b'\n'
+                                        else:
+                                            # Non-SSE format (native Ollama NDJSON: one JSON object per line).
+                                            # NOTE: this else pairs with the OUTER `if line.startswith(b'data: ')`
+                                            # so native /api/chat lines (which lack the SSE `data: ` prefix) are
+                                            # streamed through incrementally instead of being dropped.
+                                            logger.info(f"[OLLAMA IN NATIVE] {line.decode('utf-8', errors='replace')[:200]}")
+                                            json_str = line.decode('utf-8', errors='replace').strip()
+                                            if json_str:
+                                                try:
+                                                    json_data = _json_loads(json_str)
+                                                    mapped_data = await self._map_model_from_ollama(json_data)
+                                                    yield _json_dumps(mapped_data) + b'\n'
+                                                except (_json_decode_error, UnicodeDecodeError) as e:
+                                                    logger.warning(f"[STREAM] JSON parse error: {e}, line: {line[:100]!r}")
+                                                    yield line + b'\n'
 
                                     except (_json_decode_error, UnicodeDecodeError) as e:
                                         logger.warning(f"[STREAM] Buffer parse error: {e}, buffer: {line[:100]!r}")
