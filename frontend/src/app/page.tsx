@@ -1,10 +1,14 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { dashboardApi, type DashboardStats, type ChartData, type ModelChartData, type UserStatsItem } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { Users, Activity, Key, Bot, CheckCircle, XCircle, Layers, Clock, Zap, ArrowDown, ArrowUp } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip,
@@ -227,17 +231,52 @@ function ModelsChart({ data }: { data: ModelChartData[] }) {
   );
 }
 
-function UserStatsTable({ users }: { users: UserStatsItem[] }) {
-  if (!users || users.length === 0) {
-    return null;
-  }
+const USER_STATS_RANGES = [
+  { value: '7', label: 'Last 7 days' },
+  { value: '30', label: 'Last 30 days' },
+  { value: '90', label: 'Last 90 days' },
+  { value: 'all', label: 'All time' },
+] as const;
 
+export type UserStatsRange = (typeof USER_STATS_RANGES)[number]['value'];
+
+function rangeToParams(range: UserStatsRange): { start_date?: string; end_date?: string } {
+  if (range === 'all') return {};
+  const start = new Date();
+  start.setDate(start.getDate() - Number(range));
+  return { start_date: start.toISOString() };
+}
+
+function UserStatsTable({
+  users,
+  range,
+  onRangeChange,
+}: {
+  users: UserStatsItem[];
+  range: UserStatsRange;
+  onRangeChange: (range: UserStatsRange) => void;
+}) {
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
         <CardTitle className="text-sm font-medium">Top Users by Token Usage</CardTitle>
+        <Select value={range} onValueChange={(v) => onRangeChange(v as UserStatsRange)}>
+          <SelectTrigger className="h-8 w-[150px] text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {USER_STATS_RANGES.map((r) => (
+              <SelectItem key={r.value} value={r.value} className="text-xs">
+                {r.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </CardHeader>
       <CardContent className="p-0 overflow-x-auto">
+        {!users || users.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-12">No data for this period</p>
+        ) : (
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border">
@@ -260,6 +299,7 @@ function UserStatsTable({ users }: { users: UserStatsItem[] }) {
             ))}
           </tbody>
         </table>
+        )}
       </CardContent>
     </Card>
   );
@@ -302,9 +342,10 @@ export default function DashboardPage() {
     queryFn: () => dashboardApi.getModelsChart(),
   });
 
+  const [userStatsRange, setUserStatsRange] = useState<UserStatsRange>('7');
   const { data: userStats } = useQuery({
-    queryKey: ['dashboard', 'user-stats'],
-    queryFn: () => dashboardApi.getUserStats(),
+    queryKey: ['dashboard', 'user-stats', userStatsRange],
+    queryFn: () => dashboardApi.getUserStats(rangeToParams(userStatsRange)),
   });
 
   if (statsError) {
@@ -340,9 +381,11 @@ export default function DashboardPage() {
         <ModelsChart data={modelsChart || []} />
       </div>
 
-      {userStats?.users && userStats.users.length > 0 && (
-        <UserStatsTable users={userStats.users} />
-      )}
+      <UserStatsTable
+        users={userStats?.users ?? []}
+        range={userStatsRange}
+        onRangeChange={setUserStatsRange}
+      />
     </div>
   );
 }
