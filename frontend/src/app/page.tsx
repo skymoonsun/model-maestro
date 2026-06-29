@@ -1,15 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { dashboardApi, type DashboardStats, type ChartData, type ModelChartData, type UserStatsItem } from '@/lib/api';
+import { dashboardApi, usersApi, type DashboardStats, type ChartData, type ModelChartData, type UserStatsItem } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { Users, Activity, Key, Bot, CheckCircle, XCircle, Layers, Clock, Zap, ArrowDown, ArrowUp } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Users, Activity, Key, Bot, CheckCircle, XCircle, Layers, Clock, Zap, ArrowDown, ArrowUp, BarChart3 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip,
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell
@@ -232,6 +233,8 @@ function ModelsChart({ data }: { data: ModelChartData[] }) {
 }
 
 const USER_STATS_RANGES = [
+  { value: '1', label: 'Last 24 hours' },
+  { value: '3', label: 'Last 3 days' },
   { value: '7', label: 'Last 7 days' },
   { value: '30', label: 'Last 30 days' },
   { value: '90', label: 'Last 90 days' },
@@ -245,6 +248,120 @@ function rangeToParams(range: UserStatsRange): { start_date?: string; end_date?:
   const start = new Date();
   start.setDate(start.getDate() - Number(range));
   return { start_date: start.toISOString() };
+}
+
+const MAX_PIE_SLICES = 6;
+
+// Renders a per-user model-token-distribution pie + ranked list for the current
+// filter range. Lazily fetched: only mounts inside the open popover, so a row's
+// data loads on first hover and is cached by react-query thereafter.
+function UserModelDistribution({ username, range }: { username: string; range: UserStatsRange }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['user-model-usage', username, range],
+    queryFn: () => usersApi.getUserModelUsage(username, rangeToParams(range)),
+    staleTime: 60_000,
+  });
+
+  const usage = [...(data?.model_usage ?? [])].sort((a, b) => b.total_tokens - a.total_tokens);
+  const total = usage.reduce((sum, m) => sum + m.total_tokens, 0);
+
+  // Note: backend field is `model_name` and may be null -> fall back to a label.
+  const top = usage.slice(0, MAX_PIE_SLICES).map((m) => ({
+    label: m.model_name || '(unknown)',
+    total_tokens: m.total_tokens,
+    request_count: m.request_count,
+  }));
+  const rest = usage.slice(MAX_PIE_SLICES);
+  const slices = [...top];
+  if (rest.length > 0) {
+    slices.push({
+      label: `Other (${rest.length})`,
+      total_tokens: rest.reduce((sum, m) => sum + m.total_tokens, 0),
+      request_count: rest.reduce((sum, m) => sum + m.request_count, 0),
+    });
+  }
+
+  return (
+    <div className="w-full">
+      <p className="text-xs font-medium mb-2 truncate">
+        Model usage · <span className="font-mono">{username}</span>
+      </p>
+      {isLoading ? (
+        <Skeleton className="h-[120px] w-full" />
+      ) : usage.length === 0 ? (
+        <p className="text-xs text-muted-foreground py-6 text-center">No model usage for this period</p>
+      ) : (
+        <div className="flex items-center gap-3">
+          <PieChart width={110} height={110}>
+            <Pie data={slices} dataKey="total_tokens" nameKey="label" cx="50%" cy="50%" innerRadius={28} outerRadius={52} paddingAngle={2}>
+              {slices.map((_, i) => (
+                <Cell key={i} fill={COLORS[i % COLORS.length]} stroke="transparent" />
+              ))}
+            </Pie>
+            <ReTooltip
+              contentStyle={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px', fontSize: '11px' }}
+              labelStyle={{ color: '#e4e4e7' }}
+              itemStyle={{ color: '#e4e4e7' }}
+              formatter={(value) => `${formatNumber(Number(value))} tokens`}
+            />
+          </PieChart>
+          <div className="flex-1 min-w-0 space-y-1">
+            {slices.map((m, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px] text-popover-foreground">
+                <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                <span className="truncate flex-1" title={m.label}>{m.label}</span>
+                <span className="text-muted-foreground tabular-nums shrink-0">
+                  {total > 0 ? Math.round((m.total_tokens / total) * 100) : 0}%
+                </span>
+                <span className="font-medium tabular-nums shrink-0 w-12 text-right">{formatNumber(m.total_tokens)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Info icon that opens the model-distribution panel on hover (with a small
+// close delay so moving the cursor from the icon into the panel keeps it open).
+function UserModelInfo({ username, range }: { username: string; range: UserStatsRange }) {
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelClose = () => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => setOpen(false), 120);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Model distribution for ${username}`}
+          className="text-muted-foreground hover:text-foreground transition-colors"
+          onMouseEnter={() => { cancelClose(); setOpen(true); }}
+          onMouseLeave={scheduleClose}
+        >
+          <BarChart3 className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="right"
+        className="w-80"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        onMouseEnter={cancelClose}
+        onMouseLeave={scheduleClose}
+      >
+        <UserModelDistribution username={username} range={range} />
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function UserStatsTable({
@@ -290,7 +407,12 @@ function UserStatsTable({
           <tbody>
             {users.slice(0, 10).map((user) => (
               <tr key={user.username} className="border-b border-border/50 hover:bg-accent/50">
-                <td className="px-4 py-2 font-mono text-xs">{user.username}</td>
+                <td className="px-4 py-2 font-mono text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate">{user.username}</span>
+                    <UserModelInfo username={user.username} range={range} />
+                  </div>
+                </td>
                 <td className="px-4 py-2 text-right text-xs">{user.total_requests.toLocaleString()}</td>
                 <td className="px-4 py-2 text-right text-xs">{formatNumber(user.total_prompt_tokens)}</td>
                 <td className="px-4 py-2 text-right text-xs">{formatNumber(user.total_completion_tokens)}</td>

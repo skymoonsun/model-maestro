@@ -199,6 +199,14 @@ export const usersApi = {
     adminFetch<TokenUsage[]>(`/admin/users/${username}/token-usage?period=${period}`),
   getModelUsage: (username: string, period = '7d') =>
     adminFetch<ModelUsage[]>(`/admin/users/${username}/model-usage?period=${period}`),
+  getUserModelUsage: (username: string, params?: { start_date?: string; end_date?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.start_date) query.set('start_date', params.start_date);
+    if (params?.end_date) query.set('end_date', params.end_date);
+    return adminFetch<ModelUsageResponse>(
+      `/admin/users/${encodeURIComponent(username)}/model-usage?${query.toString()}`
+    );
+  },
   // Node Access
   getNodes: (username: string) =>
     adminFetch<UserNodes>(`/admin/users/${username}/nodes`),
@@ -639,9 +647,15 @@ export interface TokenUsage {
 }
 
 export interface ModelUsage {
-  model: string;
+  model_name: string | null;
   total_tokens: number;
   request_count: number;
+}
+
+export interface ModelUsageResponse {
+  username: string;
+  model_usage: ModelUsage[];
+  period: { start_date: string | null; end_date: string | null };
 }
 
 export interface RequestLogResponse {
