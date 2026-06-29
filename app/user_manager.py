@@ -543,10 +543,11 @@ class UserManager:
             if has_all:
                 return {"has_all": True, "models": []}
 
+            # get_user_models already returns a list of model-name strings.
             user_models = await user_model_repo.get_user_models(user.id)
             return {
                 "has_all": False,
-                "models": [um.model_name for um in user_models]
+                "models": user_models
             }
 
     # ========================================================================
