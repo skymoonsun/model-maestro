@@ -245,8 +245,17 @@ export const modelMappingsApi = {
 };
 
 // ==================== Ollama Models ====================
+export interface ModelCatalogItem {
+  name: string;
+  kind: 'mapped' | 'unmapped' | 'group';
+}
+export interface ModelCatalogResponse {
+  models: ModelCatalogItem[];
+}
+
 export const ollamaModelsApi = {
   list: () => adminFetch<OllamaModel[]>('/admin/models/ollama'),
+  catalog: () => adminFetch<ModelCatalogResponse>('/admin/models/catalog'),
   show: (name: string) =>
     adminFetch<Record<string, unknown>>(`/admin/models/show?name=${encodeURIComponent(name)}`, { method: 'POST' }),
   pull: (name: string, onProgress: (data: Record<string, unknown>) => void) =>
