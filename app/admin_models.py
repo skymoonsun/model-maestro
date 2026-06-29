@@ -15,7 +15,7 @@ Endpoints:
 import httpx
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -40,6 +40,68 @@ router = APIRouter(prefix="/admin/models", tags=["Admin - Ollama Models"])
 def _get_ollama_url() -> str:
     """Ollama base URL'ini doner"""
     return get_settings().ollama_base_url
+
+
+# =============================================================================
+# Full Model Catalog (for access assignment)
+# =============================================================================
+
+@router.get("/catalog")
+async def list_model_catalog(admin: str = Depends(verify_admin)):
+    """
+    Full selectable model catalog for access assignment.
+
+    Mirrors what /v1/models and /api/tags expose to clients, but as an admin
+    superset that is NOT filtered by any single user's access. Includes:
+      - mapped display names
+      - unmapped real model names (models that have no mapping)
+      - catalog-visible model groups (active, list_in_catalog, >=1 active member)
+
+    Returns: {"models": [{"name": str, "kind": "mapped"|"unmapped"|"group"}]}
+    """
+    from app.node_manager import node_manager
+    from app.config import model_group_manager
+
+    await model_mapper.ensure_loaded()
+    await model_group_manager.ensure_loaded()
+
+    all_models_response = await node_manager.get_all_models_from_nodes()
+
+    items: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Real models from healthy nodes -> reverse-map to display names.
+    # Unmapped models surface under their original real name (same as /v1/models).
+    for model in (all_models_response.get("models") or []):
+        real_name = model.get("name") or model.get("model")
+        if not real_name:
+            continue
+        has_mapping = real_name in model_mapper._reverse_mappings
+        for display_name in model_mapper.get_all_display_names_for_real_name(real_name):
+            if display_name in seen:
+                continue
+            seen.add(display_name)
+            items.append({"name": display_name, "kind": "mapped" if has_mapping else "unmapped"})
+
+    # Catalog-visible groups (admin superset: ignore per-user access).
+    # Same criteria as get_visible_catalog_group_names() minus the user check.
+    for group_name, data in model_group_manager._groups.items():
+        group = data["group"]
+        if not group.is_active or not getattr(group, "list_in_catalog", False):
+            continue
+        member_names = [m.model_display_name for m in (data.get("members") or []) if m.is_active]
+        if not member_names:
+            continue
+        if group_name in seen:
+            continue
+        seen.add(group_name)
+        items.append({"name": group_name, "kind": "group"})
+
+    # Groups first, then alphabetical by name (case-insensitive).
+    kind_order = {"group": 0, "mapped": 1, "unmapped": 2}
+    items.sort(key=lambda x: (kind_order.get(x["kind"], 3), x["name"].lower()))
+
+    return {"models": items}
 
 
 # =============================================================================

@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'next/navigation';
-import { usersApi, modelMappingsApi, nodesApi } from '@/lib/api';
+import { usersApi, ollamaModelsApi, nodesApi } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -63,9 +63,9 @@ export default function UserDetailPage() {
         queryFn: () => usersApi.getModels(username),
     });
 
-    const { data: allMappings } = useQuery({
-        queryKey: ['model-mappings'],
-        queryFn: modelMappingsApi.list,
+    const { data: modelCatalog } = useQuery({
+        queryKey: ['model-catalog'],
+        queryFn: ollamaModelsApi.catalog,
     });
 
     const { data: limits } = useQuery({
@@ -357,17 +357,23 @@ export default function UserDetailPage() {
                                 <Switch checked={hasAllModels} onCheckedChange={setHasAllModels} />
                                 <span className="text-sm">Access to all models</span>
                             </div>
-                            {!hasAllModels && allMappings && (
+                            {!hasAllModels && modelCatalog && (
                                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                                    {allMappings.map((m) => (
-                                        <label key={m.display_name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-accent cursor-pointer">
+                                    {modelCatalog.models.map((m) => (
+                                        <label key={m.name} className="flex items-center gap-2 p-2 rounded-lg hover:bg-accent cursor-pointer">
                                             <input
                                                 type="checkbox"
-                                                checked={selectedModels.includes(m.display_name)}
-                                                onChange={() => toggleModel(m.display_name)}
+                                                checked={selectedModels.includes(m.name)}
+                                                onChange={() => toggleModel(m.name)}
                                                 className="rounded border-border"
                                             />
-                                            <span className="text-sm">{m.display_name}</span>
+                                            <span className="text-sm truncate">{m.name}</span>
+                                            {m.kind === 'group' && (
+                                                <Badge variant="outline" className="ml-auto text-[10px] px-1 py-0 text-violet-400 border-violet-400/30">group</Badge>
+                                            )}
+                                            {m.kind === 'unmapped' && (
+                                                <Badge variant="outline" className="ml-auto text-[10px] px-1 py-0 text-muted-foreground">unmapped</Badge>
+                                            )}
                                         </label>
                                     ))}
                                 </div>
