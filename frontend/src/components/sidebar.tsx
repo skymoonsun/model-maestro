@@ -19,6 +19,7 @@ import {
     FileText,
     Cog,
     BookOpen,
+    ScrollText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -58,6 +59,7 @@ const navigation: NavItem[] = [
             { label: 'Config', href: '/models/config', icon: Settings },
         ],
     },
+    { label: 'System Prompts', href: '/system-prompts', icon: ScrollText },
     {
         label: 'Grafana Config',
         href: '/grafana-config',

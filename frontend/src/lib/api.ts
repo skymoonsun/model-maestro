@@ -283,6 +283,40 @@ export const ollamaModelsApi = {
     ),
 };
 
+// ==================== System Prompts ====================
+export type SystemPromptScope = 'model' | 'mapping' | 'node' | 'group';
+
+export interface SystemPrompt {
+  id: number;
+  scope_type: SystemPromptScope;
+  scope_value: string;
+  prompt: string;
+  priority: number;
+  is_active: boolean;
+  description?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface SystemPromptCreate {
+  scope_type: SystemPromptScope;
+  scope_value: string;
+  prompt: string;
+  priority?: number;
+  is_active?: boolean;
+  description?: string | null;
+}
+
+export const systemPromptsApi = {
+  list: () => adminFetch<SystemPrompt[]>('/admin/system-prompts'),
+  create: (body: SystemPromptCreate) =>
+    adminFetch<SystemPrompt>('/admin/system-prompts', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: number, body: Partial<SystemPromptCreate>) =>
+    adminFetch<SystemPrompt>(`/admin/system-prompts/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  delete: (id: number) =>
+    adminFetch<void>(`/admin/system-prompts/${id}`, { method: 'DELETE' }),
+};
+
 // ==================== vLLM Models ====================
 export const vllmModelsApi = {
   list: () => adminFetch<VllmModel[]>('/admin/models/vllm'),
