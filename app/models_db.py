@@ -445,3 +445,38 @@ class ModelGroupMember(Base):
     def __repr__(self):
         return f"<ModelGroupMember(group_id={self.group_id}, model='{self.model_display_name}', priority={self.priority}, fallback={self.is_fallback})>"
 
+
+class SystemPrompt(Base):
+    """
+    Admin-defined system prompt injected transparently into matching requests.
+
+    scope_type identifies which dimension the prompt targets and scope_value is
+    the matching key for that dimension:
+      - 'mapping' -> ModelMapping.display_name
+      - 'model'   -> real model name (ModelMapping.real_name / raw model name)
+      - 'group'   -> ModelGroup.name
+      - 'node'    -> OllamaNode.name / code / str(id)
+
+    On each text-generation request every matching prompt is stacked (see
+    system_prompt_service) and merged into the request's system message.
+    """
+    __tablename__ = "system_prompts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope_type = Column(String(20), nullable=False, index=True)  # 'model' | 'mapping' | 'node' | 'group'
+    scope_value = Column(String(255), nullable=False, index=True)
+    prompt = Column(Text, nullable=False)
+    priority = Column(Integer, default=0, nullable=False, server_default='0')  # higher = applied earlier
+    is_active = Column(Boolean, default=True, nullable=False, server_default='true')
+    description = Column(Text, nullable=True)  # admin note (optional)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # One prompt per (scope_type, scope_value); stacking happens across scope types.
+    __table_args__ = (
+        UniqueConstraint('scope_type', 'scope_value', name='uq_system_prompt_scope'),
+    )
+
+    def __repr__(self):
+        return f"<SystemPrompt(scope={self.scope_type}:{self.scope_value}, priority={self.priority}, active={self.is_active})>"
+

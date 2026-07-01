@@ -2367,6 +2367,28 @@ class OllamaProxy:
             logger.warning(f"[LB] Error resolving node id for base_url: {e}")
         return None
 
+    async def _resolve_selected_node(self, base_url: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Resolve the active node's identity (id/name/code) from its ``base_url``.
+
+        Same DB round-trip as ``_resolve_selected_node_id`` but returns the extra
+        fields needed for node-scoped system prompt matching.
+        """
+        if not base_url:
+            return None
+        try:
+            from app.database import async_session_maker
+            from app.repositories.node_repository import NodeRepository
+
+            async with async_session_maker() as session:
+                node_repo = NodeRepository(session)
+                nodes = await node_repo.list_active()
+                for n in nodes:
+                    if n.base_url == base_url:
+                        return {"id": n.id, "name": n.name, "code": n.code}
+        except Exception as e:
+            logger.warning(f"[LB] Error resolving node identity for base_url: {e}")
+        return None
+
     async def _rebind_body_to_node(
         self,
         body: Dict[str, Any],
@@ -2602,8 +2624,10 @@ class OllamaProxy:
         if base_url:
             tried_nodes.add(base_url)
 
-        # Resolve node_id for access control and node-scoped model mappings
-        selected_node_id = await self._resolve_selected_node_id(base_url)
+        # Resolve node identity (id/name/code) for access control, node-scoped
+        # model mappings and node-scoped system prompt injection.
+        selected_node = await self._resolve_selected_node(base_url)
+        selected_node_id = selected_node["id"] if selected_node else None
 
         # ============================================================
         # NODE ACCESS CONTROL
@@ -2693,6 +2717,26 @@ class OllamaProxy:
         mapped_model = data.get('model') or data.get('name') if data else None
         if data and mapped_model:
             data = self._strip_images_from_messages(data, mapped_model)
+
+        # Step 3.5: Inject admin-defined system prompts (model/mapping/node/group
+        # scoped). Transparent to the end user; applied only to text-generation
+        # endpoints. Matches on: mapping=display_name (post group-resolution),
+        # model=real_name, group=original group, node=selected node id/name/code.
+        if data and endpoint in ("/v1/chat/completions", "/api/chat", "/api/generate"):
+            mapping_display = routing_snapshot.get('model') or routing_snapshot.get('name')
+            try:
+                from app.services.system_prompt_service import system_prompt_service
+                data = await system_prompt_service.apply_to_request(
+                    data,
+                    mapping=mapping_display,
+                    model=mapped_model,
+                    group=original_group,
+                    node_name=selected_node["name"] if selected_node else None,
+                    node_code=selected_node["code"] if selected_node else None,
+                    node_id=selected_node_id,
+                )
+            except Exception as e:
+                logger.warning(f"[SystemPrompt] injection skipped due to error: {e}")
 
         # Validate data for POST requests
         if method.upper() == "POST" and not data:

@@ -128,6 +128,7 @@ CACHE_KEYS = {
     "MODEL_NODES": "model_nodes:{model_name}",
     "NODE_LOADS": "node_loads",
     "ACTIVE_NODES": "active_nodes",
+    "SYSTEM_PROMPTS": "system_prompts:active",
 }
 
 # Cache TTL (Time To Live) in seconds
@@ -142,4 +143,5 @@ CACHE_TTL = {
     "MODEL_NODES": 120,     # 2 minutes — node list per model
     "NODE_LOADS": 30,       # 30 seconds — load metrics change fast
     "ACTIVE_NODES": 120,    # 2 minutes — active node list
+    "SYSTEM_PROMPTS": 600,  # 10 minutes — safety-net TTL; invalidated on admin edits
 }
