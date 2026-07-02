@@ -2,7 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-    systemPromptsApi, modelMappingsApi, modelGroupsApi, nodesApi,
+    systemPromptsApi, modelMappingsApi, modelGroupsApi, nodesApi, usersApi,
     type SystemPrompt, type SystemPromptScope,
 } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,21 +16,28 @@ import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
-    Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table';
-import {
     Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
     Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
+import {
+    DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
+    type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+    arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable,
+    verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { toast } from 'sonner';
-import { useState, useMemo } from 'react';
-import { Plus, Trash2, Pencil, Check, ChevronsUpDown } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { Plus, Trash2, Pencil, Check, ChevronsUpDown, GripVertical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const SCOPES: { value: SystemPromptScope; label: string; hint: string }[] = [
+    { value: 'user', label: 'User', hint: 'username (top of the hierarchy)' },
     { value: 'mapping', label: 'Mapping', hint: 'display_name (a specific model)' },
     { value: 'model', label: 'Model', hint: 'real_name (underlying model)' },
     { value: 'group', label: 'Group', hint: 'group name' },
@@ -97,12 +104,128 @@ function ScopeValueCombobox({
 
 function scopeBadge(scope: SystemPromptScope) {
     const map: Record<SystemPromptScope, string> = {
+        user: 'text-rose-400 border-rose-400/30 bg-rose-400/10',
         mapping: 'text-blue-400 border-blue-400/30 bg-blue-400/10',
         model: 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10',
         group: 'text-violet-400 border-violet-400/30 bg-violet-400/10',
         node: 'text-orange-400 border-orange-400/30 bg-orange-400/10',
     };
     return <Badge variant="outline" className={`${map[scope]} text-xs`}>{scope}</Badge>;
+}
+
+function SortablePromptRow({
+    prompt, draggable, onToggle, onEdit, onDelete,
+}: {
+    prompt: SystemPrompt;
+    draggable: boolean;
+    onToggle: (p: SystemPrompt) => void;
+    onEdit: (p: SystemPrompt) => void;
+    onDelete: (id: number) => void;
+}) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: prompt.id });
+    const style = { transform: CSS.Transform.toString(transform), transition };
+    return (
+        <div
+            ref={setNodeRef}
+            style={style}
+            className={cn(
+                'flex items-center gap-3 px-4 py-2 border-t border-border/40',
+                isDragging && 'opacity-70 bg-accent/40 relative z-10',
+            )}
+        >
+            {draggable ? (
+                <button
+                    {...attributes}
+                    {...listeners}
+                    className="cursor-grab touch-none text-muted-foreground hover:text-foreground shrink-0"
+                    aria-label="Drag to reorder"
+                >
+                    <GripVertical className="h-4 w-4" />
+                </button>
+            ) : (
+                <span className="w-4 shrink-0" />
+            )}
+            <div className="flex-1 min-w-0">
+                <p className="text-xs text-muted-foreground line-clamp-2" title={prompt.prompt}>{prompt.prompt}</p>
+                {prompt.description && (
+                    <p className="text-[11px] text-muted-foreground/70 italic mt-0.5">{prompt.description}</p>
+                )}
+            </div>
+            <Badge variant="outline" className="text-[10px] tabular-nums shrink-0">prio {prompt.priority}</Badge>
+            <Switch checked={prompt.is_active} onCheckedChange={() => onToggle(prompt)} />
+            <div className="flex items-center gap-1 shrink-0">
+                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => onEdit(prompt)}>
+                    <Pencil className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                    size="icon" variant="ghost" className="h-8 w-8 text-destructive"
+                    onClick={() => onDelete(prompt.id)}
+                >
+                    <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+            </div>
+        </div>
+    );
+}
+
+/** One (scope_type, scope_value) target: its prompts stack top-first; drag to reorder. */
+function PromptTargetGroup({
+    prompts, onReorder, onToggle, onEdit, onDelete,
+}: {
+    prompts: SystemPrompt[];
+    onReorder: (ids: number[]) => void;
+    onToggle: (p: SystemPrompt) => void;
+    onEdit: (p: SystemPrompt) => void;
+    onDelete: (id: number) => void;
+}) {
+    const [order, setOrder] = useState<number[]>(() => prompts.map((p) => p.id));
+    useEffect(() => { setOrder(prompts.map((p) => p.id)); }, [prompts]);
+
+    const sensors = useSensors(
+        useSensor(PointerSensor),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    );
+
+    const byId = new Map(prompts.map((p) => [p.id, p]));
+    const ordered = order.map((id) => byId.get(id)).filter(Boolean) as SystemPrompt[];
+    const first = prompts[0];
+
+    const onDragEnd = (e: DragEndEvent) => {
+        const { active, over } = e;
+        if (over && active.id !== over.id) {
+            const next = arrayMove(order, order.indexOf(Number(active.id)), order.indexOf(Number(over.id)));
+            setOrder(next);
+            onReorder(next);
+        }
+    };
+
+    return (
+        <div className="border-b border-border/60 last:border-0 pb-2">
+            <div className="flex items-center gap-2 px-4 pt-3 pb-1">
+                {scopeBadge(first.scope_type)}
+                <span className="font-mono text-xs truncate">{first.scope_value}</span>
+                {prompts.length > 1 && (
+                    <span className="text-[11px] text-muted-foreground/70 ml-auto shrink-0">
+                        drag to reorder — top is injected first
+                    </span>
+                )}
+            </div>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+                <SortableContext items={order} strategy={verticalListSortingStrategy}>
+                    {ordered.map((p) => (
+                        <SortablePromptRow
+                            key={p.id}
+                            prompt={p}
+                            draggable={prompts.length > 1}
+                            onToggle={onToggle}
+                            onEdit={onEdit}
+                            onDelete={onDelete}
+                        />
+                    ))}
+                </SortableContext>
+            </DndContext>
+        </div>
+    );
 }
 
 interface FormState {
@@ -133,9 +256,12 @@ export default function SystemPromptsPage() {
     const { data: mappings } = useQuery({ queryKey: ['model-mappings'], queryFn: modelMappingsApi.list });
     const { data: groups } = useQuery({ queryKey: ['model-groups'], queryFn: modelGroupsApi.list });
     const { data: nodes } = useQuery({ queryKey: ['nodes'], queryFn: () => nodesApi.list() });
+    const { data: users } = useQuery({ queryKey: ['users'], queryFn: usersApi.list });
 
     const suggestions = useMemo<string[]>(() => {
         switch (form.scope_type) {
+            case 'user':
+                return (users ?? []).map((u) => u.username);
             case 'mapping':
                 return (mappings ?? []).map((m) => m.display_name);
             case 'model':
@@ -147,7 +273,7 @@ export default function SystemPromptsPage() {
             default:
                 return [];
         }
-    }, [form.scope_type, mappings, groups, nodes]);
+    }, [form.scope_type, mappings, groups, nodes, users]);
 
     const invalidate = () => qc.invalidateQueries({ queryKey: ['system-prompts'] });
 
@@ -183,6 +309,27 @@ export default function SystemPromptsPage() {
         onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Delete failed'),
     });
 
+    const reorderMutation = useMutation({
+        mutationFn: (ids: number[]) => systemPromptsApi.reorder(ids),
+        onSuccess: () => { invalidate(); toast.success('Order saved'); },
+        onError: (e: unknown) => {
+            invalidate(); // roll back optimistic local order
+            toast.error(e instanceof Error ? e.message : 'Reorder failed');
+        },
+    });
+
+    // Group contiguously by (scope_type, scope_value) — server returns them grouped.
+    const groupedPrompts = useMemo(() => {
+        const groups: { key: string; items: SystemPrompt[] }[] = [];
+        for (const p of prompts ?? []) {
+            const key = `${p.scope_type} ${p.scope_value}`;
+            const last = groups[groups.length - 1];
+            if (last && last.key === key) last.items.push(p);
+            else groups.push({ key, items: [p] });
+        }
+        return groups;
+    }, [prompts]);
+
     const openCreate = () => { setForm(EMPTY_FORM); setDialogOpen(true); };
     const openEdit = (p: SystemPrompt) => {
         setForm({
@@ -217,54 +364,18 @@ export default function SystemPromptsPage() {
                             No system prompts yet. Add one with &quot;New Prompt&quot;.
                         </p>
                     ) : (
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead className="w-24">Scope</TableHead>
-                                    <TableHead>Target</TableHead>
-                                    <TableHead>Prompt</TableHead>
-                                    <TableHead className="w-20 text-right">Priority</TableHead>
-                                    <TableHead className="w-20 text-center">Active</TableHead>
-                                    <TableHead className="w-24 text-right">Actions</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {prompts.map((p) => (
-                                    <TableRow key={p.id}>
-                                        <TableCell>{scopeBadge(p.scope_type)}</TableCell>
-                                        <TableCell className="font-mono text-xs">{p.scope_value}</TableCell>
-                                        <TableCell className="max-w-md">
-                                            <span className="text-xs text-muted-foreground line-clamp-2" title={p.prompt}>
-                                                {p.prompt}
-                                            </span>
-                                            {p.description && (
-                                                <span className="block text-[11px] text-muted-foreground/70 italic mt-0.5">
-                                                    {p.description}
-                                                </span>
-                                            )}
-                                        </TableCell>
-                                        <TableCell className="text-right text-xs tabular-nums">{p.priority}</TableCell>
-                                        <TableCell className="text-center">
-                                            <Switch checked={p.is_active} onCheckedChange={() => toggleMutation.mutate(p)} />
-                                        </TableCell>
-                                        <TableCell className="text-right">
-                                            <div className="flex items-center justify-end gap-1">
-                                                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(p)}>
-                                                    <Pencil className="h-3.5 w-3.5" />
-                                                </Button>
-                                                <Button
-                                                    size="icon" variant="ghost"
-                                                    className="h-8 w-8 text-destructive"
-                                                    onClick={() => { if (confirm('Delete this system prompt?')) deleteMutation.mutate(p.id); }}
-                                                >
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </Button>
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
+                        <div>
+                            {groupedPrompts.map((g) => (
+                                <PromptTargetGroup
+                                    key={g.key}
+                                    prompts={g.items}
+                                    onReorder={(ids) => reorderMutation.mutate(ids)}
+                                    onToggle={(p) => toggleMutation.mutate(p)}
+                                    onEdit={openEdit}
+                                    onDelete={(id) => { if (confirm('Delete this system prompt?')) deleteMutation.mutate(id); }}
+                                />
+                            ))}
+                        </div>
                     )}
                 </CardContent>
             </Card>

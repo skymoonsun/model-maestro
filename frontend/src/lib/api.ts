@@ -284,7 +284,7 @@ export const ollamaModelsApi = {
 };
 
 // ==================== System Prompts ====================
-export type SystemPromptScope = 'model' | 'mapping' | 'node' | 'group';
+export type SystemPromptScope = 'user' | 'model' | 'mapping' | 'node' | 'group';
 
 export interface SystemPrompt {
   id: number;
@@ -309,6 +309,10 @@ export interface SystemPromptCreate {
 
 export const systemPromptsApi = {
   list: () => adminFetch<SystemPrompt[]>('/admin/system-prompts'),
+  reorder: (ids: number[]) =>
+    adminFetch<SystemPrompt[]>('/admin/system-prompts/reorder', {
+      method: 'PUT', body: JSON.stringify({ ids }),
+    }),
   create: (body: SystemPromptCreate) =>
     adminFetch<SystemPrompt>('/admin/system-prompts', { method: 'POST', body: JSON.stringify(body) }),
   update: (id: number, body: Partial<SystemPromptCreate>) =>

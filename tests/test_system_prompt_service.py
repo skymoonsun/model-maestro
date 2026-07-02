@@ -53,6 +53,36 @@ class TestMatch:
         m = S._match(prompts, mapping="d", model="m", group="g", node_keys={"n"})
         assert [x["prompt"] for x in m] == ["MAP", "NODE", "GROUP", "MODEL"]
 
+    def test_user_scope_matches_username(self):
+        prompts = [_p("user", "alice", "USER_PROMPT"), _p("user", "bob", "OTHER")]
+        m = S._match(prompts, mapping=None, model=None, group=None, node_keys=set(), user="alice")
+        assert [x["prompt"] for x in m] == ["USER_PROMPT"]
+
+    def test_user_scope_not_matched_without_username(self):
+        prompts = [_p("user", "alice", "USER_PROMPT")]
+        m = S._match(prompts, mapping=None, model=None, group=None, node_keys=set(), user=None)
+        assert m == []
+
+    def test_multiple_prompts_same_target_stack_by_priority(self):
+        prompts = [
+            _p("model", "real", "SECOND", priority=1),
+            _p("model", "real", "FIRST", priority=2),
+            _p("model", "real", "THIRD", priority=0),
+        ]
+        m = S._match(prompts, mapping=None, model="real", group=None, node_keys=set())
+        assert [x["prompt"] for x in m] == ["FIRST", "SECOND", "THIRD"]
+
+    def test_user_sits_at_top_of_hierarchy(self):
+        prompts = [
+            _p("mapping", "d", "MAP"),
+            _p("node", "n", "NODE"),
+            _p("user", "alice", "USER"),
+            _p("group", "g", "GROUP"),
+            _p("model", "m", "MODEL"),
+        ]
+        m = S._match(prompts, mapping="d", model="m", group="g", node_keys={"n"}, user="alice")
+        assert [x["prompt"] for x in m] == ["USER", "NODE", "GROUP", "MODEL", "MAP"]
+
 
 # ----------------------------------------------------------------- _build_block
 
@@ -137,3 +167,12 @@ class TestApplyToRequest:
         data = {"input": "embed me"}  # no messages / prompt
         out = self._run(svc.apply_to_request(data, model="real"))
         assert out is data
+
+    def test_user_prompt_injected_first(self, monkeypatch):
+        svc = self._service_with(
+            [_p("model", "real", "MODEL_POLICY"), _p("user", "alice", "USER_POLICY")],
+            monkeypatch,
+        )
+        data = {"messages": [{"role": "user", "content": "hi"}]}
+        out = self._run(svc.apply_to_request(data, model="real", user="alice"))
+        assert out["messages"][0]["content"] == "USER_POLICY\n\nMODEL_POLICY"

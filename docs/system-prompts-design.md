@@ -32,6 +32,8 @@
 | 7 | Node eşleşmesi | name / code / id'den biri | sadece id | Esneklik (OQ2) |
 | 8 | Kapsam | Tüm metin uçları (chat + generate) | sadece chat | Tutarlılık (OQ1) |
 | 9 | Navigation | Ayrı üst-seviye "System Prompts" | Models altı sekme | Çapraz konu, keşfedilebilirlik |
+| 10 | User scope (v1.1) | 5. scope: `user` → `User.username`, hiyerarşinin **en üstünde** (rank: user → node → group → model → mapping) | user'ı mapping'den sonraya koymak | Kullanıcı-özel politika tüm diğer katmanların önüne geçmeli; şema değişikliği gerekmedi (`scope_type` serbest string) |
+| 11 | Çoklu prompt + drag reorder (v1.2) | `UNIQUE(scope_type, scope_value)` kaldırıldı; aynı hedefe birden çok prompt stacklenir, sıra `PUT /reorder` ile (dnd-kit sürükle-bırak). Reorder, grubun mevcut priority değerleri distinct ise onları permüte eder (cross-scope ilişkiler korunur), değilse len-1..0 atar | tek kayıt kısıtını korumak | Hedef başına katmanlı prompt kompozisyonu talep edildi; v1'deki "gerekirse UNIQUE kaldırılır" notu devreye girdi |
 
 ## Final Design
 

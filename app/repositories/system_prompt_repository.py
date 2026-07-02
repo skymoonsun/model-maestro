@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models_db import SystemPrompt
 
 # Allowed scope types for validation (kept here as the single source of truth).
-VALID_SCOPE_TYPES = ("model", "mapping", "node", "group")
+VALID_SCOPE_TYPES = ("user", "model", "mapping", "node", "group")
 
 
 class SystemPromptRepository:
@@ -17,12 +17,14 @@ class SystemPromptRepository:
         self.session = session
 
     async def list_all(self) -> List[SystemPrompt]:
-        """Return all prompts ordered for admin display (scope_type, priority desc)."""
+        """Return all prompts grouped for admin display: same (scope_type,
+        scope_value) rows contiguous, ordered by priority desc within a group."""
         result = await self.session.execute(
             select(SystemPrompt).order_by(
                 SystemPrompt.scope_type,
-                SystemPrompt.priority.desc(),
                 SystemPrompt.scope_value,
+                SystemPrompt.priority.desc(),
+                SystemPrompt.id,
             )
         )
         return list(result.scalars().all())
@@ -40,14 +42,18 @@ class SystemPromptRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_by_scope(self, scope_type: str, scope_value: str) -> Optional[SystemPrompt]:
+    async def get_by_ids(self, prompt_ids: List[int]) -> List[SystemPrompt]:
         result = await self.session.execute(
-            select(SystemPrompt).where(
-                SystemPrompt.scope_type == scope_type,
-                SystemPrompt.scope_value == scope_value,
-            )
+            select(SystemPrompt).where(SystemPrompt.id.in_(prompt_ids))
         )
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
+
+    async def set_priorities(self, priorities: dict) -> None:
+        """Bulk-assign priorities: {prompt_id: priority}. Caller commits."""
+        rows = await self.get_by_ids(list(priorities.keys()))
+        for row in rows:
+            row.priority = priorities[row.id]
+        await self.session.flush()
 
     async def create(
         self,

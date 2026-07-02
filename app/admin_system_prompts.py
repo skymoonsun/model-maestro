@@ -33,7 +33,7 @@ router = APIRouter(prefix="/admin/system-prompts", tags=["Admin - System Prompts
 # ============================================================================
 
 class SystemPromptCreate(BaseModel):
-    scope_type: str = Field(..., description="model | mapping | node | group")
+    scope_type: str = Field(..., description="user | model | mapping | node | group")
     scope_value: str = Field(..., min_length=1, max_length=255)
     prompt: str = Field(..., min_length=1)
     priority: int = 0
@@ -48,6 +48,10 @@ class SystemPromptUpdate(BaseModel):
     priority: Optional[int] = None
     is_active: Optional[bool] = None
     description: Optional[str] = None
+
+
+class SystemPromptReorder(BaseModel):
+    ids: List[int] = Field(..., min_length=1, description="Prompt ids in desired order, first = highest priority")
 
 
 class SystemPromptResponse(BaseModel):
@@ -109,22 +113,56 @@ async def list_system_prompts(admin: str = Depends(verify_admin)):
         return [_to_response(r) for r in rows]
 
 
+@router.put("/reorder", response_model=List[SystemPromptResponse])
+async def reorder_system_prompts(
+    body: SystemPromptReorder,
+    request: Request,
+    admin: str = Depends(verify_admin),
+):
+    """
+    Reorder prompts by drag-and-drop: ``ids`` in desired order (first = highest).
+
+    Reuses the group's existing priority values (sorted desc) when they are
+    distinct, so cross-scope priority relationships are preserved; otherwise
+    assigns a fresh descending sequence (len-1 .. 0).
+    """
+    async with async_session_maker() as session:
+        repo = SystemPromptRepository(session)
+        rows = await repo.get_by_ids(body.ids)
+        if len(rows) != len(set(body.ids)):
+            raise HTTPException(status_code=404, detail="One or more prompts not found")
+
+        current = sorted((r.priority or 0 for r in rows), reverse=True)
+        if len(set(current)) == len(current):
+            new_priorities = current  # keep the same value set, permuted
+        else:
+            new_priorities = list(range(len(rows) - 1, -1, -1))
+
+        mapping = {pid: new_priorities[i] for i, pid in enumerate(body.ids)}
+        await repo.set_priorities(mapping)
+        await _audit(session, "reorder_system_prompts", None, {"order": body.ids}, request)
+        await session.commit()
+
+        reordered = await repo.get_by_ids(body.ids)
+
+    await system_prompt_service.invalidate_cache()
+    reordered.sort(key=lambda r: body.ids.index(r.id))
+    return [_to_response(r) for r in reordered]
+
+
 @router.post("", response_model=SystemPromptResponse, status_code=201)
 async def create_system_prompt(
     body: SystemPromptCreate,
     request: Request,
     admin: str = Depends(verify_admin),
 ):
-    """Create a system prompt for a (scope_type, scope_value) target."""
+    """Create a system prompt for a (scope_type, scope_value) target.
+
+    Multiple prompts may target the same scope; they stack in priority order.
+    """
     _validate_scope_type(body.scope_type)
     async with async_session_maker() as session:
         repo = SystemPromptRepository(session)
-        existing = await repo.get_by_scope(body.scope_type, body.scope_value)
-        if existing:
-            raise HTTPException(
-                status_code=409,
-                detail=f"A system prompt already exists for {body.scope_type}:{body.scope_value}",
-            )
         row = await repo.create(
             scope_type=body.scope_type,
             scope_value=body.scope_value,
@@ -158,17 +196,6 @@ async def update_system_prompt(
         row = await repo.get_by_id(prompt_id)
         if not row:
             raise HTTPException(status_code=404, detail="System prompt not found")
-
-        # If the scope target changes, ensure it stays unique.
-        new_type = body.scope_type or row.scope_type
-        new_value = body.scope_value or row.scope_value
-        if (new_type, new_value) != (row.scope_type, row.scope_value):
-            clash = await repo.get_by_scope(new_type, new_value)
-            if clash and clash.id != row.id:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"A system prompt already exists for {new_type}:{new_value}",
-                )
 
         row = await repo.update(
             row,
