@@ -2734,6 +2734,7 @@ class OllamaProxy:
                     node_name=selected_node["name"] if selected_node else None,
                     node_code=selected_node["code"] if selected_node else None,
                     node_id=selected_node_id,
+                    user=username,
                 )
             except Exception as e:
                 logger.warning(f"[SystemPrompt] injection skipped due to error: {e}")

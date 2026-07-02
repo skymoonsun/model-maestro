@@ -2,10 +2,11 @@
 System prompt service — transparent, admin-defined system prompt injection.
 
 On each text-generation request the proxy calls ``apply_to_request`` with the
-resolved request context (mapping display name, real model name, group name and
-selected node identity). Every active prompt whose scope matches is collected,
-ordered (priority desc, then scope breadth node → group → model → mapping) and
-merged into the request's system message.
+resolved request context (requesting username, mapping display name, real model
+name, group name and selected node identity). Every active prompt whose scope
+matches is collected, ordered (priority desc, then scope rank user → node →
+group → model → mapping — user sits at the top of the hierarchy) and merged
+into the request's system message.
 
 Active prompts are cached in Redis (single key) and invalidated on admin edits,
 so the hot path costs at most one Redis GET. Redis being unavailable degrades
@@ -17,8 +18,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Broad → specific ordering used as the tie-breaker when priorities are equal.
-_SCOPE_RANK = {"node": 0, "group": 1, "model": 2, "mapping": 3}
+# Ordering used as the tie-breaker when priorities are equal. `user` sits at the
+# top of the hierarchy (applied first), then broad → specific for the rest.
+_SCOPE_RANK = {"user": 0, "node": 1, "group": 2, "model": 3, "mapping": 4}
 
 
 class SystemPromptService:
@@ -83,14 +85,17 @@ class SystemPromptService:
         model: Optional[str],
         group: Optional[str],
         node_keys: set,
+        user: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Return prompts whose scope matches, ordered priority desc then breadth."""
+        """Return prompts whose scope matches, ordered priority desc then rank."""
         matched: List[Dict[str, Any]] = []
         for p in prompts:
             st, sv = p.get("scope_type"), p.get("scope_value")
             if not sv:
                 continue
-            if st == "mapping" and mapping is not None and sv == mapping:
+            if st == "user" and user is not None and sv == user:
+                matched.append(p)
+            elif st == "mapping" and mapping is not None and sv == mapping:
                 matched.append(p)
             elif st == "model" and model is not None and sv == model:
                 matched.append(p)
@@ -144,6 +149,7 @@ class SystemPromptService:
         node_name: Optional[str] = None,
         node_code: Optional[str] = None,
         node_id: Optional[Any] = None,
+        user: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Inject matching system prompts into ``data`` and return the (possibly new)
@@ -167,14 +173,14 @@ class SystemPromptService:
             return data
 
         node_keys = {str(v) for v in (node_name, node_code, node_id) if v not in (None, "")}
-        matched = self._match(prompts, mapping, model, group, node_keys)
+        matched = self._match(prompts, mapping, model, group, node_keys, user=user)
         block = self._build_block(matched)
         if not block:
             return data
 
         logger.debug(
             f"[SystemPrompt] injecting {len(matched)} prompt(s) "
-            f"(mapping={mapping}, model={model}, group={group})"
+            f"(user={user}, mapping={mapping}, model={model}, group={group})"
         )
         return self._merge_into_data(data, block)
 
