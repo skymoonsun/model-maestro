@@ -1134,13 +1134,14 @@ class OllamaProxy:
                 rsnap[snap_key] = v
 
         fb_display = current_data.get("model") or current_data.get("name")
-        fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
+        fb_allowed, fb_overrides = self._prepare_routing_allowed(current_data, fb_display)
         new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
             fb_display or fallback_model,
             exclude_scoped=exclude_scoped,
             allowed_node_ids=fb_allowed,
             routing_catalog_names=routing_catalog_names,
             strict_allowed_nodes=bool(fb_allowed),
+            node_priority_overrides=fb_overrides,
         )
         if (
             not bypass_node_access
@@ -1800,6 +1801,24 @@ class OllamaProxy:
             Next fallback model display name, or None if no fallback available
         """
         return model_group_manager.get_fallback(group_name, failed_model, tried_models)
+
+    @staticmethod
+    def _strip_nonpositive_token_limits(data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Drop max_tokens / max_completion_tokens when <= 0.
+
+        Some clients (e.g. Kilo Code) send ``max_tokens: 0`` meaning "unset";
+        Ollama rejects it with 400 "max_tokens must be positive", which would
+        otherwise burn node retries on a request that can never succeed there.
+        """
+        if not isinstance(data, dict):
+            return data
+        for key in ("max_tokens", "max_completion_tokens"):
+            value = data.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value <= 0:
+                data.pop(key)
+                logger.info(f"[Normalize] removed non-positive {key}={value}")
+        return data
 
     @staticmethod
     def _strip_images_from_messages(data: Dict[str, Any], model_name: str) -> Dict[str, Any]:
@@ -2505,6 +2524,8 @@ class OllamaProxy:
                 if isinstance(options, dict) and options.get(key) == "minimal":
                     options[key] = "low"
                     logger.debug(f"[Normalize] {key} 'minimal' -> 'low' in options")
+            # Kilo Code & friends send max_tokens=0 ("unset"); Ollama 400s on it.
+            data = self._strip_nonpositive_token_limits(data)
 
         # Track original model name and group for failover
         original_model = None
@@ -3801,12 +3822,13 @@ class OllamaProxy:
                                     rsnap[snap_key] = v
 
                             fb_display = current_data.get('model') or current_data.get('name')
-                            fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
+                            fb_allowed, fb_overrides = self._prepare_routing_allowed(current_data, fb_display)
                             new_base_url, new_api_key, _, _, _ = await self._select_node_url(
                                 fb_display or fallback_model,
                                 exclude_scoped=exclude_scoped,
                                 allowed_node_ids=fb_allowed,
                                 routing_catalog_names=routing_catalog_names,
+                                node_priority_overrides=fb_overrides,
                             )
                             if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                                 logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
@@ -4313,12 +4335,13 @@ class OllamaProxy:
                                 rsnap[snap_key] = v
 
                         fb_display = current_data.get('model') or current_data.get('name')
-                        fb_allowed = self._prepare_routing_allowed(current_data, fb_display)
+                        fb_allowed, fb_overrides = self._prepare_routing_allowed(current_data, fb_display)
                         new_base_url, new_api_key, _, _, _ = await self._select_node_url(
                             fb_display or fallback_model,
                             exclude_scoped=exclude_scoped,
                             allowed_node_ids=fb_allowed,
                             routing_catalog_names=routing_catalog_names,
+                            node_priority_overrides=fb_overrides,
                         )
                         if not bypass_node_access and new_base_url and username and not await self._check_user_node_access(username, new_base_url):
                             logger.warning(f"[FAILOVER] User '{username}' denied access to fallback node {new_base_url}, skipping")
