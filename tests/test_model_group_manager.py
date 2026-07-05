@@ -396,3 +396,62 @@ class TestModelGroupManager:
 
         result = manager.get_group_info("nonexistent")
         assert result is None
+
+    # =========================================================================
+    # get_member_by_display_name tests
+    #
+    # Used after a model-group fallback picks the next member (get_fallback /
+    # get_fallback_413 return only the display-name string) so the fallback
+    # path can fetch THAT member's own preferred_node_ids/node_priority_overrides
+    # — without this, node selection had no restriction for a fallback member
+    # and fell back to routing_catalog_names' whole-group union pool, which can
+    # include nodes that only host a completely different member.
+    # =========================================================================
+
+    def test_get_member_by_display_name_found(self, manager, mock_group_data):
+        manager._groups["test-group"] = mock_group_data
+
+        result = manager.get_member_by_display_name("test-group", "model-b")
+        assert result is mock_group_data["members"][1]
+
+    def test_get_member_by_display_name_unknown_member(self, manager, mock_group_data):
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_member_by_display_name("test-group", "nonexistent-model") is None
+
+    def test_get_member_by_display_name_unknown_group(self, manager, mock_group_data):
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_member_by_display_name("nonexistent-group", "model-a") is None
+
+    # =========================================================================
+    # get_max_failover_retries tests
+    #
+    # Lets a group override proxy.py's DEFAULT_MAX_FAILOVER_RETRIES. NULL/<=0/
+    # unknown-group/no-group must all fall back to the caller-supplied default
+    # so existing (non-group or unconfigured) behavior is unchanged.
+    # =========================================================================
+
+    def test_uses_group_override_when_positive(self, manager, mock_group_data):
+        mock_group_data["group"].max_failover_retries = 10
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_max_failover_retries("test-group", default=5) == 10
+
+    def test_falls_back_when_none(self, manager, mock_group_data):
+        mock_group_data["group"].max_failover_retries = None
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_max_failover_retries("test-group", default=5) == 5
+
+    def test_falls_back_when_non_positive(self, manager, mock_group_data):
+        mock_group_data["group"].max_failover_retries = 0
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_max_failover_retries("test-group", default=5) == 5
+
+    def test_falls_back_when_no_group_name(self, manager):
+        assert manager.get_max_failover_retries(None, default=5) == 5
+
+    def test_falls_back_when_unknown_group(self, manager):
+        assert manager.get_max_failover_retries("nonexistent-group", default=5) == 5

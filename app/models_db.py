@@ -404,6 +404,9 @@ class ModelGroup(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     list_in_catalog = Column(Boolean, default=False, nullable=False, server_default='false')
     priority = Column(Integer, default=0, nullable=False, server_default='0')
+    # Overrides proxy.py's DEFAULT_MAX_FAILOVER_RETRIES for requests routed through
+    # this group. NULL (or <=0) means "use the global default".
+    max_failover_retries = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

@@ -1043,6 +1043,8 @@ export interface ModelGroupSummary {
   is_active: boolean;
   list_in_catalog: boolean;
   priority: number;
+  /** Overrides the gateway's default failover-retry cap for this group. null = use global default. */
+  max_failover_retries: number | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -1063,6 +1065,7 @@ export type ModelGroupCreate = {
   is_active?: boolean;
   list_in_catalog?: boolean;
   priority?: number;
+  max_failover_retries?: number | null;
   members?: ModelGroupMemberCreate[];
 };
 
