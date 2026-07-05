@@ -615,7 +615,16 @@ class NodeManager:
         return await model_repo.get_model_distribution()
 
     async def get_all_active_healthy_nodes(self) -> List[Dict[str, Any]]:
-        """Get all active, healthy nodes (fallback for unmapped models)."""
+        """
+        Get all active, healthy nodes (fallback for unmapped/unsynced models).
+
+        Excludes specialized-provider nodes (antigravity/bedrock/cursor): they only
+        ever serve their own small, fixed model catalog through a dedicated proxy
+        contract (app/google_proxy.py, app/bedrock_proxy.py, app/cursor_proxy.py) and
+        can never satisfy an arbitrary raw model string the way a generic ollama/vllm
+        passthrough node can. Including them here just guarantees a wasted/failing
+        node-retry attempt (or worse, an unhandled error) for a model they never had.
+        """
         from app.database import async_session_maker
         from app.repositories.node_repository import NodeRepository
 
@@ -623,6 +632,7 @@ class NodeManager:
             async with async_session_maker() as session:
                 node_repo = NodeRepository(session)
                 nodes = await node_repo.list_active()
+                nodes = [n for n in nodes if getattr(n, 'node_type', 'ollama') not in ('antigravity', 'bedrock', 'cursor')]
                 return [
                     {
                         "node_id": node.id,
