@@ -82,6 +82,7 @@ async def reorder_model_groups(
                     is_active=group.is_active,
                     list_in_catalog=group.list_in_catalog,
                     priority=group.priority,
+                    max_failover_retries=group.max_failover_retries,
                     created_at=group.created_at.isoformat() if group.created_at else None,
                     updated_at=group.updated_at.isoformat() if group.updated_at else None,
                 )
@@ -138,6 +139,7 @@ async def create_model_group(
             is_active=request.is_active,
             list_in_catalog=request.list_in_catalog,
             priority=request.priority,
+            max_failover_retries=request.max_failover_retries,
         )
 
         # Add members if provided
@@ -189,6 +191,7 @@ async def list_model_groups(admin: str = Depends(verify_admin)):
                     is_active=group.is_active,
                     list_in_catalog=group.list_in_catalog,
                     priority=group.priority,
+                    max_failover_retries=group.max_failover_retries,
                     created_at=group.created_at.isoformat() if group.created_at else None,
                     updated_at=group.updated_at.isoformat() if group.updated_at else None,
                 )
@@ -275,6 +278,8 @@ async def update_model_group(
             update_data["list_in_catalog"] = request.list_in_catalog
         if request.priority is not None:
             update_data["priority"] = request.priority
+        if request.max_failover_retries is not None:
+            update_data["max_failover_retries"] = request.max_failover_retries
 
         # Apply any remaining updates
         if update_data:
@@ -562,6 +567,7 @@ async def _build_group_detail_response(
         is_active=group.is_active,
         list_in_catalog=group.list_in_catalog,
         priority=group.priority,
+        max_failover_retries=group.max_failover_retries,
         created_at=created_at.isoformat() if created_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
         members=await _members_to_response(session, members),

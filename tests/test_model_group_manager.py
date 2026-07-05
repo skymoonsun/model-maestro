@@ -423,3 +423,35 @@ class TestModelGroupManager:
         manager._groups["test-group"] = mock_group_data
 
         assert manager.get_member_by_display_name("nonexistent-group", "model-a") is None
+
+    # =========================================================================
+    # get_max_failover_retries tests
+    #
+    # Lets a group override proxy.py's DEFAULT_MAX_FAILOVER_RETRIES. NULL/<=0/
+    # unknown-group/no-group must all fall back to the caller-supplied default
+    # so existing (non-group or unconfigured) behavior is unchanged.
+    # =========================================================================
+
+    def test_uses_group_override_when_positive(self, manager, mock_group_data):
+        mock_group_data["group"].max_failover_retries = 10
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_max_failover_retries("test-group", default=5) == 10
+
+    def test_falls_back_when_none(self, manager, mock_group_data):
+        mock_group_data["group"].max_failover_retries = None
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_max_failover_retries("test-group", default=5) == 5
+
+    def test_falls_back_when_non_positive(self, manager, mock_group_data):
+        mock_group_data["group"].max_failover_retries = 0
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_max_failover_retries("test-group", default=5) == 5
+
+    def test_falls_back_when_no_group_name(self, manager):
+        assert manager.get_max_failover_retries(None, default=5) == 5
+
+    def test_falls_back_when_unknown_group(self, manager):
+        assert manager.get_max_failover_retries("nonexistent-group", default=5) == 5

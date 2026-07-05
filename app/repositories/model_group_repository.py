@@ -27,6 +27,7 @@ class ModelGroupRepository:
         is_active: bool = True,
         list_in_catalog: bool = False,
         priority: int = 0,
+        max_failover_retries: Optional[int] = None,
     ) -> ModelGroup:
         """Create a new model group"""
         group = ModelGroup(
@@ -36,6 +37,7 @@ class ModelGroupRepository:
             is_active=is_active,
             list_in_catalog=list_in_catalog,
             priority=priority,
+            max_failover_retries=max_failover_retries,
         )
         self.session.add(group)
         await self.session.flush()

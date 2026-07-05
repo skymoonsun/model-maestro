@@ -40,8 +40,10 @@ from app.google_proxy import proxy_antigravity_request
 
 logger = logging.getLogger(__name__)
 
-# Maximum retries for failover (will try all fallback members in group)
-MAX_FAILOVER_RETRIES = 5
+# Default maximum retries for failover (will try all fallback members in group).
+# A model group can override this via ModelGroup.max_failover_retries; see
+# model_group_manager.get_max_failover_retries().
+DEFAULT_MAX_FAILOVER_RETRIES = 5
 
 # Client → proxy headers that must not be forwarded to Ollama/vLLM. Upstream gateways
 # often apply IP allowlists using X-Forwarded-For / CF-Connecting-Ip; forwarding the
@@ -1069,9 +1071,10 @@ class OllamaProxy:
         original_group: Optional[str],
         attempt: int,
     ) -> bool:
+        max_retries = model_group_manager.get_max_failover_retries(original_group, DEFAULT_MAX_FAILOVER_RETRIES)
         return (
             bool(original_group)
-            and attempt < MAX_FAILOVER_RETRIES
+            and attempt < max_retries
             and status_code in self.MODEL_GROUP_FAILOVER_STATUS_CODES
         )
 
@@ -2916,6 +2919,11 @@ class OllamaProxy:
             StreamingResponse with failover support
         """
         rsnap = routing_snapshot if routing_snapshot is not None else {}
+        # Group can override the global default; captured once and reused by the
+        # nested generator below (and its retry/fallback checks) via closure.
+        max_failover_retries = model_group_manager.get_max_failover_retries(
+            original_group, DEFAULT_MAX_FAILOVER_RETRIES
+        )
 
         # Determine media type
         if is_openai_endpoint:
@@ -2935,7 +2943,7 @@ class OllamaProxy:
             current_headers = node_headers
             current_node_type = node_type
 
-            for attempt in range(MAX_FAILOVER_RETRIES + 1):
+            for attempt in range(max_failover_retries + 1):
                 client = await self._get_http_client()
                 current_model = current_data.get('model', 'unknown')
                 current_base_url = self._base_url_from_request_url(
@@ -2965,7 +2973,7 @@ class OllamaProxy:
                     provider_label = current_node_type.capitalize()
                     will_node_retry = (
                         upstream_error in self.NODE_RETRYABLE_STATUS_CODES
-                        and attempt < MAX_FAILOVER_RETRIES
+                        and attempt < max_failover_retries
                     )
                     self._short_upstream_error(
                         provider_label,
@@ -3067,7 +3075,7 @@ class OllamaProxy:
                         error_msg = f"Upstream error {upstream_error}"
                         will_node_retry = (
                             upstream_error in self.NODE_RETRYABLE_STATUS_CODES
-                            and attempt < MAX_FAILOVER_RETRIES
+                            and attempt < max_failover_retries
                         )
                         self._short_upstream_error(
                             provider_label,
@@ -3196,7 +3204,7 @@ class OllamaProxy:
                         if resp.status_code != 200:
                             # === WAF COOKIE REFRESH ===
                             # Before failover, try refreshing the WAF cookie on the same node
-                            if auto_cookie_refresh and resp.status_code in (302, 401, 403, 405, 407) and attempt < MAX_FAILOVER_RETRIES:
+                            if auto_cookie_refresh and resp.status_code in (302, 401, 403, 405, 407) and attempt < max_failover_retries:
                                 from app.waf_cookie_handler import refresh_waf_cookie
                                 current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                                 refreshed, updated_headers, refresh_error = await refresh_waf_cookie(
@@ -3229,7 +3237,7 @@ class OllamaProxy:
 
                             will_node_retry = (
                                 resp.status_code in self.NODE_RETRYABLE_STATUS_CODES
-                                and attempt < MAX_FAILOVER_RETRIES
+                                and attempt < max_failover_retries
                             )
                             self._short_upstream_error(
                                 provider_label,
@@ -3885,7 +3893,7 @@ class OllamaProxy:
 
                     # === NODE-LEVEL RETRY ===
                     # Try the same model on a different node first
-                    if attempt < MAX_FAILOVER_RETRIES:
+                    if attempt < max_failover_retries:
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else base_url
                         tried_nodes.add(current_base_url)
 
@@ -3919,7 +3927,7 @@ class OllamaProxy:
                         logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
 
                     # === MODEL-LEVEL FALLBACK ===
-                    if original_group and attempt < MAX_FAILOVER_RETRIES:
+                    if original_group and attempt < max_failover_retries:
                         failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
                         fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
 
@@ -4068,6 +4076,10 @@ class OllamaProxy:
             Response from Ollama
         """
         rsnap = routing_snapshot if routing_snapshot is not None else {}
+        # Group can override the global default; see _stream_with_failover's twin.
+        max_failover_retries = model_group_manager.get_max_failover_retries(
+            original_group, DEFAULT_MAX_FAILOVER_RETRIES
+        )
         last_error = None
         current_url = url
         current_data = data.copy() if data else {}
@@ -4075,7 +4087,7 @@ class OllamaProxy:
         current_headers = node_headers
         current_node_type = node_type
 
-        for attempt in range(MAX_FAILOVER_RETRIES + 1):
+        for attempt in range(max_failover_retries + 1):
             client = await self._get_http_client()
             current_model = current_data.get('model') or model_name or 'unknown'
             current_base_url = self._base_url_from_request_url(
@@ -4103,7 +4115,7 @@ class OllamaProxy:
                 provider_label = current_node_type.capitalize()
                 will_node_retry = (
                     response_status in self.NODE_RETRYABLE_STATUS_CODES
-                    and attempt < MAX_FAILOVER_RETRIES
+                    and attempt < max_failover_retries
                 )
                 self._short_upstream_error(
                     provider_label,
@@ -4221,7 +4233,7 @@ class OllamaProxy:
                 if response.status_code >= 400:
                     # === WAF COOKIE REFRESH ===
                     # Before failover, try refreshing the WAF cookie on the same node
-                    if auto_cookie_refresh and response.status_code in (302, 401, 403, 405, 407) and attempt < MAX_FAILOVER_RETRIES:
+                    if auto_cookie_refresh and response.status_code in (302, 401, 403, 405, 407) and attempt < max_failover_retries:
                         from app.waf_cookie_handler import refresh_waf_cookie
                         current_base_url = current_url.rsplit(endpoint, 1)[0] if endpoint in current_url else url.rsplit(endpoint, 1)[0]
                         refreshed, updated_headers, refresh_error = await refresh_waf_cookie(
@@ -4251,7 +4263,7 @@ class OllamaProxy:
 
                     will_node_retry = (
                         response.status_code in self.NODE_RETRYABLE_STATUS_CODES
-                        and attempt < MAX_FAILOVER_RETRIES
+                        and attempt < max_failover_retries
                     )
                     self._short_upstream_error(
                         provider_label,
@@ -4408,7 +4420,7 @@ class OllamaProxy:
                 )
 
                 # === NODE-LEVEL RETRY ===
-                if attempt < MAX_FAILOVER_RETRIES:
+                if attempt < max_failover_retries:
                     tried_nodes.add(current_base_url)
 
                     new_base_url, new_api_key, new_node_type, _, _ = await self._select_node_url(
@@ -4444,7 +4456,7 @@ class OllamaProxy:
                     logger.info(f"[NODE RETRY] No more nodes available for model {current_model}")
 
                 # === MODEL-LEVEL FALLBACK ===
-                if original_group and attempt < MAX_FAILOVER_RETRIES:
+                if original_group and attempt < max_failover_retries:
                     failed_for_group = rsnap.get('model') or rsnap.get('name') or current_model
                     fallback_model = self._get_fallback_model(original_group, failed_for_group, tried_models)
 

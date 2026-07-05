@@ -279,6 +279,7 @@ function GroupDetail({
         strategy: group.strategy,
         is_active: group.is_active,
         list_in_catalog: group.list_in_catalog,
+        max_failover_retries: group.max_failover_retries ?? null as number | null,
     });
 
     const sensors = useSensors(
@@ -480,6 +481,22 @@ function GroupDetail({
                                 onCheckedChange={(v) => setEditForm((f) => ({ ...f, list_in_catalog: v }))}
                             />
                             <Label>Show in catalog</Label>
+                        </div>
+                        <div>
+                            <Label>Max Failover Retries</Label>
+                            <Input
+                                type="number"
+                                min={0}
+                                placeholder="Default (5)"
+                                value={editForm.max_failover_retries ?? ''}
+                                onChange={(e) => setEditForm((f) => ({
+                                    ...f,
+                                    max_failover_retries: e.target.value === '' ? null : parseInt(e.target.value) || 0,
+                                }))}
+                            />
+                            <p className="text-xs text-muted-foreground mt-1">
+                                Overrides the gateway&apos;s default failover-retry cap for this group. Leave empty to use the global default.
+                            </p>
                         </div>
                     </div>
                     <DialogFooter>
@@ -769,6 +786,9 @@ function SortableGroupCard({
                 )}
                 <div className="mt-1 text-xs text-muted-foreground">
                     Priority: {group.priority}
+                    {group.max_failover_retries != null && group.max_failover_retries > 0 && (
+                        <span className="ml-2">· Max Failover Retries: {group.max_failover_retries}</span>
+                    )}
                 </div>
             </div>
             <div className="flex items-center gap-3 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -806,6 +826,7 @@ export default function ModelGroupsPage() {
         strategy: 'priority',
         is_active: true,
         list_in_catalog: false,
+        max_failover_retries: null as number | null,
     });
     const [deleteGroup, setDeleteGroup] = useState<string | null>(null);
 
@@ -868,7 +889,7 @@ export default function ModelGroupsPage() {
             qc.invalidateQueries({ queryKey: ['model-groups'] });
             toast.success('Group created');
             setCreateOpen(false);
-            setCreateForm({ name: '', description: '', strategy: 'priority', is_active: true, list_in_catalog: false });
+            setCreateForm({ name: '', description: '', strategy: 'priority', is_active: true, list_in_catalog: false, max_failover_retries: null });
         },
         onError: (e) => toast.error(e.message),
     });
@@ -958,6 +979,22 @@ export default function ModelGroupsPage() {
                                     onCheckedChange={(v) => setCreateForm((f) => ({ ...f, list_in_catalog: v }))}
                                 />
                                 <Label>Show in catalog</Label>
+                            </div>
+                            <div>
+                                <Label>Max Failover Retries</Label>
+                                <Input
+                                    type="number"
+                                    min={0}
+                                    placeholder="Default (5)"
+                                    value={createForm.max_failover_retries ?? ''}
+                                    onChange={(e) => setCreateForm((f) => ({
+                                        ...f,
+                                        max_failover_retries: e.target.value === '' ? null : parseInt(e.target.value) || 0,
+                                    }))}
+                                />
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    Overrides the gateway&apos;s default failover-retry cap for this group. Leave empty to use the global default.
+                                </p>
                             </div>
                         </div>
                         <DialogFooter>

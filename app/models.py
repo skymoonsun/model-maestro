@@ -877,6 +877,8 @@ class ModelGroupCreateRequest(BaseModel):
     is_active: bool = True
     list_in_catalog: bool = False
     priority: int = 0
+    # Overrides proxy.py's DEFAULT_MAX_FAILOVER_RETRIES for this group. None/0 = use global default.
+    max_failover_retries: Optional[int] = None
     members: Optional[List[ModelGroupMemberRequest]] = None
 
 
@@ -888,6 +890,7 @@ class ModelGroupUpdateRequest(BaseModel):
     is_active: Optional[bool] = None
     list_in_catalog: Optional[bool] = None
     priority: Optional[int] = None
+    max_failover_retries: Optional[int] = None
 
 
 class ModelGroupMemberResponse(BaseModel):
@@ -913,6 +916,7 @@ class ModelGroupResponse(BaseModel):
     is_active: bool = True
     list_in_catalog: bool = False
     priority: int = 0
+    max_failover_retries: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -926,6 +930,7 @@ class ModelGroupDetailResponse(BaseModel):
     is_active: bool = True
     list_in_catalog: bool = False
     priority: int = 0
+    max_failover_retries: Optional[int] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     members: List[ModelGroupMemberResponse] = []
