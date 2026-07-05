@@ -2926,16 +2926,115 @@ class OllamaProxy:
                     current_url, endpoint, base_url
                 )
 
-                specialized = await self._try_specialized_node_proxy(
-                    node_type=current_node_type,
-                    base_url=current_base_url,
-                    data=current_data,
-                    stream=True,
-                    endpoint=endpoint,
-                    model_name=current_model,
-                    username=username,
-                    node_headers=current_headers,
-                )
+                try:
+                    specialized = await self._try_specialized_node_proxy(
+                        node_type=current_node_type,
+                        base_url=current_base_url,
+                        data=current_data,
+                        stream=True,
+                        endpoint=endpoint,
+                        model_name=current_model,
+                        username=username,
+                        node_headers=current_headers,
+                    )
+                except HTTPException as exc:
+                    # Mirrors _non_streaming_with_failover's handling of the same
+                    # call: a specialized-node error (e.g. Antigravity/Bedrock/Cursor
+                    # "model not available") must be retried like any other upstream
+                    # failure, not crash the stream.
+                    if exc.status_code < 400:
+                        raise
+                    error_msg = str(exc.detail)
+                    upstream_error = exc.status_code
+                    provider_label = current_node_type.capitalize()
+                    will_node_retry = (
+                        upstream_error in self.NODE_RETRYABLE_STATUS_CODES
+                        and attempt < MAX_FAILOVER_RETRIES
+                    )
+                    self._short_upstream_error(
+                        provider_label,
+                        upstream_error,
+                        current_base_url,
+                        current_model,
+                        error_msg,
+                        will_retry=will_node_retry,
+                    )
+
+                    if will_node_retry:
+                        tried_nodes.add(current_base_url)
+                        new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
+                            current_model,
+                            exclude_nodes=list(tried_nodes),
+                            exclude_scoped=exclude_scoped,
+                            allowed_node_ids=allowed_node_ids,
+                            routing_catalog_names=routing_catalog_names,
+                            strict_allowed_nodes=strict_allowed_nodes,
+                            node_priority_overrides=node_priority_overrides,
+                        )
+                        if new_base_url:
+                            if (
+                                not bypass_node_access
+                                and username
+                                and not await self._check_user_node_access(username, new_base_url)
+                            ):
+                                logger.warning(
+                                    f"[NODE RETRY] User '{username}' denied failover node {new_base_url}"
+                                )
+                                tried_nodes.add(new_base_url)
+                                continue
+                            logger.info(
+                                f"[NODE RETRY] {current_base_url} → {new_base_url} "
+                                f"({new_node_type}) model={current_model}"
+                            )
+                            current_url = f"{new_base_url}{endpoint}"
+                            current_api_key = new_api_key
+                            current_headers = new_headers
+                            current_node_type = new_node_type
+                            current_data = await self._rebind_body_to_node(
+                                current_data, rsnap, new_base_url
+                            )
+                            continue
+                        logger.info(f"[NODE RETRY] No more nodes for model {current_model}")
+
+                    failed_for_group = rsnap.get("model") or rsnap.get("name") or current_model
+                    fallback_state = await self._apply_model_group_fallback(
+                        original_group=original_group,
+                        failed_for_group=failed_for_group,
+                        tried_models=tried_models,
+                        original_data=original_data,
+                        current_data=current_data,
+                        rsnap=rsnap,
+                        endpoint=endpoint,
+                        exclude_scoped=exclude_scoped,
+                        bypass_node_access=bypass_node_access,
+                        username=username,
+                        tried_nodes=tried_nodes,
+                        routing_catalog_names=routing_catalog_names,
+                        status_code=upstream_error,
+                        attempt=attempt,
+                    )
+                    if fallback_state:
+                        (
+                            current_data,
+                            current_url,
+                            current_api_key,
+                            current_headers,
+                            current_node_type,
+                            allowed_node_ids,
+                        ) = fallback_state
+                        continue
+
+                    error_response = {
+                        "error": {
+                            "message": error_msg,
+                            "type": "api_error",
+                            "code": upstream_error,
+                        }
+                    }
+                    yield b"data: " + _json_dumps(error_response) + b"\n\n"
+                    yield b"data: [DONE]\n\n"
+                    return
+
                 if specialized is not None:
                     if isinstance(specialized, StreamingResponse):
                         upstream_error: Optional[int] = None
