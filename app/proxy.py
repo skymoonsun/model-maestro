@@ -1133,6 +1133,22 @@ class OllamaProxy:
             if isinstance(v, str):
                 rsnap[snap_key] = v
 
+        # fallback_model is a group MEMBER's real name, not a group name, so
+        # _resolve_model_groups() above returns it unchanged with no preferred
+        # nodes (see resolve_model_with_metadata's docstring). Without this, node
+        # selection falls back to routing_catalog_names' whole-group union pool —
+        # which can include nodes that only host a DIFFERENT member (e.g. an
+        # Antigravity node hosting an unrelated Claude member), guaranteed to 404.
+        # Fetch this specific member's own routing hints, same as the initial pick.
+        fallback_member = model_group_manager.get_member_by_display_name(original_group, fallback_model)
+        if fallback_member:
+            member_pids = model_group_manager.preferred_node_ids_for_member(fallback_member)
+            if member_pids:
+                current_data["_preferred_node_ids"] = member_pids
+            member_overrides = model_group_manager.node_priority_overrides_for_member(fallback_member)
+            if member_overrides:
+                current_data["_node_priority_overrides"] = member_overrides
+
         fb_display = current_data.get("model") or current_data.get("name")
         fb_allowed, fb_overrides = self._prepare_routing_allowed(current_data, fb_display)
         new_base_url, new_api_key, new_node_type, new_headers, _ = await self._select_node_url(
@@ -3920,6 +3936,18 @@ class OllamaProxy:
                                 if isinstance(v, str):
                                     rsnap[snap_key] = v
 
+                            # See _apply_model_group_fallback for why this lookup is needed:
+                            # a member's own real name isn't a group, so re-resolving it
+                            # yields no preferred nodes without this explicit fetch.
+                            fallback_member = model_group_manager.get_member_by_display_name(original_group, fallback_model)
+                            if fallback_member:
+                                member_pids = model_group_manager.preferred_node_ids_for_member(fallback_member)
+                                if member_pids:
+                                    current_data['_preferred_node_ids'] = member_pids
+                                member_overrides = model_group_manager.node_priority_overrides_for_member(fallback_member)
+                                if member_overrides:
+                                    current_data['_node_priority_overrides'] = member_overrides
+
                             fb_display = current_data.get('model') or current_data.get('name')
                             fb_allowed, fb_overrides = self._prepare_routing_allowed(current_data, fb_display)
                             new_base_url, new_api_key, _, _, _ = await self._select_node_url(
@@ -4432,6 +4460,18 @@ class OllamaProxy:
                             v = current_data.get(snap_key)
                             if isinstance(v, str):
                                 rsnap[snap_key] = v
+
+                        # See _apply_model_group_fallback for why this lookup is needed:
+                        # a member's own real name isn't a group, so re-resolving it
+                        # yields no preferred nodes without this explicit fetch.
+                        fallback_member = model_group_manager.get_member_by_display_name(original_group, fallback_model)
+                        if fallback_member:
+                            member_pids = model_group_manager.preferred_node_ids_for_member(fallback_member)
+                            if member_pids:
+                                current_data['_preferred_node_ids'] = member_pids
+                            member_overrides = model_group_manager.node_priority_overrides_for_member(fallback_member)
+                            if member_overrides:
+                                current_data['_node_priority_overrides'] = member_overrides
 
                         fb_display = current_data.get('model') or current_data.get('name')
                         fb_allowed, fb_overrides = self._prepare_routing_allowed(current_data, fb_display)

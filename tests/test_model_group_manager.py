@@ -396,3 +396,30 @@ class TestModelGroupManager:
 
         result = manager.get_group_info("nonexistent")
         assert result is None
+
+    # =========================================================================
+    # get_member_by_display_name tests
+    #
+    # Used after a model-group fallback picks the next member (get_fallback /
+    # get_fallback_413 return only the display-name string) so the fallback
+    # path can fetch THAT member's own preferred_node_ids/node_priority_overrides
+    # — without this, node selection had no restriction for a fallback member
+    # and fell back to routing_catalog_names' whole-group union pool, which can
+    # include nodes that only host a completely different member.
+    # =========================================================================
+
+    def test_get_member_by_display_name_found(self, manager, mock_group_data):
+        manager._groups["test-group"] = mock_group_data
+
+        result = manager.get_member_by_display_name("test-group", "model-b")
+        assert result is mock_group_data["members"][1]
+
+    def test_get_member_by_display_name_unknown_member(self, manager, mock_group_data):
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_member_by_display_name("test-group", "nonexistent-model") is None
+
+    def test_get_member_by_display_name_unknown_group(self, manager, mock_group_data):
+        manager._groups["test-group"] = mock_group_data
+
+        assert manager.get_member_by_display_name("nonexistent-group", "model-a") is None

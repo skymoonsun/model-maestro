@@ -1148,6 +1148,23 @@ class ModelGroupManager:
         active = {nid: p for nid, p in prio.items() if p}
         return active or None
 
+    def get_member_by_display_name(self, group_name: str, display_name: str) -> Optional[Any]:
+        """
+        Find a group's member ORM object by its ``model_display_name``.
+
+        Used after picking a fallback model (see ``get_fallback``/``get_fallback_413``,
+        which return only the display-name string) to fetch that specific member's own
+        ``preferred_node_ids``/``node_priority_overrides`` — the same per-member routing
+        hints ``resolve_model_with_metadata`` applies for the initially-selected member.
+        """
+        info = self._groups.get(group_name)
+        if not info:
+            return None
+        for m in info["members"]:
+            if getattr(m, "model_display_name", None) == display_name:
+                return m
+        return None
+
     def get_member_catalog_names(self, group_name: str) -> List[str]:
         """Member ``model_display_name`` values used to match node catalogs during LB."""
         info = self._groups.get(group_name)
